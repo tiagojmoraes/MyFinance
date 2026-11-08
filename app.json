@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "MyFinance & Pantry Manager",
+    "slug": "myfinance-pantry-manager",
+    "version": "71.0.0",
+    "scheme": "myfinancepantry",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#036c50"
+    },
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.zai.myfinancepantry",
+      "softwareKeyboardLayoutMode": "pan"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Permita o uso da câmera para escanear o QR Code da NFC-e."
+        }
+      ],
+      "expo-document-picker",
+      "expo-asset",
+      "./plugins/withWebViewSefazSsl"
+    ]
+  }
+}
