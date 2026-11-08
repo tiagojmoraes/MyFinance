@@ -17,7 +17,11 @@
     },
     "android": {
       "package": "com.zai.myfinancepantry",
-      "softwareKeyboardLayoutMode": "pan"
+      "softwareKeyboardLayoutMode": "pan",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "plugins": [
       "expo-router",
@@ -31,6 +35,12 @@
       "expo-document-picker",
       "expo-asset",
       "./plugins/withWebViewSefazSsl"
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "f1fbd54d-cf76-4ec2-9879-93f93defdfb8"
+      }
+    }
   }
 }

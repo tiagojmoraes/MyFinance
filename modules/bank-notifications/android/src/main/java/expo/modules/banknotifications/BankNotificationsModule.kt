@@ -120,8 +120,11 @@ class BankNotificationsModule : Module() {
 
     /** Limpa o repositório local (não mexe na barra do sistema). */
     Function("clearAll") {
-      val ctx = appContext.reactContext ?: return@Function
-      BankNotificationStore.clear(ctx)
+      val ctx = appContext.reactContext
+      if (ctx != null) {
+        BankNotificationStore.clear(ctx)
+      }
+      true
     }
   }
 }
