@@ -193,7 +193,6 @@ export default function FluxoScreen() {
   const [savAdj, setSavAdj] = React.useState<DayAdjust | null>(null);
   const [budgetOpen, setBudgetOpen] = React.useState(false);
   const [savingsOpen, setSavingsOpen] = React.useState(false);
-  const [closingBusy, setClosingBusy] = React.useState(false);
   // v21 (bug 4): CONFIRMAÇÃO antes de excluir/alterar — regra pedida pelo usuário
   type ConfirmState =
     | { kind: 'tx'; tx: FlowTx }
@@ -542,12 +541,10 @@ export default function FluxoScreen() {
     const isIncome = info.isIncome;
     const done = info.allDone;
     const label = isIncome ? (done ? '✓ Recebido' : 'Não recebido') : done ? '✓ Pago' : 'Não pago';
-    const cls = isIncome
-      ? done
-        ? 'bg-emerald-600'
-        : 'bg-emerald-50 border border-emerald-300'
-      : done
-        ? 'bg-rose-600'
+    const cls = done
+      ? 'bg-slate-500'
+      : isIncome
+        ? 'bg-emerald-50 border border-emerald-300'
         : 'bg-rose-50 border border-rose-300';
     const txt = done ? 'text-white' : isIncome ? 'text-emerald-700' : 'text-rose-700';
     return (
@@ -579,7 +576,9 @@ export default function FluxoScreen() {
   };
 
   const amountColor = (tx: FlowTx) =>
-    tx.type === 'INCOME' ? 'text-emerald-600' : tx.type === 'TRANSFER' ? 'text-slate-600' : 'text-rose-600';
+    tx.status === 'CONFIRMED' && !tx.card_id && (tx.type === 'INCOME' || tx.type === 'EXPENSE')
+      ? 'text-slate-500'
+      : tx.type === 'INCOME' ? 'text-emerald-600' : tx.type === 'TRANSFER' ? 'text-slate-600' : 'text-rose-600';
 
   /** v10: chip de status Pago/Não pago — despesa VERMELHA; Recebido/Não recebido — receita VERDE. */
   const renderPaymentChip = (tx: FlowTx) => {
@@ -590,12 +589,10 @@ export default function FluxoScreen() {
     const isIncome = tx.type === 'INCOME';
     const done = tx.status === 'CONFIRMED';
     const label = isIncome ? (done ? '✓ Recebido' : 'Não recebido') : done ? '✓ Pago' : 'Não pago';
-    const cls = isIncome
-      ? done
-        ? 'bg-emerald-600'
-        : 'bg-emerald-50 border border-emerald-300'
-      : done
-        ? 'bg-rose-600'
+    const cls = done
+      ? 'bg-slate-500'
+      : isIncome
+        ? 'bg-emerald-50 border border-emerald-300'
         : 'bg-rose-50 border border-rose-300';
     const txt = done ? 'text-white' : isIncome ? 'text-emerald-700' : 'text-rose-700';
     return (
@@ -633,7 +630,7 @@ export default function FluxoScreen() {
       router.push({ pathname: '/plano/[id]', params: { id: tx.plan_id } });
       return;
     }
-    router.push({ pathname: '/lancamento', params: { edit: tx.id } });
+    router.push({ pathname: '/lancamento', params: { edit: tx.id, returnMonth: month } });
   };
 
   /** v14 (bug 4) → v67 (BUG 2): o esqueleto ÚNICO virou o COMPONENTE
@@ -756,7 +753,14 @@ export default function FluxoScreen() {
     // (v14: parcelas de RECEITA PARCELADA entram como crédito)
     const { debits, credits } = totalsByGroupV48.get((grp as any)?.header?.id) ?? groupMonthTotals(grp); // v48 cache
     const groupSaldo = credits - debits;
-    const saldoCor = groupSaldo > 0 ? 'text-emerald-600' : groupSaldo < 0 ? 'text-rose-600' : 'text-slate-500';
+    const groupPayment = groupStatusInfo(grp, children);
+    const saldoCor = groupPayment?.allDone
+      ? 'text-slate-500'
+      : groupSaldo > 0 ? 'text-emerald-600' : groupSaldo < 0 ? 'text-rose-600' : 'text-slate-500';
+    const groupDate = grp.isHeaderMonth
+      ? tx.occurred_on
+      : [...grp.occurrences.map((entry) => entry.occurred_on), ...grp.installments.map((entry) => entry.dueDate)]
+        .sort()[0] ?? tx.occurred_on;
     // Itens EXATOS do mês — o que a expansão mostra é isto (bug 1.B)
     const itemCount = (grp.isHeaderMonth ? tx.child_count : 0) + grp.occurrences.length + grp.installments.length;
     // v17 (melhoria 2) substituída pela v18 (melhoria 1): o CABEÇALHO fica
@@ -775,12 +779,9 @@ export default function FluxoScreen() {
           disabled: tx.status === 'VOIDED',
           voided: tx.status === 'VOIDED',
           title: tx.description,
-          subtitle: `${ymdToBr(tx.occurred_on)} · ${itemCount} item(ns) neste mês`,
+          subtitle: `${ymdToBr(groupDate)} · ${itemCount} item(ns) neste mês`,
           chips: (
             <>
-              <Text className="text-[10px] text-violet-600 bg-violet-50 px-1.5 py-0.5 rounded font-semibold">
-                {ICONS.consolidado} CONSOLIDADO
-              </Text>
               {tx.source_system !== 'MANUAL' ? (
                 <Text className="text-[10px] text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">{sourceLabel(tx.source_system)}</Text>
               ) : null}
@@ -791,7 +792,10 @@ export default function FluxoScreen() {
           ),
           amount: `Saldo: ${formatBRL(groupSaldo)}`,
           amountClass: saldoCor,
-          onAlterar: () => router.push({ pathname: '/lancamento', params: { edit: tx.id } }),
+          onAlterar: () => router.push({
+            pathname: '/lancamento',
+            params: { edit: tx.id, returnMonth: month, editDate: groupDate },
+          }),
           // v22 (bug 1): "+Incluir" abre o Novo Lançamento EM MODAL no modo
           // "incluir no grupo" — as linhas novas passam a compor o saldo dele
           onIncluir: () => router.push({ pathname: '/incluir-grupo', params: { grupo: tx.id } }),
@@ -887,12 +891,10 @@ export default function FluxoScreen() {
     const paid = inst.status === 'PAID';
     const isIncome = inst.type === 'INCOME';
     const label = isIncome ? (paid ? '✓ Recebido' : 'Não recebido') : paid ? '✓ Pago' : 'Não pago';
-    const cls = isIncome
-      ? paid
-        ? 'bg-emerald-600'
-        : 'bg-emerald-50 border border-emerald-300'
-      : paid
-        ? 'bg-rose-600'
+    const cls = paid
+      ? 'bg-slate-500'
+      : isIncome
+        ? 'bg-emerald-50 border border-emerald-300'
         : 'bg-rose-50 border border-rose-300';
     const txt = paid ? 'text-white' : isIncome ? 'text-emerald-700' : 'text-rose-700';
     return (
@@ -933,7 +935,7 @@ export default function FluxoScreen() {
         </>
       ),
       amount: `${isIncome ? '+' : '−'}${formatBRL(inst.amountCents)}`,
-      amountClass: paid ? 'text-slate-400' : isIncome ? 'text-emerald-600' : 'text-rose-600',
+      amountClass: paid ? 'text-slate-500' : isIncome ? 'text-emerald-600' : 'text-rose-600',
       // v21 (bug 1): "Alterar" abre a TELA do plano (todos os campos)
       onAlterar: () => router.push({ pathname: '/plano/[id]', params: { id: inst.planId } }),
       // v18 (bug 4): parcela PAGA não oferece Excluir (pagas nunca são excluídas —
@@ -953,20 +955,6 @@ export default function FluxoScreen() {
   };
 
   // ---------- v42→v68: cards aglutinados ORÇAMENTO e POUPANÇA (flag de Ajustes) ----------
-
-  /** Confirma a estimativa de poupança do fechamento (card expandido). */
-  const confirmClosingHere = async (amountCents: number) => {
-    setClosingBusy(true);
-    try {
-      await services.savings.confirmClosing(month, amountCents);
-      showToast(`Poupança de ${formatBRL(amountCents)} criada (transferência no fim do mês)`);
-      bump();
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), 'err');
-    } finally {
-      setClosingBusy(false);
-    }
-  };
 
   /** v42 → v68 (BUGS 1 e 2): cards aglutinados de ORÇAMENTO e POUPANÇA no
    *  MESMO esqueleto LancamentoRow das demais linhas. Expandidos:
@@ -1023,7 +1011,10 @@ export default function FluxoScreen() {
   // Lista de Desejos → Poupança. Mostra as classificações (Prioridade >
   // Necessário > Desejo) com itens, barra de progressão e o texto sucinto
   // de meses para comprar; o cadastro segue na tela da Lista de Desejos. */
-  const wishTotalCents = wishClasses.reduce((a, c) => a + c.totalCents, 0);
+  const wishRemainingCents = wishClasses.reduce(
+    (total, category) => total + category.items.reduce((sum, item) => sum + item.faltaCents, 0),
+    0
+  );
   const wishTotalItens = wishClasses.reduce((a, c) => a + c.itemCount, 0);
   const wishlistCard = wishlistOn ? (
     <LancamentoRow
@@ -1031,8 +1022,8 @@ export default function FluxoScreen() {
       arrow={{ open: wishOpen, onPress: () => setWishOpen((v) => !v), label: wishOpen ? 'Recolher lista de desejos' : 'Expandir lista de desejos' }}
       title={`${ICONS.listaDesejos} Lista de Desejos`}
       subtitle={wishTotalItens > 0 ? `${wishTotalItens} item(ns) na lista` : 'Nenhum item cadastrado'}
-      amount={formatBRL(wishTotalCents)}
-      amountClass={wishTotalCents > 0 ? 'text-violet-700' : 'text-slate-900'}
+      amount={formatBRL(wishRemainingCents)}
+      amountClass={wishRemainingCents > 0 ? 'text-violet-700' : 'text-slate-900'}
       footer={
         <View className="gap-1.5">
           {/* v70 (MELHORIA 2.6): texto SUCCINTO — meses para comprar */}
@@ -1103,17 +1094,11 @@ export default function FluxoScreen() {
       // previsão) e o valor mostrado é o PROGRAMADO (previsões + estimativa
       // do saldo que sobraria no fim do mês) — nunca mais "R$ 0,00" +
       // "Nenhum plano cadastrado" com plano ativo.
-      subtitle={
-        savingsSum && savingsSum.plans.length > 0
-          ? `${savingsSum.plans.length} plano(s) cadastrado(s)`
-          : savingsSum && savingsSum.entries.length > 0
-            ? `${savingsSum.entries.length} entrada(s) no mês`
-            : 'Nenhum plano de poupança'
-      }
+      subtitle="Programado p/ poupança"
       amount={formatBRL(savingsSum?.programadoCents ?? 0)}
-      amountClass={(savingsSum?.programadoCents ?? 0) < 0 ? 'text-rose-600' : 'text-slate-900'}
+      amountClass="text-slate-900"
       footer={
-        savingsSum && (savingsSum.plans.length > 0 || savingsSum.entries.length > 0) ? (
+        savingsSum ? (
           <View className="gap-1.5">
             {/* v67 (BUG 1): rótulos EXCLUSIVOS da poupança — não competem com o
                 "Saldo do dia Previsto/Efetivado" do cabeçalho dos dias.
@@ -1123,65 +1108,17 @@ export default function FluxoScreen() {
                 (ex.: preciso transferir 10 mil, transferei 500 → 9.500);
                 "Já transferido" = transferências CONFIRMADAS do mês. */}
             <View className="flex-row justify-between">
-              <Text className="text-sm text-slate-700">Programado p/ poupança</Text>
-              <Text className="text-sm font-semibold text-slate-900">{formatBRL(savingsSum.programadoCents)}</Text>
-            </View>
-            <View className="flex-row justify-between">
               <Text className="text-sm text-slate-700">Falta transferir</Text>
               <Text className="text-sm font-semibold text-amber-700">{formatBRL(savingsSum.remainingCents)}</Text>
             </View>
             <View className="flex-row justify-between">
-              <Text className="text-sm text-slate-700">Já transferido p/ poupança</Text>
-              <Text className="text-sm font-semibold text-emerald-700">{formatBRL(savingsSum.effectedCents)}</Text>
+              <Text className="text-sm text-slate-700">Já transferiu p/ poupança</Text>
+              <Text className="text-sm font-semibold text-slate-500">{formatBRL(savingsSum.effectedCents)}</Text>
             </View>
-            {/* v68 (BUG 3): o PLANO CADASTRADO — nome, modalidade, valor e
-                guardado/falta (era isso que faltava ao expandir) */}
-            {savingsSum.plans.map((p) => (
-              <LancamentoRow
-                key={p.planId}
-                dashed
-                title={p.name}
-                subtitle={`Modalidade: ${p.modalityLabel} · Valor: ${p.amountCents != null ? formatBRL(p.amountCents) : 'o restante do mês'}`}
-                amount={`falta ${formatBRL(p.faltaCents)}`}
-                amountClass={p.faltaCents > 0 ? 'text-amber-700' : 'text-emerald-700'}
-                chips={
-                  <Text className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
-                    guardado {formatBRL(p.guardadoCents)}
-                  </Text>
-                }
-              />
-            ))}
-            {savingsSum.closingSuggestion ? (
-              <View className="border border-emerald-200 rounded-lg p-2 gap-1.5">
-                <Text className="text-xs text-slate-600">
-                  Fechamento: o saldo previsto do fim do mês está em {formatBRL(savingsSum.closingSuggestion.amountCents)} — virou estimativa.
-                </Text>
-                <Button
-                  label={`Poupar ${formatBRL(savingsSum.closingSuggestion.amountCents)} (transferência no fim do mês)`}
-                  variant="outline"
-                  loading={closingBusy}
-                  onPress={() => confirmClosingHere(savingsSum.closingSuggestion!.amountCents)}
-                />
-              </View>
-            ) : null}
-            {savingsSum.entries.filter((e) => e.effected).slice(0, 5).map((e) => (
-              <LancamentoRow
-                key={e.id}
-                dashed
-                title={e.description ?? 'Poupança'}
-                subtitle={e.date ? `Transferido em ${ymdToBr(e.date)}` : 'Transferência da poupança'}
-                amount={formatBRL(e.amountCents)}
-                amountClass="text-emerald-700"
-              />
-            ))}
           </View>
-        ) : (
-          <Text className="text-xs text-slate-500">Nenhum plano de poupança — cadastre em Ações rápidas › Poupança.</Text>
-        )
+        ) : null
       }
       footerOpen={savingsOpen}
-      onCadastrar={() => router.push('/poupanca')}
-      cadastrarLabel="Cadastrar / alterar poupança ›"
     />
   ) : null;
 
@@ -1209,7 +1146,13 @@ export default function FluxoScreen() {
       {budgetCard}
       {wishlistCard}
       {savingsCard}
-      {loading ? <Card><Text className="text-slate-500">Carregando...</Text></Card> : null}
+      {loading ? (
+        <Card className="gap-2">
+          <View className="h-3 w-1/3 rounded bg-slate-100" />
+          <View className="h-5 w-2/3 rounded bg-slate-100" />
+          <View className="h-3 w-1/2 rounded bg-slate-100" />
+        </Card>
+      ) : null}
     </View>
   );
   const listExtraData = React.useMemo(

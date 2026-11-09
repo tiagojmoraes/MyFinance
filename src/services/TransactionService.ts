@@ -628,6 +628,23 @@ export class TransactionService {
 
       // 1. Libera referências cruzadas (FKs) antes de apagar a transação
       await this.detachTransactionRefs(transactionId);
+      const reserves = await this.db.getAllAsync<{ item_id: string; amount_cents: number }>(
+        'SELECT item_id, amount_cents FROM wishlist_reserves WHERE transaction_id = ?',
+        [transactionId]
+      );
+      for (const reserve of reserves) {
+        await this.db.runAsync(
+          'UPDATE wishlist_items SET reserved_cents = MAX(0, reserved_cents - ?) WHERE id = ?',
+          [reserve.amount_cents, reserve.item_id]
+        );
+      }
+      await this.db.runAsync('DELETE FROM wishlist_reserves WHERE transaction_id = ?', [transactionId]);
+      // Mantém a ocorrência como tombstone para impedir que a previsão mensal
+      // excluída seja recriada; resumos ignoram entradas sem transação.
+      await this.db.runAsync(
+        'UPDATE savings_entries SET transaction_id = NULL WHERE transaction_id = ?',
+        [transactionId]
+      );
 
       // 1.5 v11: linhas Fixo/Parcelado VINCULADAS ao grupo viram independentes —
       // a conta fixa e o parcelamento sobrevivem à exclusão da operação que os criou.
@@ -968,6 +985,39 @@ export class TransactionService {
         const to = patch.toAccountId ?? tx.transfer_account_id;
         if (!from || !to) throw new Error('Conta de origem e destino são obrigatórias');
         if (from === to) throw new Error('Origem e destino devem ser diferentes');
+        const reserve = await this.db.getFirstAsync<{
+          item_id: string;
+          amount_cents: number;
+        }>(
+          'SELECT item_id, amount_cents FROM wishlist_reserves WHERE transaction_id = ?',
+          [transactionId]
+        );
+        if (reserve) {
+          const item = await this.db.getFirstAsync<{ target_cents: number; reserved_cents: number }>(
+            'SELECT target_cents, reserved_cents FROM wishlist_items WHERE id = ?',
+            [reserve.item_id]
+          );
+          if (!item) throw new Error('Item da reserva não encontrado');
+          const nextReserved = item.reserved_cents - reserve.amount_cents + newAmount;
+          if (nextReserved < 0 || nextReserved > item.target_cents) {
+            throw new Error('O valor da transferência ultrapassa o saldo que falta reservar para este item');
+          }
+          const destination = await this.db.getFirstAsync<{ type: string }>(
+            'SELECT type FROM accounts WHERE id = ?',
+            [to]
+          );
+          if (!destination) throw new Error('Conta de destino não encontrada');
+          await this.db.runAsync(
+            'UPDATE wishlist_items SET reserved_cents = ? WHERE id = ?',
+            [nextReserved, reserve.item_id]
+          );
+          await this.db.runAsync(
+            `UPDATE wishlist_reserves
+                SET from_account_id = ?, to_account_id = ?, amount_cents = ?, is_poupanca = ?
+              WHERE transaction_id = ?`,
+            [from, to, newAmount, destination.type === 'SAVINGS' ? 1 : 0, transactionId]
+          );
+        }
         await this.db.runAsync('UPDATE transactions SET account_id = ?, transfer_account_id = ? WHERE id = ?', [from, to, transactionId]);
         const moves = await this.moves.getByTransaction(transactionId);
         for (const m of moves) {

@@ -429,7 +429,7 @@ describe('v69 · 6 — Poupança do Fluxo (cabeçalho, programado, falta, transf
     expect(o.effectedCents).toBe(0);
   });
 
-  test('"Falta transferir" desconta o que já foi transferido (10 mil − 500 = 9.500)', async () => {
+  test('saldo final abaixo do plano mensal não mostra valor programado positivo', async () => {
     const origem = await seedAccount(ctx.db, 'Conta F', 10_000);
     const destino = await seedAccount(ctx.db, 'Poupança F', 0);
     // dia 28 (ainda não venceu): a previsão do mês nasce PENDING — preciso transferir 10 mil
@@ -439,10 +439,10 @@ describe('v69 · 6 — Poupança do Fluxo (cabeçalho, programado, falta, transf
     // transfere 500 manualmente (CONFIRMED) para a conta poupança do plano — "já transferido"
     await tx.createTransfer({ fromAccountId: origem, toAccountId: destino, amountCents: 500, date: '2026-11-02', description: 'Poupança avulsa' });
     const o = await ctx.services.savings.getMonthOverview('2026-11');
-    // programado = 10.000 (previsão do plano mensal do mês); efetivado = 500 (transferência confirmada)
-    expect(o.programadoCents).toBe(10_000);
+    // O saldo final agregado é zero; subtrair a modalidade mensal mantém o valor em zero.
+    expect(o.programadoCents).toBe(0);
     expect(o.effectedCents).toBe(500);
-    expect(o.remainingCents).toBe(9_500);
+    expect(o.remainingCents).toBe(0);
     // plano aparece mesmo assim (é do MONTHLY, com valor)
     expect(o.plans).toHaveLength(1);
     expect(o.plans[0].amountCents).toBe(10_000);
@@ -462,8 +462,8 @@ describe('v69 · 6 — Poupança do Fluxo (cabeçalho, programado, falta, transf
     await tx.createTransfer({ fromAccountId: origem, toAccountId: destino, amountCents: 300, date: '2026-12-05', description: 'T2' });
     const o = await ctx.services.savings.getMonthOverview('2026-11');
     expect(o.effectedCents).toBe(700);
-    expect(o.programadoCents).toBe(700); // previsão do plano (PENDING) + avulsa confirmada (não duplica)
-    expect(o.remainingCents).toBe(0);
+    expect(o.programadoCents).toBe(19_300); // saldo do fim do mês menos a modalidade mensal
+    expect(o.remainingCents).toBe(18_600); // desconta a transferência confirmada
   });
 });
 

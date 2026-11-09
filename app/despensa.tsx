@@ -5,10 +5,9 @@
 import React from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { showToast } from '../lib/toast';
-import { Screen, Card, TextField, Select, Button, EmptyState, SectionTitle } from '../src/components/ui';
+import { Screen, Card, TextField, Select, Button, EmptyState } from '../src/components/ui';
 import { useDataEffect } from '../src/components/useDataEffect';
 import { useAppStore } from '../src/store/appStore';
-import { genId } from '../src/lib/id';
 
 interface PantryItem {
   product_id: string;
@@ -26,7 +25,7 @@ export default function DespensaScreen() {
   const [tab, setTab] = React.useState<'LIST' | 'NEW'>('LIST');
   const [name, setName] = React.useState('');
   const [ean, setEan] = React.useState('');
-  const [unit, setUnit] = React.useState<string | null>('UN');
+  const [unit, setUnit] = React.useState<'UN' | 'G' | 'KG'>('UN');
   const [threshold, setThreshold] = React.useState('');
 
   const load = React.useCallback(async () => {
@@ -42,7 +41,8 @@ export default function DespensaScreen() {
       const product = await services.products.createManualProduct({
         name: name.trim(),
         ean: ean.trim() ? ean.trim() : null,
-        baseUnit: (unit as 'G' | 'ML' | 'UN') ?? 'UN',
+        baseUnit: unit === 'KG' ? 'G' : unit,
+        unitMeasure: unit,
       });
       const th = parseInt(threshold, 10);
       await services.pantry.setLowThreshold(product.id, Number.isInteger(th) ? th : null);
@@ -73,12 +73,43 @@ export default function DespensaScreen() {
   const units = [
     { id: 'UN', label: 'Unidade' },
     { id: 'G', label: 'Gramas' },
-    { id: 'ML', label: 'Mililitros' },
+    { id: 'KG', label: 'Quilos' },
   ];
 
   return (
-    <Screen title="Despensa">
-      {items.length === 0 ? (
+    <Screen
+      title={tab === 'NEW' ? 'Novo produto' : 'Despensa'}
+      action={tab === 'NEW' ? (
+        <Pressable
+          onPress={() => setTab('LIST')}
+          accessibilityRole="button"
+          accessibilityLabel="Cancelar cadastro de produto"
+          className="rounded-xl bg-slate-100 px-3 py-2"
+        >
+          <Text className="font-semibold text-slate-600">Cancelar</Text>
+        </Pressable>
+      ) : (
+        <Pressable
+          onPress={() => setTab('NEW')}
+          accessibilityRole="button"
+          accessibilityLabel="Cadastrar produto"
+          className="rounded-xl bg-emerald-600 px-4 py-2"
+        >
+          <Text className="text-lg font-bold leading-6 text-white">＋</Text>
+        </Pressable>
+      )}
+    >
+      {tab === 'NEW' ? (
+        <Card className="gap-3">
+          <TextField label="Nome" value={name} onChangeText={setName} placeholder="Ex.: Arroz 5kg" />
+          <TextField label="EAN/GTIN (opcional)" value={ean} onChangeText={setEan} keyboardType="numeric" placeholder="789..." />
+          <Select label="Unidade base" items={units} selectedId={unit} onSelect={(value) => {
+            if (value === 'UN' || value === 'G' || value === 'KG') setUnit(value);
+          }} />
+          <TextField label="Alerta de estoque baixo (na unidade base)" value={threshold} onChangeText={setThreshold} keyboardType="numeric" placeholder="Ex.: 1000" />
+          <Button label="Cadastrar produto" onPress={addProduct} />
+        </Card>
+      ) : items.length === 0 ? (
         <EmptyState icon="🧺" title="Despensa vazia" hint="Produtos aparecem aqui via NFC-e ou cadastro manual." />
       ) : (
         items.map((item) => (
@@ -90,15 +121,6 @@ export default function DespensaScreen() {
           />
         ))
       )}
-
-      <SectionTitle>Novo produto</SectionTitle>
-      <Card className="gap-3">
-        <TextField label="Nome" value={name} onChangeText={setName} placeholder="Ex.: Arroz 5kg" />
-        <TextField label="EAN/GTIN (opcional)" value={ean} onChangeText={setEan} keyboardType="numeric" placeholder="789..." />
-        <Select label="Unidade base" items={units} selectedId={unit} onSelect={setUnit} />
-        <TextField label="Alerta de estoque baixo (na unidade base)" value={threshold} onChangeText={setThreshold} keyboardType="numeric" placeholder="Ex.: 1000" />
-        <Button label="Cadastrar produto" onPress={addProduct} />
-      </Card>
     </Screen>
   );
 }

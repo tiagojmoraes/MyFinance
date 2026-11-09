@@ -13,7 +13,8 @@
 import React from 'react';
 import { View, Text } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { Screen, Card, TextField, Select, Button, DateField } from '../src/components/ui';
+import { Screen, Card, Select, Button, DateField } from '../src/components/ui';
+import { BankCarousel } from '../src/components/BankCarousel';
 import { MoneyInput } from '../src/components/MoneyInput';
 import { useDataEffect } from '../src/components/useDataEffect';
 import { useAppStore } from '../src/store/appStore';
@@ -22,6 +23,7 @@ import { genId } from '../src/lib/id';
 import { todaySP } from '../src/lib/dates';
 import { formatBRL } from '../src/lib/money';
 import { ICONS } from '../src/theme/icons';
+import { BANK_INSTITUTIONS, bankByCode } from '../src/lib/banks';
 
 export default function ContaNovaScreen() {
   const services = useDataEffect();
@@ -29,8 +31,8 @@ export default function ContaNovaScreen() {
   const params = useLocalSearchParams<{ edit?: string }>();
   const editId = params.edit ? String(params.edit) : null;
 
-  const [name, setName] = React.useState('');
   const [type, setType] = React.useState<string | null>('CHECKING');
+  const [bankCode, setBankCode] = React.useState<string | null>(null);
   const [initialCents, setInitialCents] = React.useState(0);
   // v20: data âncora do saldo inicial — nova conta nasce com HOJE
   const [initialDate, setInitialDate] = React.useState<string>(todaySP());
@@ -41,11 +43,11 @@ export default function ContaNovaScreen() {
     if (loaded) return;
     if (editId) {
       const acc = await svc.db.getFirstAsync<{
-        name: string; type: string; initial_balance_cents: number; initial_balance_date: string | null;
-      }>('SELECT name, type, initial_balance_cents, initial_balance_date FROM accounts WHERE id = ?', [editId]);
+        name: string; type: string; bank_code: string | null; initial_balance_cents: number; initial_balance_date: string | null;
+      }>('SELECT name, type, bank_code, initial_balance_cents, initial_balance_date FROM accounts WHERE id = ?', [editId]);
       if (acc) {
-        setName(acc.name);
         setType(acc.type);
+        setBankCode(acc.bank_code);
         setInitialCents(acc.initial_balance_cents);
         setInitialDate(acc.initial_balance_date ?? '');
       } else {
@@ -57,26 +59,31 @@ export default function ContaNovaScreen() {
   });
 
   const save = async () => {
-    if (!name.trim()) {
-      showToast('Informe o nome da conta', 'err');
-      return;
-    }
     if (!type) {
       showToast('Selecione o tipo', 'err');
       return;
     }
+    const bank = type === 'CASH'
+      ? null
+      : BANK_INSTITUTIONS.find((institution) => institution.code === bankCode) ?? bankByCode(bankCode);
+    if (type !== 'CASH' && !bank) {
+      showToast('Escolha a instituição financeira', 'err');
+      return;
+    }
+    const name = bank?.name ?? 'Dinheiro';
+    const selectedBankCode = bank?.code ?? null;
     setSaving(true);
     try {
       if (editId) {
         await services.db.runAsync(
-          'UPDATE accounts SET name = ?, type = ?, initial_balance_cents = ?, initial_balance_date = ? WHERE id = ?',
-          [name.trim(), type, initialCents, initialDate || null, editId]
+          'UPDATE accounts SET name = ?, type = ?, bank_code = ?, initial_balance_cents = ?, initial_balance_date = ? WHERE id = ?',
+          [name, type, selectedBankCode, initialCents, initialDate || null, editId]
         );
         showToast('Conta alterada');
       } else {
         await services.db.runAsync(
-          'INSERT INTO accounts (id, name, type, initial_balance_cents, initial_balance_date, include_in_general_balance, archived_at) VALUES (?,?,?,?,?,1,NULL)',
-          [genId(), name.trim(), type, initialCents, initialDate || null]
+          'INSERT INTO accounts (id, name, type, bank_code, initial_balance_cents, initial_balance_date, include_in_general_balance, archived_at) VALUES (?,?,?,?,?,?,1,NULL)',
+          [genId(), name, type, selectedBankCode, initialCents, initialDate || null]
         );
         showToast(`Conta criada — saldo inicial ${formatBRL(initialCents)}`);
       }
@@ -92,7 +99,6 @@ export default function ContaNovaScreen() {
   return (
     <Screen title={editId ? 'Alterar conta' : 'Nova conta'} subtitle={editId ? undefined : 'Cadastre corrente, poupança ou dinheiro'}>
       <Card className="gap-3">
-        <TextField label="Nome" value={name} onChangeText={setName} placeholder="Ex.: Banco Principal" />
         <Select
           label="Tipo"
           items={[
@@ -101,8 +107,12 @@ export default function ContaNovaScreen() {
             { id: 'CASH', label: 'Dinheiro' },
           ]}
           selectedId={type}
-          onSelect={(v) => setType(v)}
+          onSelect={(v) => {
+            setType(v);
+            if (v === 'CASH') setBankCode(null);
+          }}
         />
+        {type !== 'CASH' ? <BankCarousel value={bankCode} onChange={setBankCode} /> : null}
         <MoneyInput label="Saldo inicial" cents={initialCents} onChangeCents={setInitialCents} />
         <DateField label="Data do saldo inicial" value={initialDate} onChange={setInitialDate} />
         <Text className="text-[11px] text-slate-400 leading-4 -mt-1">

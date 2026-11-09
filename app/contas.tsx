@@ -52,26 +52,26 @@ export default function ContasScreen() {
       id: string; name: string; type: string; initial_balance_cents: number;
       initial_balance_date: string | null;
       include_in_general_balance: number; archived_at: string | null;
-    }>("SELECT id, name, type, initial_balance_cents, initial_balance_date, include_in_general_balance, archived_at FROM accounts ORDER BY archived_at IS NOT NULL, name");
-    const items: AccountItem[] = [];
-    for (const r of rows) {
-      const moves = await svc.db.getFirstAsync<{ n: number }>(
-        "SELECT COUNT(*) AS n FROM financial_moves WHERE account_id = ? AND status = 'CONFIRMED'",
-        [r.id]
-      );
-      // v20: o saldo exibido respeita a âncora — movimentos ANTERIORES à data
-      // do saldo inicial já estão dentro dele (não somam); antes dela, saldo 0.
-      const anchored = !r.initial_balance_date || todaySP() >= r.initial_balance_date;
-      const mv = anchored
-        ? await svc.db.getFirstAsync<{ credits: number; debits: number }>(
-            `SELECT COALESCE(SUM(CASE WHEN direction = 'CREDIT' THEN amount_cents ELSE 0 END), 0) AS credits,
-                    COALESCE(SUM(CASE WHEN direction = 'DEBIT' THEN amount_cents ELSE 0 END), 0) AS debits
-               FROM financial_moves WHERE account_id = ? AND status = 'CONFIRMED' AND effective_date <= date('now', '+1 day')
-                 AND effective_date >= COALESCE(?, '0000-01-01')`,
-            [r.id, r.initial_balance_date]
-          )
-        : null;
-      items.push({
+      movement_cents: number;
+      moves: number;
+    }>(`SELECT a.id, a.name, a.type, a.initial_balance_cents, a.initial_balance_date,
+               a.include_in_general_balance, a.archived_at,
+               COUNT(fm.id) AS moves,
+               COALESCE(SUM(CASE
+                 WHEN fm.effective_date <= date('now', '+1 day')
+                   AND fm.effective_date >= COALESCE(a.initial_balance_date, '0000-01-01')
+                 THEN CASE WHEN fm.direction = 'CREDIT' THEN fm.amount_cents ELSE -fm.amount_cents END
+                 ELSE 0
+               END), 0) AS movement_cents
+          FROM accounts a
+          LEFT JOIN financial_moves fm ON fm.account_id = a.id AND fm.status = 'CONFIRMED'
+         GROUP BY a.id
+         ORDER BY a.archived_at IS NOT NULL, a.name`);
+    const today = todaySP();
+    const items: AccountItem[] = rows.map((r) => {
+      // O saldo inicial vale no início da data âncora; antes dela, o saldo é zero.
+      const anchored = !r.initial_balance_date || today >= r.initial_balance_date;
+      return {
         id: r.id,
         name: r.name,
         type: r.type,
@@ -79,12 +79,10 @@ export default function ContasScreen() {
         initialDate: r.initial_balance_date,
         include: r.include_in_general_balance === 1,
         archived: !!r.archived_at,
-        balance: anchored
-          ? r.initial_balance_cents + (mv?.credits ?? 0) - (mv?.debits ?? 0)
-          : 0,
-        moves: moves?.n ?? 0,
-      });
-    }
+        balance: anchored ? r.initial_balance_cents + r.movement_cents : 0,
+        moves: r.moves,
+      };
+    });
     setAccounts(items);
   }, [services]);
 

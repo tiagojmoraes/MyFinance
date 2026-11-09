@@ -12,9 +12,9 @@
  *    do mês (previsão se futura).
  *
  * Card no Fluxo (recolhido → expandir):
- *  · PREVISÃO  = soma do programado do mês visto (mensal + estimativas);
+ *  · PROGRAMADO = saldo efetivado do fim do mês menos os lançamentos mensais;
  *  · EFETIVADO = soma das transferências já CONFIRMADAS do mês;
- *  · FALTA     = previsto − efetivado (decisão "Meta soma").
+ *  · FALTA     = programado − efetivado.
  */
 
 import type { DbDriver } from '../db/types';
@@ -57,13 +57,11 @@ export interface SavingsEntryView {
 
 export interface SavingsMonthOverview {
   entries: SavingsEntryView[];
-  /** Programado do mês vindo de PREVISÕES/EFETIVADAS (transferências do plano). */
+  /** Soma das entradas mensais e de fechamento registradas no mês. */
   plannedCents: number;
   /**
-   * v69 (BUG "R$ 0,00 no cabeçalho") — PROGRAMADO p/ poupança do mês:
-   * previsões do mês + ESTIMATIVA do fechamento (o saldo que SOBRARIA no fim
-   * do mês quando a modalidade "Fechamento do mês" está cadastrada — antes do
-   * usuário confirmar, o número já aparece aqui).
+   * Programado mensal = saldo efetivado no fim do mês menos as entradas da
+   * modalidade mensal; no fechamento, usa a estimativa ou entrada já criada.
    */
   programadoCents: number;
   /** Transferências efetivadas do mês ("Já transferido p/ poupança"). */
@@ -183,12 +181,12 @@ export class SavingsService {
             AND transaction_id IN (SELECT id FROM transactions WHERE status = 'PENDING')`,
         [planId]
       );
+      await this.db.runAsync('DELETE FROM savings_entries WHERE plan_id = ?', [planId]);
       for (const row of pend) {
         if (!row.transaction_id) continue;
         await this.db.runAsync('DELETE FROM financial_moves WHERE transaction_id = ?', [row.transaction_id]);
         await this.db.runAsync('DELETE FROM transactions WHERE id = ?', [row.transaction_id]);
       }
-      await this.db.runAsync('DELETE FROM savings_entries WHERE plan_id = ?', [planId]);
       await this.db.runAsync('DELETE FROM savings_plans WHERE id = ?', [planId]);
     });
   }
@@ -446,10 +444,10 @@ export class SavingsService {
     // refeito A CADA leitura — alterou data/valor/lançamento/transferência →
     // o número acompanha (nada de valor travado/antigo). Antes de ler qualquer
     // coisa: as leituras abaixo já saem atualizadas.
-    const hasClosingPlan = await this.db.getFirstAsync<{ id: string }>(
+    const closingPlanExists = await this.db.getFirstAsync<{ id: string }>(
       `SELECT id FROM savings_plans WHERE mode = 'CLOSING' AND is_active = 1 LIMIT 1`
     );
-    const closingAllocations = hasClosingPlan ? await this.getClosingAllocationsCents(month) : 0;
+    const closingAllocations = closingPlanExists ? await this.getClosingAllocationsCents(month) : 0;
     try {
       await this.recalcClosing(month, closingAllocations);
     } catch {
@@ -471,7 +469,7 @@ export class SavingsService {
               t.occurred_on AS tx_date, t.description AS tx_description
          FROM savings_entries se
          LEFT JOIN transactions t ON t.id = se.transaction_id
-        WHERE se.month = ?
+        WHERE se.month = ? AND se.transaction_id IS NOT NULL
         ORDER BY t.occurred_on`,
       [month]
     );
@@ -524,11 +522,25 @@ export class SavingsService {
     } catch {
       closingSince = null;
     }
-    // v69 (BUG do cabeçalho "R$ 0,00"): PROGRAMADO p/ poupança inclui a
-    // ESTIMATIVA do fechamento — o saldo que sobraria no fim do mês quando a
-    // modalidade "Fechamento do mês" está cadastrada. Antes da confirmação o
-    // número não existia (não há transferência criada) e o card ficava em 0.
-    const programado = planned + (closingSuggestion?.amountCents ?? 0);
+    const monthlyProgrammed = entries
+      .filter((entry) => entry.kind === 'MONTHLY')
+      .reduce((total, entry) => total + entry.amountCents, 0);
+    const closingEntryAmount = entries
+      .filter((entry) => entry.kind === 'CLOSING')
+      .reduce((total, entry) => total + entry.amountCents, 0);
+    const hasMonthlyPlan = plans.some((plan) => plan.mode === 'MONTHLY');
+    const hasClosingPlan = plans.some((plan) => plan.mode === 'CLOSING');
+    let programado = 0;
+    if (hasMonthlyPlan) {
+      const endDate = `${month}-${String(lastDayNumberOf(month)).padStart(2, '0')}`;
+      const daily = await this.balance.getDailyBalancesDual(month);
+      const endBalance = hasClosingPlan
+        ? closingSuggestion?.amountCents ?? closingEntryAmount
+        : daily.efetivado[endDate] ?? 0;
+      programado = Math.max(0, endBalance - monthlyProgrammed);
+    } else if (hasClosingPlan) {
+      programado = closingSuggestion?.amountCents ?? closingEntryAmount;
+    }
     // v69 — "Já transferido p/ poupança" também conta as TRANSFERÊNCIAS AVULSAS
     // do usuário (CONFIRMADAS no mês) cujo DESTINO é a conta de poupança de um
     // plano ativo — sem contar duas vezes (entries) e sem misturar com as

@@ -11,6 +11,8 @@ import React from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { Screen, Card, TextField, Select, Button } from '../src/components/ui';
+import { BankCarousel } from '../src/components/BankCarousel';
+import { BANK_INSTITUTIONS } from '../src/lib/banks';
 import { useDataEffect } from '../src/components/useDataEffect';
 import { useAppStore } from '../src/store/appStore';
 import { showToast } from '../lib/toast';
@@ -20,7 +22,7 @@ import { ICONS } from '../src/theme/icons';
 export default function CartaoNovoScreen() {
   const services = useDataEffect();
   const bump = useAppStore((s) => s.bump);
-  const [name, setName] = React.useState('');
+  const [bankCode, setBankCode] = React.useState<string | null>(null);
   const [last4, setLast4] = React.useState('');
   const [closingDay, setClosingDay] = React.useState('15');
   const [dueDay, setDueDay] = React.useState('10');
@@ -39,25 +41,29 @@ export default function CartaoNovoScreen() {
     try {
       const closing = parseInt(closingDay, 10);
       const due = parseInt(dueDay, 10);
-      if (!name.trim()) throw new Error('Informe o nome do cartão');
+      const bank = BANK_INSTITUTIONS.find((institution) => institution.code === bankCode);
+      if (!bank) throw new Error('Escolha a instituição financeira');
       if (!Number.isInteger(closing) || closing < 1 || closing > 31) throw new Error('Dia do fechamento entre 1 e 31');
       if (!Number.isInteger(due) || due < 1 || due > 31) throw new Error('Dia do vencimento entre 1 e 31');
+      setSaving(true);
       await services.db.runAsync(
         'INSERT INTO cards (id, name, last_four_digits, closing_day, due_day, linked_account_id, limit_cents, archived_at) VALUES (?,?,?,?,?,?,NULL,NULL)',
-        [genId(), name.trim(), last4.trim() || null, closing, due, linkedId]
+        [genId(), bank.name, last4.trim() || null, closing, due, linkedId]
       );
       showToast('Cartão criado');
       bump();
       router.back();
     } catch (err) {
       showToast(err instanceof Error ? err.message : String(err), 'err');
+    } finally {
+      setSaving(false);
     }
   };
 
   return (
     <Screen title="Novo cartão de crédito" subtitle="Fechamento, vencimento e conta de pagamento">
       <Card className="gap-3">
-        <TextField label="Nome" value={name} onChangeText={setName} placeholder="Ex.: Nubank" />
+        <BankCarousel value={bankCode} onChange={setBankCode} />
         <TextField label="Últimos 4 dígitos (opcional)" value={last4} onChangeText={setLast4} placeholder="1234" keyboardType="numeric" />
         <View className="flex-row gap-2">
           <View className="flex-1">

@@ -1,7 +1,14 @@
 /** Fase 4 — NFC-e: Header First (ARQ-008), idempotência, resolução e estoque. */
 
 import { makeCtx, expectRejects } from './helpers';
-import { extractAccessKey, parseNfceHeader, parseNfceItems, convertToBaseUnit } from '../parsers/nfce';
+import {
+  accessKeyDv,
+  checkAccessKey,
+  extractAccessKey,
+  parseNfceHeader,
+  parseNfceItems,
+  convertToBaseUnit,
+} from '../parsers/nfce';
 
 const NFC_HTML = `
 <html><body>
@@ -22,6 +29,23 @@ const NFC_HTML = `
 const KEY = '35260514214169000187650010000012341234567890';
 
 describe('NfceService — ARQ-008', () => {
+  test.each([
+    ['65', true],
+    ['55', false],
+  ])('mantém contrato dos campos da chave no layout modelo %s', (model, expectedOk) => {
+    const key43 = `35260514214169000187${model}001000001234112345678`;
+    const key = `${key43}${accessKeyDv(key43)}`;
+    const checked = checkAccessKey(key);
+
+    expect(key).toHaveLength(44);
+    expect(checked.modelo).toBe(model);
+    expect(checked.ufCode).toBe('35');
+    expect(checked.year).toBe(2026);
+    expect(checked.month).toBe(5);
+    expect(checked.ok).toBe(expectedOk);
+    expect(extractAccessKey(`https://sefaz.example/consulta?p=${key}|2|1`)).toBe(key);
+  });
+
   test('extrai chave de 44 dígitos de URL de QR Code', async () => {
     const url = `https://nfce.fazenda.sp.gov.br/consultacompleta.aspx?chaveAcesso=${KEY}`;
     expect(extractAccessKey(url)).toBe(KEY);

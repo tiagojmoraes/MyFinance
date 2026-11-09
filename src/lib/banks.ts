@@ -36,6 +36,11 @@ export const BANK_CATALOG: BankInfo[] = [
 // Dedup por código (Inter duplicado acima é só fallback)
 export const BANKS_BY_CODE = new Map<string, BankInfo>();
 for (const b of BANK_CATALOG) if (!BANKS_BY_CODE.has(b.code)) BANKS_BY_CODE.set(b.code, b);
+export const BANK_INSTITUTIONS = ['077', '341', '104']
+  .map((code) => BANKS_BY_CODE.get(code))
+  .filter((bank): bank is BankInfo => bank != null)
+  .map((bank) => bank.code === '104' ? { ...bank, name: 'Caixa Econômica Federal' } : bank);
+
 export function bankByCode(code: string | null | undefined): BankInfo | null {
   if (!code) return null;
   return BANKS_BY_CODE.get(code) ?? null;

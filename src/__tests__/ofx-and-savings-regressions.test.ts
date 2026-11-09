@@ -356,7 +356,7 @@ describe('v70 · 7 — versão coerente, splash e LIMPEZA da raiz', () => {
   const root = path.join(__dirname, '..', '..');
 
   // v71: a versão EXATA do momento é travada no teste da versão corrente
-  // (v71.test.ts) — aqui o contrato é package.json e app.json ALINHADOS.
+  // (bank-notifications.test.ts) — aqui o contrato é package.json e app.json ALINHADOS.
   test('package.json e app.json na MESMA versão (seguindo X.Y.Z)', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     const appJson = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'));

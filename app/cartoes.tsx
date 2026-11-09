@@ -36,12 +36,10 @@ export default function CartoesScreen() {
       id: string; name: string; last_four_digits: string | null; closing_day: number;
       due_day: number; limit_cents: number | null; archived_at: string | null;
     }>('SELECT id, name, last_four_digits, closing_day, due_day, limit_cents, archived_at FROM cards ORDER BY archived_at IS NOT NULL, name');
-    const items: CardItem[] = [];
-    for (const card of rows) {
-      // v67 (BUG 6): topo de cada cartão = a PRÓXIMA fatura em aberto (a mais
-      // antiga ainda em aberto — a próxima a pagar), NÃO a mais nova.
-      const next = await svc.invoices.getNextOpenInvoice(card.id);
-      items.push({
+    const nextInvoices = await svc.invoices.getNextOpenInvoices(rows.map((card) => card.id));
+    const items: CardItem[] = rows.map((card) => {
+      const next = nextInvoices.get(card.id);
+      return {
         id: card.id,
         name: card.name,
         last_four_digits: card.last_four_digits,
@@ -50,8 +48,8 @@ export default function CartoesScreen() {
         limit_cents: card.limit_cents,
         archived: !!card.archived_at,
         openInvoice: next ? { id: next.invoice.id, dueCents: next.dueCents, liveStatus: next.liveStatus } : null,
-      });
-    }
+      };
+    });
     setCards(items);
   });
 

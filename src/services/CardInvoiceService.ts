@@ -547,6 +547,40 @@ export class CardInvoiceService {
     return open[0] ?? null;
   }
 
+  /** Próxima fatura em aberto de vários cartões, em uma única consulta. */
+  async getNextOpenInvoices(cardIds: string[]): Promise<Map<string, {
+    invoice: InvoiceRow;
+    liveStatus: InvoiceStatusView;
+    dueCents: number;
+  }>> {
+    const result = new Map<string, {
+      invoice: InvoiceRow;
+      liveStatus: InvoiceStatusView;
+      dueCents: number;
+    }>();
+    if (cardIds.length === 0) return result;
+
+    const rows = await this.db.getAllAsync<InvoiceRow>(
+      `SELECT id, card_id, reference_month, period_start, period_end, due_date,
+              total_cents, paid_cents, credit_from_prev_cents, status
+         FROM invoices
+        WHERE card_id IN (${cardIds.map(() => '?').join(',')})
+        ORDER BY card_id, reference_month`,
+      cardIds
+    );
+    for (const invoice of rows) {
+      if (result.has(invoice.card_id)) continue;
+      const liveStatus = this.computeLiveStatus(invoice);
+      if (liveStatus !== 'OPEN' && liveStatus !== 'PARTIALLY_PAID' && liveStatus !== 'OVERDUE') continue;
+      result.set(invoice.card_id, {
+        invoice,
+        liveStatus,
+        dueCents: Math.max(0, invoice.total_cents - invoice.credit_from_prev_cents - invoice.paid_cents),
+      });
+    }
+    return result;
+  }
+
   /** Faturas em aberto (alertas da tela Início — separadas do saldo). */
   async listOpenInvoices() {
     const rows = await this.invoices.listOpen();

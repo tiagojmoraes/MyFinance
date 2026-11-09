@@ -1,4 +1,4 @@
-# COMEÇAR AQUI — v72
+# COMEÇAR AQUI — v74
 
 ## Preparar o projeto
 | Erro que deu | Motivo | Como foi arrumado |
@@ -33,6 +33,16 @@ npm list query-string
 npm run dev
 ```
 Escaneie o QR code com o Expo Go.
+
+## Testes
+
+- `npm test` executa as suítes mantidas para os fluxos atuais e os domínios
+  principais, aplicando limites de cobertura dos serviços.
+- `npm run typecheck` valida os tipos.
+
+A bateria Jest não renderiza nem automatiza todas as telas e navegações nativas.
+Os limites são um piso para regras em serviços — não uma garantia de que todo
+fluxo de interface foi exercitado no aparelho.
 
 ## Se der erro, olha aqui primeiro (antes de mandar print)
 
@@ -89,8 +99,6 @@ Escaneie o QR code com o Expo Go.
 | QR no lançamento | Novo Lançamento | "Colar e consultar" ficou BRANCO no modal escuro; com nota lida, o campo "Categoria (opcional)" sai (a categoria vem de cada item) |
 | Desempenho | Geral | Saldo do dia memoizado; linhas do Fluxo/Despensa/Catálogo memoizadas; Orçamento/Poupança só recalculam quando muda mês ou lançamento |
 
-Testes desta versão: `npm run test:bateria68` (38 testes) — ou tudo: `npm run test:all` (59 suítes / 1609 testes).
-
 ---
 
 ## Novidade v67 (o que mudou nesta versão)
@@ -106,5 +114,3 @@ Testes desta versão: `npm run test:bateria68` (38 testes) — ou tudo: `npm run
 | NFC-e item a item | Revisão da nota | Sugestão fuzzy com "É esse / É outro / + Produto novo / Ignorar"; novo produto é classificado na hora (categoria de despesa); pergunta "Incluir no estoque?" — não: "Apenas agora" ou "Sempre" (NUNCA, gravado) |
 | Catálogo de Produto | Cadastro | Entrou no menu do Cadastro com o nome "Catálogo de Produto"; lista SEM EAN; excluir SÓ desvincula (notas/lançamentos ficam) |
 | Recorrências/Parcelamentos | Fluxo | Atalhos saíram da tela Fluxo (os lançamentos continuam na lista; telas acessíveis pela Home) |
-
-Testes desta versão: `npm run test:bateria67` (27 testes) — ou tudo: `npm run test:all`.

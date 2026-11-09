@@ -192,7 +192,7 @@ function suggestInvoiceMonth(closingDay: number, dateYmd: string): string {
 }
 
 export default function LancamentoScreen() {
-  const params = useLocalSearchParams<{ card?: string; dup?: string; edit?: string; grupo?: string; msg?: string }>();
+  const params = useLocalSearchParams<{ card?: string; dup?: string; edit?: string; grupo?: string; msg?: string; returnMonth?: string; editDate?: string }>();
   const services = useDataEffect();
   const bump = useAppStore((s) => s.bump);
 
@@ -294,7 +294,7 @@ export default function LancamentoScreen() {
         setEditKind('CONSOLIDATED');
         setKind('CONSOLIDATED');
         setGroupDescription(row.description ?? '');
-        setDate(row.occurred_on);
+        setDate(row.kind === 'CONSOLIDATED' && params.editDate ? String(params.editDate) : row.occurred_on);
         return;
       }
       if (row && row.kind === 'SIMPLE') {
@@ -593,7 +593,8 @@ export default function LancamentoScreen() {
           });
         }
         bump();
-        router.replace('/fluxo');
+        if (params.returnMonth && router.canGoBack()) router.back();
+        else router.replace('/fluxo');
         return;
       }
 
@@ -1089,7 +1090,7 @@ export default function LancamentoScreen() {
                       active ? `${kindTheme[k].solid} border-transparent` : `${theme.surface} ${theme.border} border`
                     }`}
                   >
-                    <Text className="text-xl leading-6">{KIND_ICONS[k]}</Text>
+                    <Text className={`text-xl leading-6 ${active && k === 'TRANSFER' ? 'text-white' : ''}`}>{KIND_ICONS[k]}</Text>
                     <Text className={`text-[10px] font-semibold ${active ? 'text-white' : theme.textMuted}`}>
                       {kindTheme[k].label}
                     </Text>

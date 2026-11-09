@@ -1,6 +1,6 @@
 /**
  * v68 — BUGS do Fluxo + MELHORIAS de Ajustes/Cadastros + "Repetir" (pedido do usuário).
- *  Roda: npx jest src/__tests__/v68.test.ts
+ *  Roda: npm test -- --runInBand src/__tests__/budgets-and-savings-flow.test.ts
  *
  *  FLUXO (BUGS):
  *   1. "Orçado • Previsto • Gasto" ao expandir o Orçamento (Orçado = limite;
@@ -116,11 +116,12 @@ describe('v68 FLUXO 2 — Poupança expandida mostra o plano cadastrado', () => 
     expect(pn?.faltaCents).toBe(30_000);
   });
 
-  test('a tela mostra Modalidade e Valor do plano, guardado e falta', () => {
+  test('o card simplificado mostra apenas programado, falta e efetivado', () => {
     const src = fluxoSrc();
-    expect(src).toContain('Modalidade: ${p.modalityLabel} · Valor:');
-    expect(src).toContain('guardado {formatBRL(p.guardadoCents)}');
-    expect(src).toContain('falta ${formatBRL(p.faltaCents)}');
+    expect(src).toContain('subtitle="Programado p/ poupança"');
+    expect(src).toContain('Falta transferir');
+    expect(src).toContain('Já transferiu p/ poupança');
+    expect(src).not.toContain('Modalidade: ${p.modalityLabel} · Valor:');
   });
 });
 

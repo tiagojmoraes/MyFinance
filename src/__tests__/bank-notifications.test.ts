@@ -271,10 +271,10 @@ describe('v71 · 4 — módulo nativo Android (captura da barra do sistema)', ()
     expect(servico).not.toContain('TODO');
   });
 
-  test('versão do projeto: package.json e app.json em 73.0.0', () => {
+  test('versão do projeto: package.json e app.json em 74.0.0', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
-    expect(pkg.version).toBe('73.0.0');
+    expect(pkg.version).toBe('74.0.0');
     const appJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'app.json'), 'utf8'));
-    expect(appJson.expo.version).toBe('73.0.0');
+    expect(appJson.expo.version).toBe('74.0.0');
   });
 });

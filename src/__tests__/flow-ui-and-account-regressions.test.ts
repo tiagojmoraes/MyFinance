@@ -1,6 +1,6 @@
 /**
  * v67 — CORREÇÕES DOS 6 BUGs + 3 MELHORIAS (pedido do usuário).
- *  Roda: npx jest src/__tests__/v67-correcoes.test.ts
+ *  Roda: npm test -- --runInBand src/__tests__/flow-ui-and-account-regressions.test.ts
  *
  *  BUG 1 — Fluxo: cabeçalho do dia em LINHAS EMPILHADAS (saldo do dia
  *          Previsto/Efetivado não divide mais a linha com orçamentos/poupança).
@@ -136,7 +136,7 @@ describe('v67 BUG 1 (atualizado na v68) — saldo do dia sem bloco de orçamento
   test('rótulos da Poupança não competem com o vocabulário do saldo do dia', () => {
     const src = fluxoSrc();
     expect(src).toContain('Programado p/ poupança');
-    expect(src).toContain('Já transferido p/ poupança');
+    expect(src).toContain('Já transferiu p/ poupança');
     expect(src).not.toContain('Previsão do mês (programado)');
     expect(src).not.toContain('Falta (a efetivar)');
   });

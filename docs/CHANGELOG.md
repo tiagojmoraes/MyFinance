@@ -4,8 +4,35 @@ Histórico UNIFICADO do projeto (1 arquivo). Os guias antigos de cada versão
 (BATERIA-v*, OTIMIZACAO-v*, etc.) foram movidos para `docs/arquivo/` — continuam
 disponíveis, mas fora da raiz.
 
-Como rodar os testes: `BATERIA-COMO-RODAR.md` (raiz) · Começar de novo:
-`COMEÇAR-AQUI.md` (raiz).
+Como rodar os testes: `npm test` · Instruções iniciais: `COMEÇAR-AQUI.md`.
+
+---
+
+## v74
+
+**INFRA / ORGANIZAÇÃO**
+- CI no GitHub Actions executa typecheck e a bateria completa em pushes e PRs.
+- `npm test` é o único comando da bateria; documentação de versões permanece
+  consolidada neste changelog, com o README raiz reduzido ao essencial.
+- Cadastros de contas e cartões permitem selecionar Inter, Itaú ou Caixa;
+  contas guardam o código FEBRABAN para conciliação OFX.
+- Parser NFC-e ganha contratos explícitos para o layout dos campos da chave.
+
+**BUGS / MELHORIAS**
+- Fluxo usa a data representativa do mês ao exibir/editar pagamentos
+  consolidados, retorna ao mesmo mês após a edição e remove o rótulo e ícone
+  "Consolidado".
+- Reservas da Lista de Desejos sincronizam conta, valor e movimentos ao editar
+  transferências; excluir devolve o valor reservado. Exclusões de previsões
+  mensais de Poupança preservam a exclusão sem recriar a transação.
+- A Poupança no Fluxo mostra apenas programado, falta transferir e efetivado;
+  o programado mensal usa o saldo efetivado no fim do mês menos o valor
+  mensal previsto. Valores pagos/recebidos ficam cinza e a carga inicial usa
+  skeleton.
+- Novo lançamento inverte a cor do ícone de Transferência quando selecionado.
+  Despensa abre o cadastro pelo botão "＋" e oferece Unidade, Gramas e Quilos.
+- Contas calculam movimentos em uma consulta agregada e Cartões carregam a
+  próxima fatura aberta de todos os cartões em uma consulta em lote.
 
 ---
 
