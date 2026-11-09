@@ -21,6 +21,7 @@ import { theme } from '../../src/theme';
 
 type PantryPolicy = 'ALWAYS' | 'ASK' | 'NEVER';
 type BaseUnit = 'G' | 'ML' | 'UN';
+type UnitMeasure = 'UN' | 'KG' | 'G';
 
 interface ProductRow {
   id: string;
@@ -28,6 +29,7 @@ interface ProductRow {
   name: string;
   category_id: string | null;
   base_unit: BaseUnit | null;
+  unit_measure: UnitMeasure;
   pantry_policy?: PantryPolicy | null;
 }
 interface CategoryRow { id: string; name: string; parent_id: string | null; icon: string | null; archived_at: string | null; }
@@ -44,6 +46,7 @@ export default function ProdutoEditScreen() {
   const [categoryId, setCategoryId] = React.useState<string | null>(null);
   const [subcategoryId, setSubcategoryId] = React.useState<string | null>(null);
   const [baseUnit, setBaseUnit] = React.useState<BaseUnit>('UN');
+  const [unitMeasure, setUnitMeasure] = React.useState<UnitMeasure>('UN');
   const [policy, setPolicy] = React.useState<PantryPolicy>('ASK');
   const [threshold, setThreshold] = React.useState('');
   const [saving, setSaving] = React.useState(false);
@@ -78,6 +81,7 @@ export default function ProdutoEditScreen() {
       setCategoryId(sp.parent);
       setSubcategoryId(sp.sub);
       setBaseUnit((row.base_unit as BaseUnit) ?? 'UN');
+      setUnitMeasure(row.unit_measure ?? (row.base_unit === 'G' ? 'G' : 'UN'));
       setPolicy((row.pantry_policy as PantryPolicy) ?? 'ASK');
       const stock = (pantryList as unknown as PantryRow[]).find((p) => p.product_id === row.id);
       setThreshold(stock?.low_threshold_base != null ? String(stock.low_threshold_base) : '');
@@ -95,11 +99,16 @@ export default function ProdutoEditScreen() {
       const th = parseInt(threshold, 10);
       if (isNew) {
         const created = await services.products.createManualProduct({
-          name: name.trim(), ean: ean.trim() ? ean.trim() : null, baseUnit, categoryId: finalCategoryId, pantryPolicy: policy,
+          name: name.trim(), ean: ean.trim() ? ean.trim() : null, baseUnit, unitMeasure, categoryId: finalCategoryId, pantryPolicy: policy,
         });
         await services.pantry.setLowThreshold(created.id, Number.isInteger(th) ? th : null);
       } else {
-        await services.products.updateProduct(params.id!, { name: name.trim(), ean: ean.trim() ? ean.trim() : null, baseUnit });
+        await services.products.updateProduct(params.id!, {
+          name: name.trim(),
+          ean: ean.trim() ? ean.trim() : null,
+          baseUnit,
+          unitMeasure,
+        });
         await services.products.setCategory(params.id!, finalCategoryId);
         await services.products.setPantryPolicy(params.id!, policy);
         await services.pantry.setLowThreshold(params.id!, Number.isInteger(th) ? th : null);
@@ -153,8 +162,19 @@ export default function ProdutoEditScreen() {
             allowEmpty
             emptyLabel="Sem subcategoria"
           />
-          <Text className={`text-sm font-medium ${theme.textMuted}`}>Unidade base</Text>
-          <Segmented<BaseUnit> options={[{ value: 'UN', label: 'Unidade' }, { value: 'G', label: 'Gramas' }, { value: 'ML', label: 'Mililitros' }]} value={baseUnit} onChange={setBaseUnit} />
+          <Text className={`text-sm font-medium ${theme.textMuted}`}>Unidade de medida</Text>
+          <Segmented<UnitMeasure>
+            options={[
+              { value: 'UN', label: 'Unidade' },
+              { value: 'KG', label: 'Quilos' },
+              { value: 'G', label: 'Gramas' },
+            ]}
+            value={unitMeasure}
+            onChange={(value) => {
+              setUnitMeasure(value);
+              setBaseUnit(value === 'UN' ? 'UN' : 'G');
+            }}
+          />
           <Text className={`text-sm font-medium ${theme.textMuted}`}>Despensa</Text>
           <Segmented<PantryPolicy> options={[{ value: 'ALWAYS', label: 'Sempre' }, { value: 'ASK', label: 'Perguntar' }, { value: 'NEVER', label: 'Nunca' }]} value={policy} onChange={setPolicy} />
           <Text className="text-[11px] text-slate-400">Sempre: entra sem perguntar. Perguntar: pergunta toda vez. Nunca: pula sem perguntar.</Text>

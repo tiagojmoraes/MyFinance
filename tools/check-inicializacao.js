@@ -1,7 +1,7 @@
 // check-inicializacao.js — PRÉ-VOO v63.1: checa todos os erros que já deram na inicialização
 // Roda: npm run check  (só checa)  |  npm run fix:limpo  (tenta consertar)
 // Checa: 1) pasta certa  2) OneDrive  3) query-string versão  4) arquivos duplicados
-//        (TODOS, varredura recursiva — v63.1)  5) portas 3000/8082  6) chrome.exe  7) node_modules
+//        (TODOS, varredura recursiva — v63.1)  5) porta 8082  6) node_modules
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -57,42 +57,14 @@ if (dups.length) {
   err('Arquivos duplicados (sobra de cópia de conflito): ' + dups.slice(0, 10).join(', ') + (dups.length > 10 ? ` … (+${dups.length - 10})` : '') + '\n     → Apague-os (ou mantenha SÓ a versão mais nova no nome oficial). Cada duplicado pode regredir o app.');
 } else ok('Sem arquivos duplicados (_1/_2) em todo o projeto');
 
-// 5. Portas?
-try {
-  const out = execSync('netstat -ano | findstr :3000', { encoding: 'utf8', stdio: ['ignore','pipe','ignore'] });
-  if (out.trim()) warn('Porta 3000 já ocupada (já tem um servidor rodando). Se for rodar outro, vai dar EADDRINUSE.\n     → Use só 1 servidor: ou npm run dev, ou 2 terminais, nunca os 2 jeitos juntos.');
-  else ok('Porta 3000 livre');
-} catch { ok('Porta 3000 livre'); }
+// 5. Porta do Expo?
 try {
   const out2 = execSync('netstat -ano | findstr :8082', { encoding: 'utf8', stdio: ['ignore','pipe','ignore'] });
   if (out2.trim()) warn('Porta 8082 já ocupada. Use outra ou feche o Expo antigo.');
   else ok('Porta 8082 livre');
 } catch { ok('Porta 8082 livre'); }
 
-// 6. chrome.exe? (v63.1: o return agora sai DE VERDADE do bloco — antes avisava "não encontrado" mesmo achando)
-function chromeEmCandidatos() {
-  const cands = [
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe'),
-  ].filter(Boolean);
-  return cands.find((c) => fs.existsSync(c)) || null;
-}
-try {
-  const where = execSync('where chrome.exe', { encoding: 'utf8', stdio: ['ignore','pipe','ignore'] });
-  if (where.trim()) ok('chrome.exe encontrado no PATH (servidor NFC-e usa ele)');
-  else {
-    const hit = chromeEmCandidatos();
-    if (hit) ok('chrome.exe encontrado: ' + hit);
-    else warn('chrome.exe não encontrado — o servidor NFC-e pode falhar nas consultas.');
-  }
-} catch {
-  const hit = chromeEmCandidatos();
-  if (hit) ok('chrome.exe encontrado: ' + hit);
-  else warn('chrome.exe não encontrado no PATH — o servidor NFC-e vai tentar outros caminhos, pode falhar.');
-}
-
-// 7. node_modules existe?
+// 6. node_modules existe?
 if (!fs.existsSync(path.join(root, 'node_modules', 'expo', 'package.json'))) err('node_modules incompleto (sem expo) → Rode: npm install');
 else ok('node_modules com expo');
 
@@ -103,7 +75,7 @@ if (faltando.length) err('Arquivos críticos sumiram (OneDrive cortou?): ' + fal
 else ok('Arquivos críticos presentes (app, serviços, banco)');
 
 console.log('');
-if (erros === 0) console.log(`PRÉ-VOO OK — ${avisos} aviso(s). Pode rodar: npm run dev:servidor  +  npm run dev:expo8082 (2 terminais)`);
+if (erros === 0) console.log(`PRÉ-VOO OK — ${avisos} aviso(s). Pode rodar: npm run dev`);
 else {
   console.log(`PRÉ-VOO FALHOU — ${erros} erro(s), ${avisos} aviso(s). Corrija os ❌ acima antes de rodar.`);
   if (fix) console.log('Modo --fix ainda não apaga nada sozinho — corrija com os comandos indicados.');

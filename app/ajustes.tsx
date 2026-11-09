@@ -6,7 +6,7 @@
  *  · v69: LAYOUT MELHORADO — cada grupo virou um cabeçalho próprio (barra com
  *    pictograma + título em caixa alta + seta), com resumo do conteúdo, cartão
  *    do corpo com divisórias e rodapé informativo; nada de lista chapada.
- *  · PREFERENCIAS: Exibir Saldo do dia · Orçamento · Poupança · NFC-e · OFX ·
+ *  · PREFERENCIAS: Exibir Saldo do dia · Orçamento · Poupança · OFX ·
  *    Despensa · MENSAGENS BANCÁRIAS · LISTA DE DESEJOS (os quatro últimos
  *    controlam o atalho na tela inicial — "AÇÕES RÁPIDAS" some se todos
  *    estiverem desligados).
@@ -30,7 +30,7 @@ import { useAppStore } from '../src/store/appStore';
 import { showToast } from '../lib/toast';
 import { BackupService } from '../src/services/BackupService';
 import { SETTING_KEYS } from '../src/services/SettingsService';
-import { clearLancamentos } from '../src/db/seed';
+import { clearLancamentos, zerarTudo } from '../src/db/seed';
 import { ICONS } from '../src/theme/icons';
 
 /** v39.2: versão 100% DINÂMICA — número e etiqueta derivados SEMPRE do app.json
@@ -94,13 +94,13 @@ export default function AjustesScreen() {
   const [resetting, setResetting] = React.useState(false);
   /** v21 (bug 4): confirmação antes de LIMPAR tudo (exclusão em massa). */
   const [clearConfirmOpen, setClearConfirmOpen] = React.useState(false);
+  const [fullResetConfirmOpen, setFullResetConfirmOpen] = React.useState(false);
   /** v9: preferência — exibir saldo por dia nos agrupamentos do Fluxo. */
   const [showDaily, setShowDaily] = React.useState(false);
   /** v42: flags ORÇAMENTOS e POUPANÇA — ligam as ações na tela inicial e os cards no Fluxo. */
   const [budgetsOn, setBudgetsOn] = React.useState(false);
   const [savingsOn, setSavingsOn] = React.useState(false);
-  /** v68: atalhos NFC-e / OFX / Despensa na tela inicial (agora são toggles daqui). */
-  const [nfceOn, setNfceOn] = React.useState(true);
+  /** v68: atalhos OFX / Despensa na tela inicial (agora são toggles daqui). */
   const [ofxOn, setOfxOn] = React.useState(true);
   const [despensaOn, setDespensaOn] = React.useState(true);
   /** v69: atalhos Mensagens bancárias / Lista de Desejos na tela inicial. */
@@ -117,7 +117,6 @@ export default function AjustesScreen() {
     setBudgetsOn(await services.settings.getBool(SETTING_KEYS.budgetsAtivado, false));
     setSavingsOn(await services.settings.getBool(SETTING_KEYS.poupancaAtivado, false));
     // v68: atalhos da tela inicial (padrão = ligado, comportamento de sempre)
-    setNfceOn(await services.settings.getBool(SETTING_KEYS.nfceNaHome, true));
     setOfxOn(await services.settings.getBool(SETTING_KEYS.ofxNaHome, true));
     setDespensaOn(await services.settings.getBool(SETTING_KEYS.despensaNaHome, true));
     // v69: novos atalhos (padrão = desligado, o usuário liga em Ajustes)
@@ -206,11 +205,6 @@ export default function AjustesScreen() {
   };
 
   /** v68: grava os atalhos da tela inicial (persistidos no banco). */
-  const setNfceOnPref = async (value: boolean) => {
-    setNfceOn(value);
-    await services.settings.setBool(SETTING_KEYS.nfceNaHome, value);
-    bump();
-  };
   const setOfxOnPref = async (value: boolean) => {
     setOfxOn(value);
     await services.settings.setBool(SETTING_KEYS.ofxNaHome, value);
@@ -253,7 +247,22 @@ export default function AjustesScreen() {
     }
   };
 
-  const totalToggles = [showDaily, budgetsOn, savingsOn, nfceOn, ofxOn, despensaOn, mensagensOn, wishlistOn].filter(Boolean).length;
+  const clearAllData = async () => {
+    setResetting(true);
+    try {
+      await zerarTudo(services.db);
+      bump();
+      await load();
+      showToast('Base de dados zerada');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), 'err');
+    } finally {
+      setResetting(false);
+      setFullResetConfirmOpen(false);
+    }
+  };
+
+  const totalToggles = [showDaily, budgetsOn, savingsOn, ofxOn, despensaOn, mensagensOn, wishlistOn].filter(Boolean).length;
 
   return (
     <Screen title="Ajustes" subtitle="Preferências salvas no banco do aplicativo">
@@ -264,7 +273,7 @@ export default function AjustesScreen() {
       <Group
         icon={ICONS.ajustes}
         title="Preferencias"
-        summary={`${totalToggles} de 8 opções ativadas`}
+        summary={`${totalToggles} de 7 opções ativadas`}
         defaultOpen
       >
         <Text className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
@@ -273,12 +282,6 @@ export default function AjustesScreen() {
         <Text className="text-[11px] text-slate-500 -mt-1">
           Escolha o que aparece na seção AÇÕES RÁPIDAS da tela inicial:
         </Text>
-        <ToggleRow
-          label="NFC-e"
-          description="Ler notas fiscais de consumo pelo QR Code ou link."
-          value={nfceOn}
-          onChange={setNfceOnPref}
-        />
         <ToggleRow
           label="OFX"
           description="Importar o extrato do banco e conciliar por data + valor."
@@ -359,11 +362,21 @@ export default function AjustesScreen() {
       <Group
         icon="🗃️"
         title="Dados"
-        summary="Limpar lançamento e movimentações"
+        summary="Limpar ou zerar os dados"
       >
         <Button label={`${ICONS.excluir} Limpar lançamento e movimentações`} variant="outline" onPress={() => setClearConfirmOpen(true)} loading={resetting} />
         <Text className="text-[11px] text-slate-500">
           Apaga TODOS os lançamentos e movimentações (inclusive as NFC-e salvas). Cartões, Contas e Categorias continuam guardados. Não dá para desfazer — crie um backup antes.
+        </Text>
+        <View className="border-t border-dashed border-slate-100" />
+        <Button
+          label={`${ICONS.excluir} Zerar toda a base de dados`}
+          variant="danger"
+          onPress={() => setFullResetConfirmOpen(true)}
+          loading={resetting}
+        />
+        <Text className="text-[11px] text-slate-500">
+          Apaga contas, cartões, categorias, lançamentos, produtos, despensa, NFC-e e preferências. Não pode ser desfeito.
         </Text>
       </Group>
 
@@ -377,6 +390,17 @@ export default function AjustesScreen() {
           { label: 'Cancelar', color: 'green', onPress: () => setClearConfirmOpen(false) },
         ]}
         onClose={() => setClearConfirmOpen(false)}
+      />
+
+      <ConfirmDialog
+        visible={fullResetConfirmOpen}
+        title="Zerar toda a base de dados?"
+        message="Todos os registros serão apagados, inclusive contas, cartões, categorias, produtos, despensa, NFC-e e preferências. A operação não pode ser desfeita. Crie um backup antes."
+        buttons={[
+          { label: 'Zerar base de dados', color: 'red', onPress: clearAllData },
+          { label: 'Cancelar', color: 'green', onPress: () => setFullResetConfirmOpen(false) },
+        ]}
+        onClose={() => setFullResetConfirmOpen(false)}
       />
 
       {/* v69 — SOBRE: SEMPRE ABERTO, SEM SETA */}

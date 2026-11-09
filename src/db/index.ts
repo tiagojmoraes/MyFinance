@@ -17,7 +17,7 @@ export async function openAppDatabase(): Promise<DbDriver> {
     const { ExpoSQLiteDriver } = require('./ExpoSQLiteDriver');
     const { runMigrations } = require('./migrations') as typeof import('./migrations');
     const driver = await ExpoSQLiteDriver.open('myfinance.db');
-    await runMigrations(driver);
+    await runMigrations(driver, { seedCategories: __DEV__ });
     instance = driver;
     return driver;
   })();

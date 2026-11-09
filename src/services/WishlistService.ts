@@ -363,6 +363,7 @@ export class WishlistService {
       ? savingsOverview.entries.filter((e) => e.kind === 'MONTHLY').reduce((a, b) => a + b.amountCents, 0)
       : null;
 
+    sobra = Math.max(0, sobra - Math.max(0, budgetSummary?.remainingCents ?? 0));
     const capacity = sobra;
 
     // (3) fila de compra: Prioridade > Necessário > Desejo — cada classificação

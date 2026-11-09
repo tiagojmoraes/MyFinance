@@ -49,6 +49,15 @@ export interface ResolveCtx {
   cnpj?: string | null;
 }
 
+export type ProductUnitMeasure = 'UN' | 'KG' | 'G';
+
+export function productUnitMeasureFromNfce(unitOriginal: string | null | undefined): ProductUnitMeasure {
+  const unit = (unitOriginal ?? '').trim().toUpperCase();
+  if (['G', 'GR', 'GRAMAS'].includes(unit)) return 'G';
+  if (['KG', 'KGS', 'QUILO', 'QUILOS'].includes(unit)) return 'KG';
+  return 'UN';
+}
+
 export class ProductService {
   private products: ProductRepo;
   private aliases: ProductAliasRepo;
@@ -153,6 +162,7 @@ export class ProductService {
     storeProductCode?: string | null;
     name: string;
     unitBase?: 'G' | 'ML' | 'UN' | null;
+    unitMeasure?: ProductUnitMeasure;
   }, ctx?: ResolveCtx): Promise<ResolutionResult> {
     const cnpj = ctx?.cnpj ?? null;
 
@@ -194,6 +204,7 @@ export class ProductService {
       brand: null,
       category_id: null,
       base_unit: input.unitBase ?? null,
+      unit_measure: input.unitMeasure ?? (input.unitBase === 'G' ? 'G' : 'UN'),
       origin: 'NFCE',
     };
     await this.products.insert(newProduct);
@@ -252,6 +263,7 @@ export class ProductService {
     name: string;
     ean?: string | null;
     baseUnit?: 'G' | 'ML' | 'UN' | null;
+    unitMeasure?: ProductUnitMeasure;
     categoryId?: string | null;
     pantryPolicy?: 'ALWAYS' | 'ASK' | 'NEVER' | null;
   }): Promise<ProductRow> {
@@ -261,7 +273,8 @@ export class ProductService {
       name: input.name,
       brand: null,
       category_id: input.categoryId ?? null,
-      base_unit: input.baseUnit ?? null,
+      base_unit: input.baseUnit ?? (input.unitMeasure === 'KG' || input.unitMeasure === 'G' ? 'G' : 'UN'),
+      unit_measure: input.unitMeasure ?? (input.baseUnit === 'G' ? 'G' : 'UN'),
       origin: 'USER',
       pantry_policy: input.pantryPolicy ?? 'ASK',
     };
@@ -274,18 +287,34 @@ export class ProductService {
   }
 
   async setPantryPolicy(productId: string, policy: 'ALWAYS' | 'ASK' | 'NEVER'): Promise<void> {
-    await this.products.update(productId, { pantry_policy: policy } as any);
+    await this.products.update(productId, { pantry_policy: policy });
   }
 
   /** v57 (Produtos): renomear / trocar EAN / unidade base de uma vez.
    *  v63.1: mapeia `baseUnit` (camelCase da API) para `base_unit` (coluna) —
    *  antes a unidade nunca era gravada (o repo só conhece snake_case). */
-  async updateProduct(productId: string, patch: { name?: string; ean?: string | null; baseUnit?: 'G' | 'ML' | 'UN' | null }): Promise<void> {
-    const repoPatch: Record<string, unknown> = {};
+  async updateProduct(productId: string, patch: {
+    name?: string;
+    ean?: string | null;
+    baseUnit?: 'G' | 'ML' | 'UN' | null;
+    unitMeasure?: ProductUnitMeasure;
+  }): Promise<void> {
+    const repoPatch: Partial<Omit<ProductRow, 'id'>> = {};
     if (patch.name !== undefined) repoPatch.name = patch.name;
     if (patch.ean !== undefined) repoPatch.ean = patch.ean;
     if (patch.baseUnit !== undefined) repoPatch.base_unit = patch.baseUnit;
-    await this.products.update(productId, repoPatch as any);
+    if (patch.unitMeasure !== undefined) repoPatch.unit_measure = patch.unitMeasure;
+    await this.products.update(productId, repoPatch);
+  }
+
+  async ensureMeasurementUnit(unitOriginal: string | null | undefined): Promise<void> {
+    const code = unitOriginal?.trim().toUpperCase();
+    if (!code) return;
+    if (code.length > 32) throw new Error('Unidade de medida inválida na NFC-e');
+    await this.db.runAsync(
+      'INSERT OR IGNORE INTO measurement_units (code, label) VALUES (?, ?)',
+      [code, code]
+    );
   }
 
   async listProducts(limit = 500): Promise<ProductRow[]> {

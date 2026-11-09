@@ -57,6 +57,7 @@ import { kindTheme, theme, type TxKind } from '../src/theme';
 import { ICONS } from '../src/theme/icons';
 import { todaySP, spDateOfIso, monthOf, monthAdd, monthLabel, lastDayOfMonth } from '../src/lib/dates';
 import { formatBRL, divideCents } from '../src/lib/money';
+import { sumConsolidatedLineAmounts } from '../src/lib/consolidatedTotals';
 
 const KIND_ICONS: Record<TxKind, string> = {
   EXPENSE: ICONS.despesa,
@@ -490,6 +491,7 @@ export default function LancamentoScreen() {
         totalCents: total,
         items: res.items.map((it) => ({ ...it, include: it.canApplyStock && !it.needsReview })),
       });
+      setCategoryId(null);
       setCents(total ?? 0);
       const loja = res.header.storeName ? `NFC-e ${res.header.storeName}` : '';
       setDescription((cur) => (cur.trim() === '' || cur.startsWith('NFC-e') ? loja || cur : cur));
@@ -499,12 +501,12 @@ export default function LancamentoScreen() {
       const elegiveis = res.items.filter((i) => i.canApplyStock && !i.needsReview).length;
       nfceLog(
         `tela: fim (novo lançamento) — NOTA NO FORMULÁRIO: total ${total != null ? formatBRL(total) : 'não lido'} · ` +
-        `${res.items.length} item(ns) · ${elegiveis} no estoque por padrão · escolha categoria, pagamento e o estoque, depois SALVE`
+        `${res.items.length} item(ns) · ${elegiveis} no estoque por padrão · escolha pagamento e estoque, depois SALVE`
       );
       showToast(
         res.items.length
-          ? `Nota carregada — ${res.items.length} item(ns), ${elegiveis} no estoque por padrão. Escolha categoria e pagamento e salve.`
-          : 'Nota carregada — confira o valor, escolha categoria e pagamento e salve.'
+          ? `Nota carregada — ${res.items.length} item(ns), ${elegiveis} no estoque por padrão. Escolha pagamento e salve.`
+          : 'Nota carregada — confira o valor, escolha pagamento e salve.'
       );
     } catch (err) {
       showToast(err instanceof Error ? err.message : String(err), 'err');
@@ -550,13 +552,13 @@ export default function LancamentoScreen() {
       return next;
     });
   };
-  // v10: totais do GRUPO (linhas À VISTA) — Fixo/Parcelado viram conta fixa/plano,
-  // não entram no cabeçalho do grupo
+  // O resumo do grupo deve refletir todas as linhas; só os movimentos à vista
+  // entram no cabeçalho financeiro, pois fixos/parcelados geram seus próprios planos.
   const avistaLines = lines.filter((l) => l.modality === 'AVISTA');
-  const debitTotal = avistaLines.filter((l) => l.dir === 'DEBIT').reduce((a, b) => a + b.cents, 0);
-  const creditTotal = avistaLines.filter((l) => l.dir === 'CREDIT').reduce((a, b) => a + b.cents, 0);
+  const { debitCents: debitTotal, creditCents: creditTotal } = sumConsolidatedLineAmounts(lines);
   const fixoCount = lines.filter((l) => l.cents > 0 && l.modality === 'FIXO').length;
   const parceladoCount = lines.filter((l) => l.cents > 0 && l.modality === 'PARCELADO').length;
+  const isQrFlowActive = !!nfceNote || scannerOpen || webUrl !== null || scanning;
 
   const save = async () => {
     setSaving(true);
@@ -1215,7 +1217,7 @@ export default function LancamentoScreen() {
               fica apenas para despesa/receita (a transferência nunca teve).
               v68: com NOTA lida (QR) o campo some — a categoria segue a de cada
               item (catálogo de produto), não a do lançamento. */}
-          {!isTransfer && !isConsolidated && !nfceNote ? (
+          {!isTransfer && !isConsolidated && !isQrFlowActive ? (
             <CategorySelect
               label="Categoria (opcional)"
               categories={categories}

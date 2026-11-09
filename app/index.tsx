@@ -1,10 +1,10 @@
 /** Tela Início — LIQUIDEZ ATUAL (spec v7) + CARTÕES com a fatura do mês vigente (v9).
  *  v9: seção "PRÓXIMOS COMPROMISSOS" removida; nova seção CARTÕES lista os cartões
  *  cadastrados e o valor a pagar da fatura do mês vigente (vence, status, valor).
- *  Ações Rápidas = NFC-e · OFX · Despensa + Orçamento/Poupança quando ligados.
+ *  Ações Rápidas = OFX · Despensa + Orçamento/Poupança quando ligados.
  *  v42 — ORÇAMENTO e POUPANÇA entram em "Ações rápidas" QUANDO o usuário liga
  *  a opção na tela Ajustes (persistida no banco — sempre visível após reabrir).
- *  v68 — NFC-e, OFX e Despensa viraram TOGGLES em Ajustes › Preferencias e a
+ *  v68 — OFX e Despensa viraram TOGGLES em Ajustes › Preferencias e a
  *  seção "AÇÕES RÁPIDAS" só é formada com ALGUMA opção ativada — se nenhuma
  *  estiver, a seção some.
  *  v69 — NOVOS ATALHOS "Mensagens bancárias" e "Lista de Desejos" (toggles em
@@ -52,8 +52,7 @@ export default function HomeScreen() {
   // v42: flags dos módulos (Orçamento / Poupança aparecem só quando ligados em Ajustes)
   const [showBudgets, setShowBudgets] = React.useState(false);
   const [showSavings, setShowSavings] = React.useState(false);
-  // v68: atalhos NFC-e / OFX / Despensa — toggles em Ajustes › Preferencias
-  const [showNfce, setShowNfce] = React.useState(true);
+  // v68: atalhos OFX / Despensa — toggles em Ajustes › Preferencias
   const [showOfx, setShowOfx] = React.useState(true);
   const [showDespensa, setShowDespensa] = React.useState(true);
   // v69: atalhos Mensagens bancárias / Lista de Desejos + reservas por conta
@@ -67,13 +66,12 @@ export default function HomeScreen() {
   const totalCardsDue = React.useMemo(() => cardsSummary.reduce((s, c) => s + (c.dueCents || 0), 0), [cardsSummary]);
 
   useDataEffect(async (svc) => {
-    const [g, list, cards, bFlag, sFlag, nFlag, oFlag, dFlag, mFlag, wFlag, reservasMap] = await Promise.all([
+    const [g, list, cards, bFlag, sFlag, oFlag, dFlag, mFlag, wFlag, reservasMap] = await Promise.all([
       svc.balance.getGeneralBalance(),
       svc.balance.listAccountBalances(),
       svc.invoices.listCardsWithCurrentInvoice(),
       svc.settings.getBool(SETTING_KEYS.budgetsAtivado, false),
       svc.settings.getBool(SETTING_KEYS.poupancaAtivado, false),
-      svc.settings.getBool(SETTING_KEYS.nfceNaHome, true),
       svc.settings.getBool(SETTING_KEYS.ofxNaHome, true),
       svc.settings.getBool(SETTING_KEYS.despensaNaHome, true),
       svc.settings.getBool(SETTING_KEYS.mensagensNaHome, false),
@@ -85,7 +83,6 @@ export default function HomeScreen() {
     setCardsSummary(cards as unknown as CardInvoiceSummary[]);
     setShowBudgets(bFlag);
     setShowSavings(sFlag);
-    setShowNfce(nFlag);
     setShowOfx(oFlag);
     setShowDespensa(dFlag);
     setShowMensagens(mFlag);
@@ -96,10 +93,9 @@ export default function HomeScreen() {
 
   // v68: "AÇÕES RÁPIDAS" só é formada se estiver alguma opção ativada —
   // se nenhuma estiver, a seção INTEIRA some. v69: + Mensagens / Lista de Desejos.
-  const anyQuickAction = showNfce || showOfx || showDespensa || showBudgets || showSavings || showMensagens || showWishlist;
+  const anyQuickAction = showOfx || showDespensa || showBudgets || showSavings || showMensagens || showWishlist;
   const quickActions = React.useMemo(() => (
     <View className="flex-row flex-wrap gap-2">
-      {showNfce ? <QuickAction icon={ICONS.nfce} label="NFC-e" onPress={() => router.push('/nfce')} /> : null}
       {showOfx ? <QuickAction icon={ICONS.ofx} label="OFX" onPress={() => router.push('/ofx')} /> : null}
       {showDespensa ? <QuickAction icon={ICONS.despensa} label="Despensa" onPress={() => router.push('/despensa')} /> : null}
       {/* v42: ligados em Ajustes › Orçamento e Poupança */}
@@ -117,7 +113,7 @@ export default function HomeScreen() {
         <QuickAction icon={ICONS.listaDesejos} label="Lista de Desejos" onPress={() => router.push('/lista-desejos')} />
       ) : null}
     </View>
-  ), [showNfce, showOfx, showDespensa, showBudgets, showSavings, showMensagens, showWishlist]);
+  ), [showOfx, showDespensa, showBudgets, showSavings, showMensagens, showWishlist]);
 
   return (
     <Screen title="MyFinance & Pantry" subtitle="Liquidez atual">

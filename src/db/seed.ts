@@ -13,14 +13,22 @@
  */
 
 import type { DbDriver } from './types';
-import { CLEAR_MOVEMENTS_SQL, CLEAR_GROUP_LINKS_SQL, CLEAR_SAVINGS_SQL, runMigrations } from './migrations';
-import { SCHEMA_V1_SQL } from './schema';
+import { CLEAR_MOVEMENTS_SQL, CLEAR_GROUP_LINKS_SQL, CLEAR_SAVINGS_SQL } from './migrations';
 
 /**
- * Popula apenas os CADASTROS BASE se o banco estiver vazio (primeira abertura).
+ * Popula apenas os CADASTROS BASE se o banco estiver vazio (primeira abertura
+ * em desenvolvimento).
  * Lançamentos/movimentações NÃO são mais criados — o app começa zerado.
  */
-export async function ensureMockData(db: DbDriver): Promise<boolean> {
+const MOCK_SEED_SUPPRESSED_KEY = 'mock_seed_suppressed';
+
+export async function ensureMockData(db: DbDriver, allowDemoData = true): Promise<boolean> {
+  if (!allowDemoData) return false;
+  const suppressed = await db.getFirstAsync<{ value: string }>(
+    'SELECT value FROM app_settings WHERE key = ?',
+    [MOCK_SEED_SUPPRESSED_KEY]
+  );
+  if (suppressed?.value === '1') return false;
   const accounts = await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM accounts');
   const cards = await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM cards');
   const empty = (accounts?.n ?? 0) === 0 && (cards?.n ?? 0) === 0;
@@ -94,11 +102,8 @@ export async function clearLancamentos(db: DbDriver): Promise<void> {
 
 
 /**
- * v62 — ZERAR TUDO (só para teste): apaga ABSOLUTAMENTE TUDO — lançamentos,
- * cadastros, produtos, despensa, NFC-e, OFX, orçamentos, poupança — e deixa
- * o banco como se fosse a primeira abertura (o próximo boot recria os
- * cadastros base via ensureMockData).
- * NÃO usa em produção com dado real. Ajustes > Zerar tudo (teste) chama isso.
+ * Apaga todos os registros mantendo o schema, sem semear dados de demonstração
+ * novamente no próximo boot.
  */
 export async function zerarTudo(db: DbDriver): Promise<void> {
   await db.execAsync('PRAGMA foreign_keys = OFF;');
@@ -106,16 +111,15 @@ export async function zerarTudo(db: DbDriver): Promise<void> {
     const tables = await db.getAllAsync<{ name: string }>(
       "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%'"
     );
-    for (const t of tables) {
-      await db.execAsync(`DELETE FROM "${t.name}";`);
-    }
-    // Reseta o contador de versão para 0 — o próximo boot roda as migrações do zero
-    // em cima do schema já novo (v62), sem precisar de reparo.
-    await db.execAsync('PRAGMA user_version = 0;');
-    // Recria o schema completo (que já vem com todas as colunas v62) e roda migrações
-    // v63.1: imports estáticos — await import() quebra o Jest sem --experimental-vm-modules
-    await db.execAsync(SCHEMA_V1_SQL);
-    await runMigrations(db);
+    await db.transactionAsync(async () => {
+      for (const t of tables) {
+        await db.execAsync(`DELETE FROM "${t.name}";`);
+      }
+      await db.runAsync(
+        'INSERT INTO app_settings (key, value) VALUES (?, ?)',
+        [MOCK_SEED_SUPPRESSED_KEY, '1']
+      );
+    });
   } finally {
     await db.execAsync('PRAGMA foreign_keys = ON;');
   }

@@ -135,21 +135,17 @@ describe('v26 — crédito parcelado e mês da fatura (Fixo/Parcelado no cartão
   });
 });
 
-describe('v26 — plugin SSL da SEFAZ-SP', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const plugin = require('../../plugins/withWebViewSefazSsl');
-  const fs = require('fs');
-  const java = fs.readFileSync(
-    require('path').join(__dirname, '../../node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewClient.java'),
-    'utf8'
-  );
-  test('injeta a exceção antes do cancelamento e é idempotente', () => {
-    const out = plugin.patchJava(java);
-    expect(out).toContain(plugin.MARKER);
-    expect(out.indexOf('handler.proceed()')).toBeLessThan(out.indexOf('handler.cancel()'));
-    expect(out).toContain('SSL_UNTRUSTED');
-    expect(out).toContain('.fazenda.sp.gov.br');
-    expect(plugin.patchJava(out)).toBe(out);
-    expect((out.match(/handler\.proceed\(\);\n\s+return;/g) ?? []).length).toBeGreaterThanOrEqual(1);
+describe('v72 — NFC-e mantém validação TLS padrão', () => {
+  test('não configura plugin que aceita certificados SSL não confiáveis', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const config = JSON.parse(fs.readFileSync(path.join(__dirname, '../../app.json'), 'utf8'));
+    const pluginPath = path.join(__dirname, '../../plugins/withWebViewSefazSsl.js');
+    expect(JSON.stringify(config.expo.plugins)).not.toContain('withWebViewSefazSsl');
+    expect(fs.existsSync(pluginPath)).toBe(false);
+    const fetchSource = fs.readFileSync(path.join(__dirname, '../../src/components/NfceWebFetch.tsx'), 'utf8');
+    expect(fetchSource).not.toContain('pcBridge');
+    expect(fetchSource).not.toContain('userAgent=');
+    expect(fetchSource).toContain('nenhuma nova requisição será enviada');
   });
 });

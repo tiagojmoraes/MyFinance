@@ -9,6 +9,35 @@ Como rodar os testes: `BATERIA-COMO-RODAR.md` (raiz) · Começar de novo:
 
 ---
 
+## v72
+
+**BUGS**
+- **Fluxo — saldo previsto final**: o último saldo do dia desconta o saldo
+  restante dos Orçamentos e da Lista de Desejos antes do Fechamento do Mês;
+  a estimativa da Poupança considera essas alocações.
+- **Novo Lançamento — Consolidado**: o resumo do grupo soma débitos e créditos
+  de todas as linhas, incluindo fixas e parceladas.
+- **Novo Lançamento — QR Code**: Categoria (opcional) fica oculta durante
+  todo o fluxo de leitura da NFC-e.
+- **PDR — zerar base**: nova ação em Ajustes › Dados apaga todos os registros
+  e preferências, sem recriar cadastros ou dados de demonstração.
+
+**MELHORIAS**
+- **Catálogo de Produtos**: cadastro com unidade de medida (Unidade, Quilos
+  ou Gramas); unidades desconhecidas recebidas na leitura da NFC-e são
+  registradas.
+- **NFC-e**: removida a opção de Ajustes e o bypass de certificados TLS não
+  confiáveis. Uma resposta explícita de bloqueio da SEFAZ encerra a consulta
+  sem repetição ou redirecionamento automático. Removido também o proxy local
+  que imitava Chrome/headless e repetia consultas; a tela usa somente o WebView
+  oficial do aparelho.
+- **Desempenho**: saldos da tela inicial e saldos gerais são consultados em
+  agregações SQL, evitando uma consulta por conta.
+- **Produção**: instalação nova começa vazia, sem categorias, contas/cartões
+  de demonstração ou lançamentos.
+
+---
+
 ## v71 (2026-11-09)
 
 **BUGS**

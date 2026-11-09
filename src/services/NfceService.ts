@@ -108,7 +108,7 @@ import { NfceDocumentRepo, NfceItemRepo } from '../repos/misc';
 import type { NfceDocumentRow, NfceItemRow } from '../repos/misc';
 import { TransactionRepo } from '../repos/finance';
 import type { TransactionRow } from '../repos/finance';
-import { ProductService } from './ProductService';
+import { ProductService, productUnitMeasureFromNfce } from './ProductService';
 import { PantryService } from './PantryService';
 import { fetchNoteViaReader, isReaderConfigured, type NfceReaderConfig } from '../lib/nfceReader';
 import { SETTING_KEYS } from './SettingsService';
@@ -732,6 +732,7 @@ export class NfceService {
           storeProductCode: args.code,
           name: args.description,
           unitBase: conversion?.baseUnit ?? null,
+          unitMeasure: productUnitMeasureFromNfce(args.unitOriginal),
         },
         { cnpj: doc.cnpj } // v37: o CNPJ é a chave da tabela da verdade
       );
@@ -759,6 +760,7 @@ export class NfceService {
     };
 
     for (const raw of rawItems) {
+      await this.productService.ensureMeasurementUnit(raw.unitOriginal);
       // Upsert tolerante: UNIQUE(access_key, line_number)
       const existing = await this.db.getFirstAsync<{ id: string }>(
         'SELECT id FROM nfce_items WHERE access_key = ? AND line_number = ?',
@@ -1070,6 +1072,7 @@ export class NfceService {
       name: item.description,
       ean: item.ean_extracted,
       baseUnit: conversion?.baseUnit ?? 'UN',
+      unitMeasure: productUnitMeasureFromNfce(item.unit_original),
       categoryId: categoryId ?? null,
     });
     const doc = await this.documents.getById(item.access_key);

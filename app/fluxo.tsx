@@ -106,6 +106,7 @@ import { showToast } from '../lib/toast';
 import { MonthScroller } from '../src/components/MonthScroller';
 import { useDataEffect } from '../src/components/useDataEffect';
 import { formatBRL } from '../src/lib/money';
+import { subtractAllocationsCents } from '../src/lib/flowAllocations';
 import { orcadoPrevistoGastoLinha } from '../src/lib/fluxoFormat'; // v69: linha única com % por movimento
 import { sourceLabel } from '../src/lib/text';
 import { todaySP, monthOf, ymdToBr, partsOf } from '../src/lib/dates';
@@ -439,11 +440,18 @@ export default function FluxoScreen() {
       prev[d] = (prev[d] ?? 0) + (budAdj?.previsto[d] ?? 0) + (savAdj?.previsto[d] ?? 0);
       efet[d] = (efet[d] ?? 0) + (budAdj?.efetivado[d] ?? 0) + (savAdj?.efetivado[d] ?? 0);
     }
+    if (lastActivityDay) {
+      const budgetRemaining = budgetsOn ? Math.max(0, budgetSum?.remainingCents ?? 0) : 0;
+      const wishlistRemaining = wishlistOn
+        ? wishClasses.reduce((total, category) => total + category.items.reduce((sum, item) => sum + item.faltaCents, 0), 0)
+        : 0;
+      prev[lastActivityDay] = subtractAllocationsCents(prev[lastActivityDay] ?? 0, [budgetRemaining, wishlistRemaining]);
+    }
     if (closingRegendo && lastActivityDay && (prev[lastActivityDay] ?? 0) > 0) {
       prev[lastActivityDay] = 0;
     }
     return { previsto: prev, efetivado: efet };
-  }, [dailyBal, budAdj, savAdj, closingRegendo, lastActivityDay]);
+  }, [dailyBal, budAdj, savAdj, closingRegendo, lastActivityDay, budgetsOn, budgetSum, wishlistOn, wishClasses]);
 
   const passesFilter = (e: Entry): boolean => {
     if (filter === 'ALL') return true;

@@ -25,6 +25,7 @@ import { theme } from '../src/theme';
 
 type PantryPolicy = 'ALWAYS' | 'ASK' | 'NEVER';
 type BaseUnit = 'G' | 'ML' | 'UN';
+type UnitMeasure = 'UN' | 'KG' | 'G';
 
 interface ProductRow {
   id: string;
@@ -32,6 +33,7 @@ interface ProductRow {
   name: string;
   category_id: string | null;
   base_unit: BaseUnit | null;
+  unit_measure?: UnitMeasure;
   pantry_policy?: PantryPolicy | null;
 }
 interface CategoryRow { id: string; name: string; parent_id: string | null; icon: string | null; archived_at: string | null; }
@@ -60,24 +62,30 @@ export default function ProdutosScreen() {
 
   // v68 — memoizado: rótulo de categoria e estoque por produto (só refaz quando
   // os dados carregam; a digitação na busca não recalcula nada disso)
+  const categoriesById = React.useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
+  const pantryByProductId = React.useMemo(() => new Map(pantry.map((row) => [row.product_id, row])), [pantry]);
+
   const categoryLabelOf = React.useCallback((p: ProductRow): string => {
     if (!p.category_id) return 'Sem categoria';
-    const row = categories.find((c) => c.id === p.category_id);
+    const row = categoriesById.get(p.category_id);
     if (!row) return 'Sem categoria';
     if (row.parent_id) {
-      const parent = categories.find((c) => c.id === row.parent_id);
+      const parent = categoriesById.get(row.parent_id);
       return parent ? `${parent.name} › ${row.name}` : row.name;
     }
     return row.name;
-  }, [categories]);
+  }, [categoriesById]);
 
   const stockLabelOf = React.useCallback((p: ProductRow): string => {
-    const s = pantry.find((x) => x.product_id === p.id);
+    const s = pantryByProductId.get(p.id);
     if (!s) return 'Sem estoque';
-    if (s.base_unit === 'G' || p.base_unit === 'G') return `${s.quantity_base} g`;
     if (s.base_unit === 'ML' || p.base_unit === 'ML') return `${s.quantity_base} ml`;
+    if (p.unit_measure === 'KG' && (s.base_unit === 'G' || p.base_unit === 'G')) {
+      return `${(s.quantity_base / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 3 })} kg`;
+    }
+    if (s.base_unit === 'G' || p.base_unit === 'G') return `${s.quantity_base} g`;
     return `${s.quantity_base} un`;
-  }, [pantry]);
+  }, [pantryByProductId]);
 
   // v68: filtro memoizado — digitar não toca nos dados, só refiltra
   const filtered = React.useMemo(

@@ -1,5 +1,8 @@
 /**
- * NfceWebFetch — CAPTURA da página oficial da SEFAZ-SP com NAVEGADOR VISÍVEL (v22).
+ * NfceWebFetch — consulta a página oficial da SEFAZ-SP com WebView visível.
+ *
+ * v72: somente o WebView oficial do aparelho é usado. Não há proxy local,
+ * User-Agent forjado, bypass TLS ou nova consulta após rejeição explícita.
  *
  * POR QUE ISTO EXISTE (diagnóstico do bug "NFC-e não funciona"):
  *   A página da nota (www.nfce.fazenda.sp.gov.br — /qrcode e
@@ -64,17 +67,6 @@
  *   Nada roda "por baixo" antes: o usuário VÊ o processo inteiro acontecer,
  *   igual ao app nativo que funciona.
  *
- * v40.2 (CANAL NOVO — SERVIDOR DO PC): o log do aparelho (19:12–19:14)
- *   provou que TODOS os canais do motor são recusados ("Request Rejected")
- *   mesmo com esperas de 2–5 s e portão anti-ban de 60/180 s funcionando —
- *   o firewall julga a IDENTIDADE do WebView do Expo Go, que não dá para
- *   mudar dentro do Expo Go. O canal 1 passa a ser, QUANDO EXISTIR, o
- *   servidor do PC (tools/servidor-nfce.js — Node puro, SEM npm install):
- *   mesma rede Wi-Fi do Metro, cabeçalhos de Chrome do Windows e, como
- *   plano B do PC, o CHROME REAL em modo headless. O celular só recebe o
- *   HTML pronto e segue com o parser de sempre (etapas 6–8 inalteradas).
- *   Sem servidor no ar, NADA muda: a descoberta falha em ~2 s (cache 60 s)
- *   e os canais do motor seguem exatamente como na v40.1.
  */
 
 import React from 'react';
@@ -83,12 +75,8 @@ import { WebView } from 'react-native-webview';
 import { isFirewallRejectionPage, looksLikeNfcePage, pageHasItems } from '../parsers/nfce';
 import { nfceLog, nfceHtmlSummary, nfceStep, nfceTimer, nfceVerdict, nfceClip, NFCE_STEP, type NfceStepTimer } from '../lib/nfcelog';
 import { nfcePortalGate } from '../lib/nfceGate';
-import { acharServidorPc, consultarViaPc } from '../lib/pcBridge';
 
 /** v39 — AS 6 ETAPAS do fluxo que funciona (captura Reqable), visíveis na tela. */
-// APK PESSOAL v41: Chrome real sem ; wv - SEFAZ bloqueia WebView do Expo Go
-const CHROME_UA_APK = 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
-
 const PHASES = [
   'App chama WebView.loadUrl() com o link oficial',
   'Aparelho monta o pedido — User-Agent GENUÍNO do Android',
@@ -104,9 +92,6 @@ const PHASES = [
  * A falsa de rejeição casa com isFirewallRejectionPage; a falsa de desafio
  * casa com o marcador TSPD (página intermediária) sem casar com rejeição.
  */
-const HTML_REJEICAO_FALSA = '<html><head><title>Request Rejected</title></head><body>The requested URL was rejected. Please consult with your administrator.</body></html>';
-const HTML_DESAFIO_FALSA = '<html><head><title>Consulta NFC-e</title></head><body><!--TSPD APM_DO_NOT_TOUCH--></body></html>';
-
 /** v40.1: contador mm:ss do portão anti-ban. */
 const fmtCooldown = (s: number): string => {
   const m = Math.floor(s / 60);
@@ -155,13 +140,6 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
   const manualArmed = React.useRef(false);
   const renderGone = React.useRef(0);
   const candidateIdx = React.useRef(0);
-  // v24: reloads de rejeição já feitos NO candidato atual (a 1ª recusa costuma
-  // passar no recarregamento, que leva os cookies do desafio do firewall).
-  const rejectReloads = React.useRef(0);
-  // v40.2: canal 1 = SERVIDOR DO PC (tools/servidor-nfce.js no PC do usuário)
-  const pcBaseRef = React.useRef<string | null>(null);
-  const viaPcRef = React.useRef(false); // a captura corrente veio do PC (não do WebView)
-  const pcDesafioWaits = React.useRef(0);
   const retryTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   // v26: a nota foi reconhecida mas SEM a lista de itens — espera (até 6×) os
   // itens renderizarem antes de entregar (antes entregava só o cabeçalho e a
@@ -214,8 +192,6 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
   // v30: DELAY ALEATÓRIO 2–5 s entre tentativas (rate-limit do portal — acesso
   // em rajada é exatamente o padrão que o firewall da SEFAZ-SP bloqueia).
   const sefazDelayMs = React.useRef(() => 2000 + Math.floor(Math.random() * 3000));
-  // v40.2: total de canais da consulta = canais do motor + servidor do PC (se achado)
-  const totalCanais = () => urls.length + (pcBaseRef.current ? 1 : 0);
   // v40.1: TODO acesso ao portal passa pelo PORTÃO (src/lib/nfceGate.ts):
   // espaço mínimo de 2,5 s entre acessos + cooldown anti-ban. O callback só
   // executa quando o portão libera (polling de 1 s enquanto estiver fechado).
@@ -257,12 +233,10 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
 
   /** v23: (re)começa um candidato — limpa toda a memória de captura. */
   const loadCandidate = (idx: number, motivo: string | null) => {
-    viaPcRef.current = false; // v40.2: canal do motor do aparelho — saindo do PC (se estava)
     nfcePortalGate.markHit(); // v40.1: canal carregando — registra o acesso para o próximo respeitar o espaço
     candidateIdx.current = idx;
     finished.current = false;
     manualArmed.current = false;
-    rejectReloads.current = 0;
     itemWaits.current = 0;
     bufferRef.current = { total: 0, parts: new Map() };
     captureEpochRef.current += 1; // v32: nova página real pode ser idêntica à anterior
@@ -273,104 +247,17 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
     setCurrentUrl(urls[idx]);
     // v40: ETAPA 4 recomeça a cada canal (com o motivo da troca)
     canalTimerRef.current = nfceTimer(NFCE_STEP.NAVEGADOR);
-    nfceStep(NFCE_STEP.NAVEGADOR, 'run', `canal ${pcBaseRef.current ? idx + 2 : idx + 1}/${totalCanais()} abrindo no motor do aparelho: ${nfceClip(urls[idx], 120)}${motivo ? ` — ${motivo}` : ''}`);
+    nfceStep(NFCE_STEP.NAVEGADOR, 'run', `canal ${idx + 1}/${urls.length} abrindo no WebView oficial: ${nfceClip(urls[idx], 120)}${motivo ? ` — ${motivo}` : ''}`);
   };
 
-  /**
-   * v40.2: canal 1 — consulta via SERVIDOR DO PC. O PC (Chrome do Windows,
-   * mesma rede Wi-Fi do Metro) faz o pedido ao portal e devolve o HTML
-   * pronto; o app segue com o parser de sempre. NUNCA lança: falha vira
-   * passagem para o canal do motor do aparelho, igual à tolerância da v40.1.
-   */
-  const executarCanalPc = (url: string) => {
-    const base = pcBaseRef.current;
-    if (!base || finished.current) return;
-    viaPcRef.current = true;
-    itemWaits.current = 0;
-    pcDesafioWaits.current = 0;
-    bufferRef.current = { total: 0, parts: new Map() };
-    captureEpochRef.current += 1;
-    lastHandledRef.current = null;
-    setNetworkError(null);
-    setPhase(3); // v39: "conexão segura" — agora feita pelo PC
-    setHint('Consultando pelo servidor do PC (Chrome no Windows)…');
-    canalTimerRef.current = nfceTimer(NFCE_STEP.NAVEGADOR);
-    nfceStep(NFCE_STEP.NAVEGADOR, 'run', `canal 1/${totalCanais()} via SERVIDOR DO PC (${base}) — o PC consulta como Chrome do Windows`);
-    schedulePortalLoad(() => {
-      void (async () => {
-        const t0 = Date.now();
-        const res = await consultarViaPc(base, url);
-        if (finished.current) return;
-        if (!res) {
-          viaPcRef.current = false;
-          canalTimerRef.current?.fail(`servidor do PC não respondeu (${((Date.now() - t0) / 1000).toFixed(1)}s) — servidor fechado ou PC sumiu da rede`);
-          canalTimerRef.current = null;
-          nfceLog('webview: servidor do PC indisponível — seguindo com o motor do aparelho');
-          loadCandidate(0, 'Servidor do PC não respondeu — abrindo no motor do aparelho…');
-          return;
-        }
-        if (res.tipo === 'ok') {
-          canalTimerRef.current?.ok(`canal 1/${totalCanais()} — página chegou do PC (${(res.bytes / 1024).toFixed(1)} KB · estratégia ${res.estrategia} · ${(res.ms / 1000).toFixed(1)}s)`);
-          canalTimerRef.current = null;
-          handleHtml(res.html);
-          return;
-        }
-        if (res.tipo === 'gate') {
-          viaPcRef.current = false;
-          canalTimerRef.current?.fail(`servidor do PC com portão anti-ban fechado (${res.segundos}s)`);
-          canalTimerRef.current = null;
-          nfceLog(`webview: PC com portão fechado (${res.segundos}s) — seguindo com o motor do aparelho`);
-          loadCandidate(0, `O servidor do PC está com o portão anti-ban fechado (${res.segundos}s) — abrindo no motor do aparelho…`);
-          return;
-        }
-        if (res.tipo === 'desafio') {
-          const kb = res.html ? (res.html.length / 1024).toFixed(1) : '0';
-          canalTimerRef.current?.ok(`canal 1/${totalCanais()} — página chegou do PC (${kb} KB · DESAFIO do firewall)`);
-          canalTimerRef.current = null;
-          handleHtml(res.html ?? HTML_DESAFIO_FALSA);
-          return;
-        }
-        if (res.tipo === 'indisponivel') {
-          viaPcRef.current = false;
-          canalTimerRef.current?.fail('servidor do PC respondeu algo inesperado');
-          canalTimerRef.current = null;
-          loadCandidate(0, 'O servidor do PC respondeu algo inesperado — abrindo no motor do aparelho…');
-          return;
-        }
-        // bloqueado — entra na MESMA tubulação de recusa (recarrega 2× → motor do aparelho)
-        canalTimerRef.current?.ok(`canal 1/${totalCanais()} — página chegou do PC (1 KB · REJEIÇÃO-FIREWALL${res.supportId ? ` · support ${res.supportId}` : ''})`);
-        canalTimerRef.current = null;
-        handleHtml(res.html ?? HTML_REJEICAO_FALSA);
-      })();
-    }, 0);
-  };
-
-  /**
-   * v40.2: começa a consulta inteira — descobre o servidor do PC (cache 60 s)
-   * e monta a fila: canal 1 = PC (se existir); canais seguintes = motor do
-   * aparelho (WebView genuína), como na v40.1. Usada pelo início automático
-   * e pelo botão "Tentar de novo".
-   */
+  /** Começa uma consulta no domínio oficial usando o WebView do aparelho. */
   const iniciarConsulta = (motivo: string | null) => {
     finished.current = false;
     manualArmed.current = false;
-    rejectReloads.current = 0;
     setNetworkError(null);
-    void (async () => {
-      const base = await acharServidorPc();
-      pcBaseRef.current = base;
-      viaPcRef.current = false;
-      const total = urls.length + (base ? 1 : 0);
-      nfceLog(`webview: consulta iniciada com ${total} canal(is):${motivo ? ` (${motivo})` : ''}`);
-      if (base) nfceLog(`webview:   canal 1: SERVIDOR DO PC (${base}) — o PC consulta como Chrome do Windows`);
-      urls.forEach((u, i) => nfceLog(`webview:   canal ${(base ? 2 : 1) + i}: ${nfceClip(u, 140)}`));
-      if (base) {
-        executarCanalPc(urls[0] ?? '');
-        return;
-      }
-      nfceLog('webview: servidor do PC não encontrado (node servidor-nfce.js não está no ar?) — só motor do aparelho');
-      loadCandidate(0, motivo);
-    })();
+    nfceLog(`webview: consulta oficial iniciada em ${urls.length} URL(s)${motivo ? ` (${motivo})` : ''}`);
+    urls.forEach((url, index) => nfceLog(`webview:   URL ${index + 1}: ${nfceClip(url, 140)}`));
+    loadCandidate(0, motivo);
   };
 
   const deliver = (html: string) => {
@@ -397,72 +284,21 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
       canalTimerRef.current.ok(`canal ${candidateIdx.current + 1}/${urls.length} — página chegou (${nfceHtmlSummary(html)})`);
       canalTimerRef.current = null;
     }
-    // v23: REJEIÇÃO do firewall. v24: antes de trocar de canal, RECARREGA o
-    // MESMO endereço (até 2×) — o 1º acesso limpo é recusado, mas o reload
-    // leva os cookies do desafio (TS*) e costuma abrir a nota.
+    // Interrompe a consulta ao primeiro bloqueio. Não repetir nem trocar o
+    // endereço evita ampliar a carga no portal e o bloqueio do aparelho.
     if (isFirewallRejectionPage(html)) {
       nfceStep(NFCE_STEP.HTML, 'warn', `REJEIÇÃO do firewall — ${nfceHtmlSummary(html)}`);
-      if (rejectReloads.current < 2) {
-        rejectReloads.current += 1;
-        // v31: recarga pós-rejeição visível no terminal
-        nfceLog(`webview: REJEIÇÃO do firewall — recarregando o mesmo canal (tentativa ${rejectReloads.current}/2 após espera de 2–5 s)`);
-        setHint(
-          rejectReloads.current === 1
-            ? 'O portal recusou o primeiro acesso — recarregando com a sessão aberta…'
-            : 'O portal ainda recusa — tentando mais uma vez no mesmo canal…'
-        );
-        setPhase(3); // v39: volta para a conexão — o reload leva os cookies do desafio
-        bufferRef.current = { total: 0, parts: new Map() };
-        // v40.1 CORREÇÃO DA RAJADA (vista no log do aparelho: 2 reloads no MESMO
-        // segundo): o epoch/lastHandled SÓ avançam quando o reload de fato parte.
-        // Antes eles avançavam imediatamente — qualquer captura residual da
-        // MESMA rejeição (com novo Support ID) passava pelo dedupe e queimava
-        // os 2 reloads em menos de 1 s, alimentando o bloqueio do firewall.
-        schedulePortalLoad(() => {
-          captureEpochRef.current += 1;
-          lastHandledRef.current = null;
-          // v40.2: no canal do PC não existe WebView para recarregar — nova
-          // busca no PC (o servidor resolve o desafio com o Chrome real)
-          if (viaPcRef.current) executarCanalPc(urls[0] ?? currentUrl);
-          else webRef.current?.reload();
-        }, sefazDelayMs.current());
-        return;
-      }
-      // v40.2: recargas do SERVIDOR DO PC esgotadas — a fila continua no motor
-      if (viaPcRef.current) {
-        nfceLog('webview: rejeições esgotadas no SERVIDOR DO PC — trocando para o motor do aparelho após espera de 2–5 s');
-        setHint('O servidor do PC também foi recusado — abrindo no motor do aparelho…');
-        schedulePortalLoad(() => loadCandidate(0, 'O portal recusou também o servidor do PC — abrindo no motor do aparelho (WebView)…'), sefazDelayMs.current());
-        return;
-      }
-      const next = candidateIdx.current + 1;
-      if (next < urls.length) {
-        // v30: espera aleatória de 2–5 s também ao TROCAR de canal (o portal
-        // precisa "esfriar" o acesso anterior antes do próximo).
-        // v31: troca de canal visível no terminal
-        nfceLog(`webview: rejeições esgotadas neste canal — trocando para o canal ${next + 1}/${urls.length} após espera de 2–5 s`);
-        setHint('O portal recusou o link do QR — aguardando para abrir o canal alternativo da SEFAZ-SP…');
-        // v40.1: a troca também passa pelo PORTÃO (espaço mínimo garantido)
-        schedulePortalLoad(() => loadCandidate(next, 'O portal recusou o link do QR — abrindo o canal alternativo da SEFAZ-SP…'), sefazDelayMs.current());
-      } else {
-        // v31: TODOS os canais recusados — causa visível no terminal
-        nfceLog('webview: FALHA — todos os canais recusados pelo firewall (tela: "portal recusou o acesso")');
-        nfceStep(NFCE_STEP.NAVEGADOR, 'fail', `TODOS os ${totalCanais()} canal(is) recusados pelo firewall`);
-        nfceVerdict(false, 'TODOS os canais foram recusados pelo firewall da SEFAZ-SP', [
-          'firewall bloqueou este acesso/IP — às vezes vale só por alguns minutos',
-          'consultas repetidas em pouco tempo EXTENDEM o bloqueio — o app agora espera sozinho (v40.1)',
-          'portal instável ou fora do ar no momento',
-        ], 'abra a nota no navegador do celular (botão na tela) ou espere o contador anti-ban e toque em Tentar de novo; trocar Wi-Fi <-> dados móveis muda o IP');
-        // v40.1: a consulta TERMINOU em falha — nenhuma captura residual
-        // reprocessa (mata o VEREDICTO DUPLICADO visto no log) e o portão
-        // anti-ban fecha com backoff crescente: 1 min → 3 min → 10 min.
-        finished.current = true;
-        const gate = nfcePortalGate.markAllRejected();
-        setCooldownLeft(Math.ceil(gate.waitMs / 1000));
-        nfceLog(`webview: PORTÃO anti-ban FECHADO por ${Math.round(gate.waitMs / 1000)}s (falhas seguidas: ${gate.streak}) — martelar o portal só estende o bloqueio`);
-        setNetworkError('blocked');
-        setHint('O portal recusou o acesso por este caminho.');
-      }
+      nfceLog('webview: consulta interrompida após a rejeição; nenhuma nova requisição será enviada');
+      nfceStep(NFCE_STEP.NAVEGADOR, 'fail', 'Consulta interrompida após bloqueio da SEFAZ-SP');
+      nfceVerdict(false, 'A SEFAZ-SP recusou esta consulta', [
+        'a resposta de bloqueio foi respeitada; o app não repetiu nem redirecionou a consulta',
+        'a indisponibilidade pode ser temporária ou depender do próprio portal',
+      ], 'não tente novamente em sequência; use o navegador oficial mais tarde ou registre a despesa manualmente');
+      finished.current = true;
+      const gate = nfcePortalGate.markAllRejected();
+      setCooldownLeft(Math.ceil(gate.waitMs / 1000));
+      setNetworkError('blocked');
+      setHint('Consulta interrompida após resposta de bloqueio da SEFAZ-SP.');
       return;
     }
     if (looksLikeNfcePage(html)) {
@@ -476,18 +312,6 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
         if (itemTimer.current) clearTimeout(itemTimer.current);
         itemTimer.current = setTimeout(() => {
           if (finished.current) return;
-          // v40.2: canal do PC não tem WebView para injetar — busca de novo no PC
-          if (viaPcRef.current && pcBaseRef.current) {
-            const base = pcBaseRef.current;
-            void (async () => {
-              const res = await consultarViaPc(base, urls[0] ?? currentUrl);
-              if (finished.current || !res || res.tipo !== 'ok') return;
-              captureEpochRef.current += 1; // mesma página pode voltar igual — não deixe o dedupe engolir
-              lastHandledRef.current = null;
-              handleHtml(res.html);
-            })();
-            return;
-          }
           webRef.current?.injectJavaScript(INJECT_CHUNKED_CAPTURE);
         }, 1500);
         return;
@@ -515,64 +339,11 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
     nfceStep(NFCE_STEP.HTML, 'info', 'página intermediária (desafio do firewall) — aguardando o portal resolver sozinho');
     setHint('Resolvendo a verificação do portal… a nota abre em instantes.');
     setPhase(5); // v39: desafio de segurança sendo resolvido pelo motor do aparelho
-    // v40.2: no canal do PC não existe onLoadEnd — o app re-consulta o PC (o
-    // servidor resolve o desafio com o Chrome real do PC); no máx. 2 esperas
-    if (viaPcRef.current && pcDesafioWaits.current < 2 && pcBaseRef.current) {
-      pcDesafioWaits.current += 1;
-      const base = pcBaseRef.current;
-      nfceLog(`webview: desafio do firewall via PC — consultando o PC de novo em 2,5 s (espera ${pcDesafioWaits.current}/2)`);
-      if (itemTimer.current) clearTimeout(itemTimer.current);
-      itemTimer.current = setTimeout(() => {
-        if (finished.current) return;
-        void (async () => {
-          const res = await consultarViaPc(base, urls[0] ?? currentUrl);
-          if (finished.current) return;
-          captureEpochRef.current += 1; // mesmo desafio pode voltar igual — não deixe o dedupe engolir
-          lastHandledRef.current = null;
-          if (!res || res.tipo === 'gate' || res.tipo === 'indisponivel') {
-            viaPcRef.current = false;
-            loadCandidate(0, !res
-              ? 'Servidor do PC não respondeu — abrindo no motor do aparelho…'
-              : 'O servidor do PC não pôde continuar — abrindo no motor do aparelho…');
-            return;
-          }
-          handleHtml(res.tipo === 'ok' ? res.html : res.html ?? HTML_DESAFIO_FALSA);
-        })();
-      }, 2500);
-    }
   };
 
   /** Botão manual: captura a página que está NA TELA agora. */
   const captureVisiblePage = () => {
     if (finished.current) return;
-    // v40.2: no canal do PC a tela mostra o app (não o portal) — o botão
-    // manual vira "consultar o servidor do PC de novo AGORA" (saída manual
-    // garantida também no canal novo).
-    if (viaPcRef.current && pcBaseRef.current) {
-      const base = pcBaseRef.current;
-      nfceLog('webview: botão manual tocado no canal do PC — consultando o servidor do PC de novo');
-      setHint('Consultando o servidor do PC de novo…');
-      manualArmed.current = true;
-      lastHandledRef.current = null;
-      void (async () => {
-        const res = await consultarViaPc(base, urls[0] ?? currentUrl);
-        if (finished.current) return;
-        captureEpochRef.current += 1;
-        if (!res) {
-          manualArmed.current = false;
-          nfceLog('webview: PC não respondeu ao re-consultar (manual)');
-          setHint('O servidor do PC não respondeu — aguarde ou toque de novo.');
-          return;
-        }
-        if (res.tipo === 'ok') { handleHtml(res.html); return; }
-        if (res.tipo === 'bloqueado') { handleHtml(res.html ?? HTML_REJEICAO_FALSA); return; }
-        if (res.tipo === 'desafio') { handleHtml(res.html ?? HTML_DESAFIO_FALSA); return; }
-        manualArmed.current = false;
-        nfceLog(`webview: PC com portão anti-ban fechado (${res.tipo === 'gate' ? res.segundos : 0}s) — re-consulte em instantes`);
-        setHint(`O servidor do PC está com o portão anti-ban fechado (${res.tipo === 'gate' ? res.segundos : 0}s)…`);
-      })();
-      return;
-    }
     manualArmed.current = true;
     // v32: leitura manual é sempre processada — mesmo HTML não é dedupado
     lastHandledRef.current = null;
@@ -621,11 +392,6 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
             // WebView SÓ carrega quando o canal dele começa (nunca 2 acessos
             // simultâneos ao portal)
             source={cooldownLeft > 0 || !currentUrl ? { uri: 'about:blank' } : { uri: currentUrl }}
-            // v41 APK PESSOAL: Chrome real sem ; wv - SEFAZ-SP exige identidade de navegador real
-            // v41: correção também dos atributos DUPLICADOS (sharedCookiesEnabled /
-            //      thirdPartyCookiesEnabled repetiam — o tsc --noEmit do projeto inteiro falhava)
-            userAgent={CHROME_UA_APK}
-            applicationNameForUserAgent=""
             incognito={false}
             sharedCookiesEnabled
             thirdPartyCookiesEnabled
@@ -747,9 +513,7 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
                   </Text>
                 </>
               )}
-              {/* v40.1: SAÍDA NOVA E REAL — o Chrome do aparelho resolve o desafio
-                  do firewall com o fingerprint completo de navegador; a nota
-                  abre lá mesmo quando o portal recusa o app. */}
+              {/* Abre o endereço oficial no navegador escolhido pelo usuário. */}
               <Pressable
                 onPress={() => { Linking.openURL(urls[0] ?? currentUrl).catch(() => undefined); }}
                 className="bg-white border border-slate-300 rounded-xl px-5 py-3"
@@ -758,7 +522,7 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
               >
                 <Text className="text-slate-700 font-bold text-center">Abrir no navegador do celular</Text>
               </Pressable>
-              {cooldownLeft <= 0 ? (
+              {cooldownLeft <= 0 && networkError !== 'blocked' ? (
                 <Pressable
                   onPress={() => {
                     // v23: "Tentar de novo" volta ao PRIMEIRO canal (link do QR).

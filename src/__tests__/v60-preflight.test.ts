@@ -1,7 +1,7 @@
 /** v60 — PRÉ-VOO: todos os erros de inicialização já mapeados
  *  Roda: npm run test:bateria60
  *  Garante: query-string travado em 7.x (a v9 quebra o Hermes), sem duplicatas,
- *  scripts de 2 terminais existem, check-inicializacao existe.
+ *  o script de desenvolvimento usa apenas Expo, check-inicializacao existe.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -15,10 +15,11 @@ describe('v60 PRÉ-VOO — inicialização sem erro', () => {
     expect(pkg.dependencies['expo']).toMatch(/^~53\./);
     expect(pkg.dependencies['expo-router']).toMatch(/^~5\./);
   });
-  test('Scripts de 2 terminais existem (servidor à parte, do jeito do usuário)', () => {
+  test('desenvolvimento não inicia proxy NFC-e local nem spoof de navegador', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-    expect(pkg.scripts['dev:servidor']).toContain('servidor-nfce');
-    expect(pkg.scripts['dev:expo8082']).toContain('8082');
+    expect(pkg.scripts.dev).toBe('expo start -c');
+    expect(pkg.scripts['dev:servidor']).toBeUndefined();
+    expect(fs.existsSync(path.join(root, 'tools', 'servidor-nfce.js'))).toBe(false);
     expect(pkg.scripts['check']).toContain('check-inicializacao');
   });
   test('Sem arquivos duplicados que confundem o Metro (_layout_1, produtos_1, package_N)', () => {
@@ -28,16 +29,16 @@ describe('v60 PRÉ-VOO — inicialização sem erro', () => {
     const dup = fs.readdirSync(root).filter((f) => /^package_\\d+\\.json$/.test(f));
     expect(dup).toEqual([]);
   });
-  test('check-inicializacao.js existe e checa query-string + pasta + portas', () => {
+  test('check-inicializacao.js checa query-string, pasta e porta Expo sem exigir Chrome/proxy', () => {
     const txt = fs.readFileSync(path.join(root, 'tools', 'check-inicializacao.js'), 'utf8');
     expect(txt).toContain('query-string');
-    expect(txt).toContain('3000');
     expect(txt).toContain('8082');
+    expect(txt).not.toContain('chrome.exe');
     expect(txt).toContain('OneDrive');
   });
   test('COMEÇAR-AQUI.md existe e documenta todos os erros já vistos', () => {
     const txt = fs.readFileSync(path.join(root, 'COMEÇAR-AQUI.md'), 'utf8');
-    for (const erro of ['expo@58', 'EADDRINUSE', 'query-string', 'hermes', 'Request Rejected', 'QR']) {
+    for (const erro of ['expo@58', 'query-string', 'hermes', 'Request Rejected', 'QR']) {
       expect(txt).toContain(erro);
     }
   });

@@ -51,8 +51,6 @@ export const SETTING_KEYS = {
   budgetsAtivado: 'orcamentos_ativado',
   /** v42: flag POUPANÇA — liga a ação "Poupança" na tela inicial e o card no Fluxo. */
   poupancaAtivado: 'poupanca_ativado',
-  /** v68: atalho NFC-e na tela inicial (Ações rápidas) — ligado por padrão. */
-  nfceNaHome: 'nfce_na_home',
   /** v68: atalho OFX na tela inicial (Ações rápidas) — ligado por padrão. */
   ofxNaHome: 'ofx_na_home',
   /** v68: atalho Despensa na tela inicial (Ações rápidas) — ligado por padrão. */

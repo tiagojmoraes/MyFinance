@@ -1,14 +1,12 @@
-# COMEÇAR AQUI — v60 (lê isso 1 vez, depois é só copiar os comandos)
+# COMEÇAR AQUI — v72
 
-## Por que deu erro antes (tudo já arrumado nessa versão)
+## Preparar o projeto
 | Erro que deu | Motivo | Como foi arrumado |
 |---|---|---|
 | `Need to install expo@58` + `npm error canceled` | Você estava na pasta de fora (sem `package.json`) | Essa versão tem `npm run check` que avisa se você está na pasta errada |
 | `Unable to resolve query-string` | Eu removi `query-string` achando que não usava, mas o `expo-router` precisa | `package.json` agora trava `query-string@8.1.0` |
 | `Invalid regular expression, js engine: hermes` | `npm install query-string` instalou a v9, que o Hermes não entende | Travado em `8.1.0` — nunca instale `query-string` sem o `@8.1.0` |
 | `VirtualizeUtils` / `query-string` sumindo, cada vez um arquivo diferente | OneDrive cortando arquivo no meio do `npm install` | Checklist abaixo: pausar OneDrive antes do install |
-| `EADDRINUSE: 3000` | 2 servidores ao mesmo tempo (`npm run dev` + `node tools/servidor-nfce.js`) | Use **1 jeito só**: ou 1 terminal, ou 2 terminais — nunca os 2 |
-| QR não aparece | `npm run dev` junta servidor + Expo no mesmo terminal e o log do servidor esconde o QR | Use **2 terminais separados** (abaixo) — o QR aparece limpo |
 
 ## 1ª vez (só 1 vez)
 
@@ -28,33 +26,23 @@ npm install
 npm list query-string
 ```
 
-## Todo dia (2 terminais, do seu jeito)
+## Todo dia
 
-**Terminal 1 — Servidor NFC-e (com Chrome):**
+**Terminal — Expo:**
 ```powershell
-npm run dev:servidor
+npm run dev
 ```
-Tem que aparecer: `SERVIDOR NFC-e ... 3000`
-
-**Terminal 2 — Expo:**
-```powershell
-npm run dev:expo8082
-```
-Tem que aparecer o QR code limpo. Escaneia com o Expo Go.
-
-**NUNCA rode `npm run dev` + os 2 terminais juntos.** É um jeito ou outro.
+Escaneie o QR code com o Expo Go.
 
 ## Se der erro, olha aqui primeiro (antes de mandar print)
 
 | O que apareceu | Faz isso |
 |---|---|
 | `Need to install expo@58` | Você está na pasta de fora. Rode o `cd` do passo 1. |
-| `EADDRINUSE 3000` | Já tem um servidor rodando. Fecha o outro terminal. |
 | `Unable to resolve query-string` | Rode: `npm uninstall query-string` + `npm install query-string@8.1.0` |
 | `Invalid regular expression / hermes` | Você instalou query-string v9. Volta pra 8.1.0 (linha acima). |
 | Tela vermelha no celular, outro arquivo faltando | Rode `npm run check`, depois `npm install` com o OneDrive pausado. |
-| `Request Rejected` na NFC-e | O servidor com Chrome não estava rodando. Deixa o Terminal 1 aberto. |
-| QR não aparece | Está usando `npm run dev` (1 terminal)? Troca pros 2 terminais. |
+| `Request Rejected` na NFC-e | A SEFAZ recusou a consulta. O app não repete nem tenta contornar o bloqueio; registre a despesa manualmente ou consulte novamente mais tarde pelo canal oficial. |
 
 ## Versões travadas (não atualiza)
 - `expo ~53.0.9` — não rode `npx expo` fora da pasta, ele tenta baixar o Expo 58
@@ -62,12 +50,19 @@ Tem que aparecer o QR code limpo. Escaneia com o Expo Go.
 - `query-string 8.1.0` — a v9 quebra o Hermes
 - `react-native 0.79.6` / `react 19.0.0`
 
+## Novidades v72
+- NFC-e consulta somente a página oficial pelo WebView, sem proxy de PC,
+  identidade de navegador forjada ou bypass de certificado.
+- Ao receber um bloqueio, a consulta para; o app não tenta trocar de canal
+  nem repetir a requisição automaticamente.
+- Uma instalação de produção nova começa sem cadastros ou dados de exemplo.
+- Em Ajustes › Dados, “Zerar toda a base de dados” apaga registros e preferências.
 
 ## v62 — Banco novo já nasce certo + Zerar tudo
 - Banco novo já nasce com `created_at`, `pantry_policy`, `cnpj`, `match_type` — sem precisar de reparo.
 - Banco antigo continua sendo reparado pela v61 (migração 49).
 - **Ajustes > Zerar tudo (teste)**: apaga TUDO e deixa o banco como novo, sem precisar limpar o Expo Go no celular.
-- `npm run check` agora acha o Chrome também em `Program Files`, não só no PATH.
+- `npm run check` valida a pasta, dependências e arquivos do projeto.
 
 ## v63.1 — o projeto "quebrado" do OneDrive foi consertado
 - **17 arquivos de conflito do OneDrive (`_1`/`_2`) reconciliados** — a versão mais nova de cada arquivo voltou para o nome oficial (ProductService v57, OFX de cartão v54, memo v56, icons, money v52, metro minify, tela NFC-e v59...).

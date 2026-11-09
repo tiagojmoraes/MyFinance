@@ -145,7 +145,7 @@ export function getServices(): Services {
     // roda uma única vez, só quando o banco está vazio. NFC-e não é mockada.
     try {
       const { ensureMockData } = require('../db/seed') as typeof import('../db/seed');
-      await ensureMockData(driver);
+      await ensureMockData(driver, __DEV__);
     } catch (err) {
       console.warn('[services] seed mock warn:', err);
     }

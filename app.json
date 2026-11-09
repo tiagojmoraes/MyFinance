@@ -2,7 +2,7 @@
   "expo": {
     "name": "MyFinance & Pantry Manager",
     "slug": "myfinance-pantry-manager",
-    "version": "71.0.0",
+    "version": "72.0.0",
     "scheme": "myfinancepantry",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -33,8 +33,7 @@
         }
       ],
       "expo-document-picker",
-      "expo-asset",
-      "./plugins/withWebViewSefazSsl"
+      "expo-asset"
     ],
     "extra": {
       "router": {},

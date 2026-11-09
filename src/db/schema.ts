@@ -187,9 +187,15 @@ CREATE TABLE IF NOT EXISTS products_catalog (
   brand TEXT,
   category_id TEXT REFERENCES categories(id),
   base_unit TEXT CHECK (base_unit IN ('G','ML','UN')),
+  unit_measure TEXT NOT NULL DEFAULT 'UN' CHECK (unit_measure IN ('UN','KG','G')),
   origin TEXT NOT NULL DEFAULT 'USER' CHECK (origin IN ('USER','NFCE')),
   -- v62: banco novo já nasce com pantry_policy (v57) — antes só existia via migração que nunca existiu
   pantry_policy TEXT NOT NULL DEFAULT 'ASK' CHECK (pantry_policy IN ('ALWAYS','ASK','NEVER'))
+);
+
+CREATE TABLE IF NOT EXISTS measurement_units (
+  code TEXT PRIMARY KEY NOT NULL,
+  label TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS product_aliases (

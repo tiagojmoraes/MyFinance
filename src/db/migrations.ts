@@ -523,10 +523,40 @@ CREATE INDEX IF NOT EXISTS idx_wishlist_reserves_dest ON wishlist_reserves(to_ac
       await ensure('bank_messages', 'card_final', 'card_final TEXT');
     },
   },
+  {
+    version: 54,
+    name: 'v72_unidades_de_medida',
+    sql: '',
+    fn: async (driver) => {
+      const productColumns = await driver.getAllAsync<{ name: string }>("PRAGMA table_info('products_catalog')");
+      if (!productColumns.some((column) => column.name === 'unit_measure')) {
+        await driver.execAsync("ALTER TABLE products_catalog ADD COLUMN unit_measure TEXT NOT NULL DEFAULT 'UN';");
+      }
+      await driver.execAsync(`
+        CREATE TABLE IF NOT EXISTS measurement_units (
+          code TEXT PRIMARY KEY NOT NULL,
+          label TEXT NOT NULL
+        );
+        INSERT OR IGNORE INTO measurement_units (code, label) VALUES
+          ('UN', 'Unidade'),
+          ('KG', 'Quilos'),
+          ('G', 'Gramas');
+        UPDATE products_catalog
+           SET unit_measure = CASE base_unit
+             WHEN 'G' THEN 'G'
+             ELSE 'UN'
+           END
+         WHERE unit_measure = 'UN' AND base_unit = 'G';
+      `);
+    },
+  },
 ];
 
 /** Aplica migrações pendentes de forma atômica. Idempotente. */
-export async function runMigrations(driver: DbDriver): Promise<{ applied: number[]; current: number }> {
+export async function runMigrations(
+  driver: DbDriver,
+  options: { seedCategories?: boolean } = {}
+): Promise<{ applied: number[]; current: number }> {
   const row = await driver.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
   const current = row ? Number(row.user_version) : 0;
   const applied: number[] = [];
@@ -535,7 +565,9 @@ export async function runMigrations(driver: DbDriver): Promise<{ applied: number
     try {
       await driver.transactionAsync(async () => {
         if (migration.fn) await migration.fn(driver);
-        else await driver.execAsync(migration.sql);
+        else if (!(migration.version === 2 && options.seedCategories === false)) {
+          await driver.execAsync(migration.sql);
+        }
         await driver.execAsync(`PRAGMA user_version = ${migration.version}`);
       });
     } catch (e: any) {

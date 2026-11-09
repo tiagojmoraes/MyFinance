@@ -81,62 +81,62 @@ export class BalanceService {
    *  v8: contas ARQUIVADAS não entram no saldo. v20: âncora por conta. */
   async getGeneralBalance(asOf?: string): Promise<number> {
     const date = asOf ?? todaySP();
-    const rows = await this.db.getAllAsync<{ id: string; initial_balance_cents: number; initial_balance_date: string | null; include: number }>(
-      'SELECT id, initial_balance_cents, initial_balance_date, include_in_general_balance AS include FROM accounts WHERE include_in_general_balance = 1 AND archived_at IS NULL'
+    const rows = await this.db.getAllAsync<{ balance_cents: number }>(
+      `SELECT a.id, a.initial_balance_cents, a.initial_balance_date,
+              a.include_in_general_balance AS include,
+              CASE WHEN a.initial_balance_date IS NOT NULL AND ? < a.initial_balance_date THEN 0
+                   ELSE a.initial_balance_cents + COALESCE(SUM(
+                     CASE WHEN fm.direction = 'CREDIT' THEN fm.amount_cents ELSE -fm.amount_cents END
+                   ), 0)
+              END AS balance_cents
+         FROM accounts a
+         LEFT JOIN financial_moves fm
+           ON fm.account_id = a.id
+          AND fm.effective_date <= ?
+          AND fm.effective_date >= COALESCE(a.initial_balance_date, '0000-01-01')
+          AND fm.status = 'CONFIRMED'
+        WHERE a.include_in_general_balance = 1 AND a.archived_at IS NULL
+        GROUP BY a.id`,
+      [date, date]
     );
-    let total = 0;
-    for (const row of rows) {
-      // v20: conta com âncora futura em relação à data pedida não soma (saldo desconhecido).
-      if (row.initial_balance_date && date < row.initial_balance_date) continue;
-      const moves = await this.db.getFirstAsync<{ credits: number; debits: number }>(
-        `SELECT
-           COALESCE(SUM(CASE WHEN direction = 'CREDIT' THEN amount_cents ELSE 0 END), 0) AS credits,
-           COALESCE(SUM(CASE WHEN direction = 'DEBIT' THEN amount_cents ELSE 0 END), 0) AS debits
-         FROM financial_moves
-         WHERE account_id = ? AND effective_date <= ? AND status = 'CONFIRMED'
-           AND effective_date >= COALESCE(?, '0000-01-01')`,
-        [row.id, date, row.initial_balance_date]
-      );
-      total += row.initial_balance_cents + (moves?.credits ?? 0) - (moves?.debits ?? 0);
-    }
-    return total;
+    return rows.reduce((total, row) => total + row.balance_cents, 0);
   }
 
   /** Saldos por conta (tela Início). v8: arquivadas ficam fora. v20: âncora. */
   async listAccountBalances(asOf?: string): Promise<AccountBalance[]> {
     const date = asOf ?? todaySP();
     const accounts = await this.db.getAllAsync<{
-      id: string; name: string; type: string; initial_balance_cents: number; initial_balance_date: string | null; include: number;
+      id: string;
+      name: string;
+      type: string;
+      include: number;
+      balance_cents: number;
     }>(
-      `SELECT id, name, type, initial_balance_cents, initial_balance_date, include_in_general_balance AS include
-         FROM accounts WHERE archived_at IS NULL ORDER BY name`
+      `SELECT a.id, a.name, a.type,
+              a.include_in_general_balance AS include,
+              CASE WHEN a.initial_balance_date IS NOT NULL AND ? < a.initial_balance_date THEN 0
+                   ELSE a.initial_balance_cents + COALESCE(SUM(
+                     CASE WHEN fm.direction = 'CREDIT' THEN fm.amount_cents ELSE -fm.amount_cents END
+                   ), 0)
+              END AS balance_cents
+         FROM accounts a
+         LEFT JOIN financial_moves fm
+           ON fm.account_id = a.id
+          AND fm.effective_date <= ?
+          AND fm.effective_date >= COALESCE(a.initial_balance_date, '0000-01-01')
+          AND fm.status = 'CONFIRMED'
+        WHERE a.archived_at IS NULL
+        GROUP BY a.id
+        ORDER BY a.name`,
+      [date, date]
     );
-    const out: AccountBalance[] = [];
-    for (const acc of accounts) {
-      // v20: antes da âncora o saldo da conta é desconhecido (0,00).
-      const anchored = !acc.initial_balance_date || date >= acc.initial_balance_date;
-      const moves = anchored
-        ? await this.db.getFirstAsync<{ credits: number; debits: number }>(
-            `SELECT
-               COALESCE(SUM(CASE WHEN direction = 'CREDIT' THEN amount_cents ELSE 0 END), 0) AS credits,
-               COALESCE(SUM(CASE WHEN direction = 'DEBIT' THEN amount_cents ELSE 0 END), 0) AS debits
-             FROM financial_moves
-             WHERE account_id = ? AND effective_date <= ? AND status = 'CONFIRMED'
-               AND effective_date >= COALESCE(?, '0000-01-01')`,
-            [acc.id, date, acc.initial_balance_date]
-          )
-        : null;
-      out.push({
-        accountId: acc.id,
-        name: acc.name,
-        type: acc.type,
-        includeInGeneral: acc.include === 1,
-        balanceCents: anchored
-          ? acc.initial_balance_cents + (moves?.credits ?? 0) - (moves?.debits ?? 0)
-          : 0,
-      });
-    }
-    return out;
+    return accounts.map((account) => ({
+      accountId: account.id,
+      name: account.name,
+      type: account.type,
+      includeInGeneral: account.include === 1,
+      balanceCents: account.balance_cents,
+    }));
   }
 
   /**

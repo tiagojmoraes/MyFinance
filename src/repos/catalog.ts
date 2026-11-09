@@ -16,6 +16,7 @@ export interface ProductRow {
   brand: string | null;
   category_id: string | null;
   base_unit: 'G' | 'ML' | 'UN' | null;
+  unit_measure?: 'UN' | 'KG' | 'G';
   origin: 'USER' | 'NFCE';
   pantry_policy?: 'ALWAYS' | 'ASK' | 'NEVER' | null;
 }
@@ -69,8 +70,8 @@ export class ProductRepo {
 
   insert(row: ProductRow): Promise<unknown> {
     return this.db.runAsync(
-      'INSERT INTO products_catalog (id, ean, name, brand, category_id, base_unit, origin, pantry_policy) VALUES (?,?,?,?,?,?,?,?)',
-      [row.id, row.ean, row.name, row.brand, row.category_id, row.base_unit, row.origin, row.pantry_policy ?? 'ASK']
+      'INSERT INTO products_catalog (id, ean, name, brand, category_id, base_unit, unit_measure, origin, pantry_policy) VALUES (?,?,?,?,?,?,?,?,?)',
+      [row.id, row.ean, row.name, row.brand, row.category_id, row.base_unit, row.unit_measure ?? 'UN', row.origin, row.pantry_policy ?? 'ASK']
     );
   }
 
@@ -82,6 +83,7 @@ export class ProductRepo {
     if (patch.brand !== undefined) { sets.push('brand = ?'); params.push(patch.brand); }
     if (patch.category_id !== undefined) { sets.push('category_id = ?'); params.push(patch.category_id); }
     if (patch.base_unit !== undefined) { sets.push('base_unit = ?'); params.push(patch.base_unit); }
+    if (patch.unit_measure !== undefined) { sets.push('unit_measure = ?'); params.push(patch.unit_measure); }
     if ((patch as any).pantry_policy !== undefined) { sets.push('pantry_policy = ?'); params.push((patch as any).pantry_policy); }
     if (!sets.length) return Promise.resolve({ changes: 0 });
     params.push(id);

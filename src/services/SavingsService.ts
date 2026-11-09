@@ -22,6 +22,9 @@ import { genId } from '../lib/id';
 import { nowIso, todaySP, monthOf, monthAdd, dayInMonth, lastDayNumberOf } from '../lib/dates';
 import { BalanceService } from './BalanceService';
 import { TransactionService } from './TransactionService';
+import { BudgetService } from './BudgetService';
+import { SETTING_KEYS } from './SettingsService';
+import { subtractAllocationsCents } from '../lib/flowAllocations';
 
 export type SavingsMode = 'MONTHLY' | 'CLOSING';
 
@@ -270,7 +273,7 @@ export class SavingsService {
    * Roda DENTRO de getMonthOverview — qualquer alteração de data/valor/
    * lançamento/transferência dispara bump() → telas recarregam → recalcula.
    */
-  async recalcClosing(month: string): Promise<void> {
+  async recalcClosing(month: string, reservedCents?: number): Promise<void> {
     const plan = await this.db.getFirstAsync<{ id: string; source_account_id: string | null; target_account_id: string | null }>(
       `SELECT id, source_account_id, target_account_id FROM savings_plans
         WHERE mode = 'CLOSING' AND is_active = 1 ORDER BY created_at DESC LIMIT 1`
@@ -308,7 +311,11 @@ export class SavingsService {
     // impacto NEGATIVO = a transferência tirou da conta → devolve para comparar
     // (v70: SEM filtro de status — pernas de transferência futura nascem VOIDED,
     // CONFIRMED nas executadas; o valor da perna é o que importa)
-    const estimativa = saldoFinal + Math.abs(Math.min(0, impact?.net ?? 0));
+    const allocations = reservedCents ?? await this.getClosingAllocationsCents(month);
+    const estimativa = subtractAllocationsCents(
+      saldoFinal + Math.abs(Math.min(0, impact?.net ?? 0)),
+      [allocations]
+    );
     if (estimativa > 0) {
       if (estimativa === entry.amount_cents) return; // nada mudou
       // Atualiza o VALOR nos três lugares (transação, pernas do movimento e entrada)
@@ -350,7 +357,7 @@ export class SavingsService {
    * Estimativa do FECHAMENTO: saldo do dia previsto NO FIM do mês visto;
    * positivo e ainda sem estimativa confirmada no mês → sugerir.
    */
-  async getClosingSuggestion(month: string): Promise<{ amountCents: number } | null> {
+  async getClosingSuggestion(month: string, reservedCents?: number): Promise<{ amountCents: number } | null> {
     const hasClosingPlan = await this.db.getFirstAsync<{ id: string }>(
       `SELECT id FROM savings_plans WHERE mode = 'CLOSING' AND is_active = 1 LIMIT 1`
     );
@@ -362,9 +369,41 @@ export class SavingsService {
     if (confirmed) return null;
     const endDate = `${month}-${String(lastDayNumberOf(month)).padStart(2, '0')}`;
     const dual = await this.balance.getDailyBalancesDual(month);
-    const finalBalance = dual.previsto[endDate] ?? 0;
+    const allocations = reservedCents ?? await this.getClosingAllocationsCents(month);
+    const finalBalance = subtractAllocationsCents(dual.previsto[endDate] ?? 0, [allocations]);
     if (finalBalance <= 0) return null;
     return { amountCents: finalBalance };
+  }
+
+  private async getClosingAllocationsCents(month: string): Promise<number> {
+    const [budgetSetting, wishlistSetting] = await Promise.all([
+      this.db.getFirstAsync<{ value: string | null }>(
+        'SELECT value FROM app_settings WHERE key = ?',
+        [SETTING_KEYS.budgetsAtivado]
+      ),
+      this.db.getFirstAsync<{ value: string | null }>(
+        'SELECT value FROM app_settings WHERE key = ?',
+        [SETTING_KEYS.wishlistNaHome]
+      ),
+    ]);
+
+    const allocations: number[] = [];
+    if (budgetSetting?.value === '1') {
+      const budgetSummary = await new BudgetService(this.db).getMonthSummary(month);
+      allocations.push(budgetSummary.remainingCents);
+    }
+    if (wishlistSetting?.value === '1') {
+      const wishlist = await this.db.getFirstAsync<{ remaining: number }>(
+        `SELECT COALESCE(SUM(MAX(0, target_cents - reserved_cents)), 0) AS remaining
+           FROM wishlist_items
+          WHERE status = 'OPEN'`
+      );
+      allocations.push(wishlist?.remaining ?? 0);
+    }
+    return allocations.reduce(
+      (total, amount) => total + (Number.isFinite(amount) ? Math.max(0, Math.trunc(amount)) : 0),
+      0
+    );
   }
 
   /** Confirma a estimativa do fechamento: cria a transferência (previsão se futura). */
@@ -407,8 +446,12 @@ export class SavingsService {
     // refeito A CADA leitura — alterou data/valor/lançamento/transferência →
     // o número acompanha (nada de valor travado/antigo). Antes de ler qualquer
     // coisa: as leituras abaixo já saem atualizadas.
+    const hasClosingPlan = await this.db.getFirstAsync<{ id: string }>(
+      `SELECT id FROM savings_plans WHERE mode = 'CLOSING' AND is_active = 1 LIMIT 1`
+    );
+    const closingAllocations = hasClosingPlan ? await this.getClosingAllocationsCents(month) : 0;
     try {
-      await this.recalcClosing(month);
+      await this.recalcClosing(month, closingAllocations);
     } catch {
       // recálculo é best-effort — nunca derruba o resumo
     }
@@ -470,7 +513,7 @@ export class SavingsService {
       });
     let closingSuggestion: { amountCents: number } | null = null;
     try {
-      closingSuggestion = await this.getClosingSuggestion(month);
+      closingSuggestion = await this.getClosingSuggestion(month, closingAllocations);
     } catch {
       closingSuggestion = null;
     }

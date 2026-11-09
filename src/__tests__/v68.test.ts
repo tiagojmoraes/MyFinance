@@ -258,14 +258,15 @@ describe('v68 AJUSTES — grupos expansíveis e conteúdo certo', () => {
     expect(src).toContain('<AboutBlock>');
   });
 
-  test('PREFERENCIAS tem os 6 toggles com a grafia do usuário', () => {
+  test('PREFERENCIAS mantém os toggles de fluxo, sem NFC-e', () => {
     const src = ajustesSrc();
     expect(src).toContain('label="Exibir Saldo do dia"');
     expect(src).toContain('label="Orçamento"');
     expect(src).toContain('label="Poupança"');
-    expect(src).toContain('label="NFC-e"');
+    expect(src).not.toContain('label="NFC-e"');
     expect(src).toContain('label="OFX"');
     expect(src).toContain('label="Despensa"');
+    expect(src).not.toContain('nfceNaHome');
     // descrições enxutas (não gigantes)
     expect(src).toContain('Card de orçamento no Fluxo e ação na tela inicial.');
     expect(src).toContain('Card de poupança no Fluxo e ação na tela inicial.');
@@ -307,7 +308,7 @@ describe('v68 HOME — Ações rápidas só com alguma opção ativada', () => {
     const src = homeSrc();
     expect(src).toContain('anyQuickAction');
     expect(src).toContain('{anyQuickAction ? (');
-    expect(src).toContain('SETTING_KEYS.nfceNaHome');
+    expect(src).not.toContain('SETTING_KEYS.nfceNaHome');
     expect(src).toContain('SETTING_KEYS.ofxNaHome');
     expect(src).toContain('SETTING_KEYS.despensaNaHome');
   });
@@ -503,9 +504,9 @@ describe('v68 LANÇAMENTO — QR "Colar e consultar" branco; categoria some com 
     expect(manual).toContain("outlineTextClass={dark ? 'text-white' : undefined}");
   });
 
-  test('com nota lida (QR) o campo "Categoria (opcional)" do lançamento some', () => {
+  test('durante todo o fluxo QR o campo "Categoria (opcional)" do lançamento some', () => {
     const src = lancSrc();
-    expect(src).toMatch(/\{!isTransfer && !isConsolidated && !nfceNote \? \(\s*<CategorySelect/);
+    expect(src).toMatch(/\{!isTransfer && !isConsolidated && !isQrFlowActive \? \(\s*<CategorySelect/);
     // e a nota segue com o card de itens (o resto da tela fica igual)
     expect(src).toContain('Itens da nota fiscal (NFC-e)');
   });
@@ -519,7 +520,7 @@ describe('v68 DESEMPENHO — memoização dos cálculos e listas', () => {
     expect(src).toMatch(/const dailyShown = React\.useMemo\(/);
     // v70: deps agora incluem closingRegendo (retenção do Fechamento do mês —
     // BUG 1.3) e lastActivityDay; a abertura do mês entra pelo dailyBal.
-    expect(src).toMatch(/\}, \[dailyBal, budAdj, savAdj, closingRegendo, lastActivityDay\]\)/);
+    expect(src).toMatch(/\}, \[dailyBal, budAdj, savAdj, closingRegendo, lastActivityDay, budgetsOn, budgetSum, wishlistOn, wishClasses\]\)/);
   });
 
   test('LancamentoRow é memoizado (React.memo)', () => {
