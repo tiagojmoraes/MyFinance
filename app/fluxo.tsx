@@ -97,8 +97,8 @@
  */
 
 import React from 'react';
-import { View, Text, Pressable } from 'react-native';
-import { router, useFocusEffect } from 'expo-router';
+import { View, Text, Pressable, FlatList, type ListRenderItemInfo } from 'react-native';
+import { router } from 'expo-router';
 import { Screen, Card, Button, EmptyState, Badge, Segmented, FixedDot, InstallmentPill, ProgressBar } from '../src/components/ui';
 import { ConfirmDialog } from '../src/components/ConfirmDialog';
 import { LancamentoRow } from '../src/components/LancamentoRow'; // v67 (BUG 2): esqueleto ÚNICO das linhas
@@ -175,10 +175,6 @@ export default function FluxoScreen() {
   const [groupMonths, setGroupMonths] = React.useState<Record<string, GroupMonth>>({});
   // v9: expansor das faturas de cartão
   const [expandedInv, setExpandedInv] = React.useState<Record<string, boolean>>({});
-  // v18 (bug 3): ao voltar o foco para o Fluxo, recarrega TUDO (saldos do dia,
-  // listas, grupos) — garantia de atualização imediata mesmo que a tela que
-  // alterou o dado não tenha propagado o bump.
-  const [focusTick, setFocusTick] = React.useState(0);
   // v42 — ORÇAMENTOS e POUPANÇA (flags de Ajustes; cards recolhidos/expandíveis)
   const [budgetsOn, setBudgetsOn] = React.useState(false);
   const [savingsOn, setSavingsOn] = React.useState(false);
@@ -198,11 +194,6 @@ export default function FluxoScreen() {
   const [budgetOpen, setBudgetOpen] = React.useState(false);
   const [savingsOpen, setSavingsOpen] = React.useState(false);
   const [closingBusy, setClosingBusy] = React.useState(false);
-  useFocusEffect(
-    React.useCallback(() => {
-      setFocusTick((t) => t + 1);
-    }, [])
-  );
   // v21 (bug 4): CONFIRMAÇÃO antes de excluir/alterar — regra pedida pelo usuário
   type ConfirmState =
     | { kind: 'tx'; tx: FlowTx }
@@ -353,7 +344,7 @@ export default function FluxoScreen() {
       // presa no "Carregando..." — e uma carga abandonada não mexe no loading.
       if (isCurrent()) setLoading(false);
     }
-  }, [month, focusTick]);
+  }, [month]);
 
   const isGroup = (t: FlowTx) => t.child_count > 0;
 
@@ -535,12 +526,8 @@ export default function FluxoScreen() {
     const next = !info.allDone;
     const { txs, insts } = groupStatusItems(grp, children);
     try {
-      for (const t of txs) {
-        await services.transactions.setPaymentStatus(t.id, next);
-      }
-      for (const i of insts) {
-        await services.installments.setPaymentStatus(i.installmentId, next);
-      }
+      await services.transactions.setPaymentStatuses(txs.map((tx) => tx.id), next);
+      await services.installments.setPaymentStatuses(insts.map((inst) => inst.installmentId), next);
       bump();
     } catch (err) {
       showToast(err instanceof Error ? err.message : String(err), 'err');
@@ -1208,8 +1195,8 @@ export default function FluxoScreen() {
     </View>
   );
 
-  return (
-    <Screen title="Fluxo" headerArea={headerArea}>
+  const listHeader = (
+    <View className="gap-3 px-4 pt-4">
       <Segmented<Filter>
         value={filter}
         onChange={setFilter}
@@ -1219,70 +1206,68 @@ export default function FluxoScreen() {
           { value: 'EXPENSE', label: 'Saídas' },
         ]}
       />
-
-      {/* v67 (MELHORIA 3): os atalhos "Parcelamentos" e "Recorrências" saíram
-          DESTE tela ( Fluxo ) — os dados e a lógica continuam intactos: as
-          contas fixas e parcelas seguem aparecendo na lista do mês normalmente
-          (ocorrências, parcelas e faturas), e as telas continuam acessíveis
-          pela Home (Ações rápidas). */}
-
-      {/* v42: cards aglutinados ligados em Ajustes — v70 (MELHORIA 2.1): a
-          ORDEM é Orçamentos → Lista de Desejos → Poupança; a Lista de Desejos
-          é um BLOCO PRÓPRIO (v70 BUG 1.1), independente do Orçamento. */}
       {budgetCard}
       {wishlistCard}
       {savingsCard}
-
       {loading ? <Card><Text className="text-slate-500">Carregando...</Text></Card> : null}
+    </View>
+  );
+  const listExtraData = React.useMemo(
+    () => ({ expanded, expandedInv, childrenMap }),
+    [expanded, expandedInv, childrenMap]
+  );
+  const keyExtractor = React.useCallback((item: [string, Entry[]]) => item[0], []);
+  const renderEntryRef = React.useRef(renderEntry);
+  renderEntryRef.current = renderEntry;
+  const renderDay = React.useCallback(({ item: [day, list] }: ListRenderItemInfo<[string, Entry[]]>) => {
+    const prev = dailyShown.previsto[day];
+    const efet = dailyShown.efetivado[day];
+    return (
+      <View className="gap-1.5 px-4 pt-3">
+        <View className="flex-row justify-between items-start mt-1 gap-2">
+          <Text className="text-xs font-bold uppercase tracking-wide text-slate-500 mt-0.5">
+            {ymdToBr(day).slice(0, 5)} · {weekdayOf(day)}
+          </Text>
+          {showDaily && prev != null ? (
+            <View className="items-end gap-0.5 shrink">
+              <Text className={`text-xs font-bold ${prev < 0 ? 'text-rose-600' : 'text-slate-700'}`}>
+                Saldo do dia Previsto: {formatBRL(prev)}
+              </Text>
+              {efet != null ? (
+                <Text className={`text-[11px] font-semibold ${efet < 0 ? 'text-rose-500' : 'text-slate-500'}`}>
+                  Saldo do dia Efetivado: {formatBRL(efet)}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
+        {list.map((entry) => renderEntryRef.current(entry))}
+      </View>
+    );
+  }, [dailyShown, showDaily]);
 
-      {!loading && days.length === 0 ? (
-        <EmptyState icon="🗓" title="Sem lançamentos no mês" hint="Registre um lançamento manual ou importe um OFX." />
-      ) : null}
-
-      {/* v9: agrupamento por dia — com "Exibir saldo por dia" ativo, CADA dia
-          mostra as DUAS visões (v11): Previsto e Efetivado.
-          v67 (BUG 1): cabeçalho do dia em LINHAS EMPILHADAS — o saldo do dia
-          (Previsto/Efetivado) tem linha PRÓPRIA.
-          v68 (BUGS 1 e 4): a linha de orçamentos SAIU daqui — o orçamento e a
-          poupança agora fazem PARTE do número: Previsto = do jeito que está +
-          previsto no Orçamento + previsto na Poupança; Efetivado = do jeito
-          que está + efetivado no Orçamento + efetivado na Poupança. Na
-          modalidade Fechamento do Mês nada é somado/subtraído à força — o
-          restante do saldo é que é da poupança. */}
-      {!loading
-        ? days.map(([day, list]) => {
-            const prev = dailyShown.previsto[day];
-            const efet = dailyShown.efetivado[day];
-            return (
-              <View key={day} className="gap-1.5">
-                <View className="flex-row justify-between items-start mt-1 gap-2">
-                  <Text className="text-xs font-bold uppercase tracking-wide text-slate-500 mt-0.5">
-                    {ymdToBr(day).slice(0, 5)} · {weekdayOf(day)}
-                  </Text>
-                  {showDaily && prev != null ? (
-                    <View className="items-end gap-0.5 shrink">
-                      <Text className={`text-xs font-bold ${prev < 0 ? 'text-rose-600' : 'text-slate-700'}`}>
-                        Saldo do dia Previsto: {formatBRL(prev)}
-                      </Text>
-                      {efet != null ? (
-                        <Text className={`text-[11px] font-semibold ${efet < 0 ? 'text-rose-500' : 'text-slate-500'}`}>
-                          Saldo do dia Efetivado: {formatBRL(efet)}
-                        </Text>
-                      ) : null}
-                    </View>
-                  ) : null}
-                </View>
-                {list.map(renderEntry)}
-              </View>
-            );
-          })
-        : null}
-
-      {days.length > 0 ? (
-        <Text className="text-[11px] text-slate-400 text-center px-8">
-          Dica: segure um lançamento por 3 segundos para duplicar. Use "Alterar" para editar; toque no status para marcar Pago/Recebido. Faturas: toque na seta para ver os lançamentos.
-        </Text>
-      ) : null}
+  return (
+    <Screen title="Fluxo" headerArea={headerArea} scrollable={false}>
+      <FlatList
+        style={{ flex: 1 }}
+        data={loading ? [] : days}
+        renderItem={renderDay}
+        keyExtractor={keyExtractor}
+        ListHeaderComponent={listHeader}
+        ListEmptyComponent={!loading ? <View className="px-4 pt-4"><EmptyState icon="🗓" title="Sem lançamentos no mês" hint="Registre um lançamento manual ou importe um OFX." /></View> : null}
+        ListFooterComponent={days.length > 0 ? (
+          <Text className="text-[11px] text-slate-400 text-center px-8 py-4">
+            Dica: segure um lançamento por 3 segundos para duplicar. Use "Alterar" para editar; toque no status para marcar Pago/Recebido. Faturas: toque na seta para ver os lançamentos.
+          </Text>
+        ) : null}
+        contentContainerStyle={{ paddingBottom: 24 }}
+        initialNumToRender={6}
+        maxToRenderPerBatch={5}
+        updateCellsBatchingPeriod={40}
+        windowSize={5}
+        removeClippedSubviews
+        extraData={listExtraData}
+      />
 
       {/* v21 (bug 4): CONFIRMAÇÃO de exclusão/alteração — modal antes de efetivar */}
       <ConfirmDialog

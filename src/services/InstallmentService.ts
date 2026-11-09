@@ -670,15 +670,49 @@ export class InstallmentService {
    *  pela fatura e não passam por aqui.
    */
   async setPaymentStatus(installmentId: string, paid: boolean): Promise<void> {
-    const inst = await this.installments.getById(installmentId);
-    if (!inst) throw new Error('Parcela não encontrada');
-    if (inst.status === 'CANCELED') throw new Error('Parcela excluída — status indisponível');
+    await this.setPaymentStatuses([installmentId], paid);
+  }
+
+  /** Atualiza parcelas de um consolidado sem transações e consultas por item. */
+  async setPaymentStatuses(installmentIds: string[], paid: boolean): Promise<void> {
+    const ids = Array.from(new Set(installmentIds));
+    if (ids.length === 0) return;
     await this.db.transactionAsync(async () => {
-      await this.installments.setStatus(installmentId, paid ? 'PAID' : 'PENDING');
-      const moves = await this.moves.getByInstallment(installmentId);
-      for (const m of moves) {
-        if (m.status !== 'CONFIRMED') continue;
-        await this.moves.updateMove(m.id, { effective_date: paid ? todaySP() : inst.due_date });
+      const installments: Array<{ id: string; status: string }> = [];
+      for (let i = 0; i < ids.length; i += 400) {
+        const batch = ids.slice(i, i + 400);
+        const marks = batch.map(() => '?').join(',');
+        installments.push(...await this.db.getAllAsync<{ id: string; status: string }>(
+          `SELECT id, status FROM installments WHERE id IN (${marks})`,
+          batch
+        ));
+      }
+      if (installments.length !== ids.length) throw new Error('Parcela não encontrada');
+      if (installments.some((inst) => inst.status === 'CANCELED')) {
+        throw new Error('Parcela excluída — status indisponível');
+      }
+      const effectiveDate = paid ? todaySP() : null;
+      for (let i = 0; i < ids.length; i += 400) {
+        const batch = ids.slice(i, i + 400);
+        const marks = batch.map(() => '?').join(',');
+        await this.db.runAsync(
+          `UPDATE installments SET status = ? WHERE id IN (${marks})`,
+          [paid ? 'PAID' : 'PENDING', ...batch]
+        );
+        if (paid) {
+          await this.db.runAsync(
+            `UPDATE financial_moves SET effective_date = ?
+              WHERE status = 'CONFIRMED' AND installment_id IN (${marks})`,
+            [effectiveDate, ...batch]
+          );
+        } else {
+          await this.db.runAsync(
+            `UPDATE financial_moves
+                SET effective_date = (SELECT due_date FROM installments WHERE installments.id = financial_moves.installment_id)
+              WHERE status = 'CONFIRMED' AND installment_id IN (${marks})`,
+            batch
+          );
+        }
       }
     });
   }

@@ -1,8 +1,10 @@
 /**
- * NfceWebFetch — consulta a página oficial da SEFAZ-SP com WebView visível.
+ * NfceWebFetch — consulta a página oficial da SEFAZ-SP sem tela intermediária.
  *
  * v72: somente o WebView oficial do aparelho é usado. Não há proxy local,
  * User-Agent forjado, bypass TLS ou nova consulta após rejeição explícita.
+ * v73: o WebView continua usando o fluxo oficial em segundo plano; o usuário
+ * recebe apenas uma mensagem se a consulta falhar.
  *
  * POR QUE ISTO EXISTE (diagnóstico do bug "NFC-e não funciona"):
  *   A página da nota (www.nfce.fazenda.sp.gov.br — /qrcode e
@@ -70,7 +72,7 @@
  */
 
 import React from 'react';
-import { View, Text, Modal, Pressable, Linking } from 'react-native';
+import { View, Text, Pressable, Linking } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { isFirewallRejectionPage, looksLikeNfcePage, pageHasItems } from '../parsers/nfce';
 import { nfceLog, nfceHtmlSummary, nfceStep, nfceTimer, nfceVerdict, nfceClip, NFCE_STEP, type NfceStepTimer } from '../lib/nfcelog';
@@ -126,14 +128,14 @@ const INJECT_CHUNKED_CAPTURE = `(function(){
  * navegador do celular — e é ela que enviamos.
  */
 
-export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
+export function NfceWebFetch({ urls, onHtml, onError, onCancel = () => {}, onFallback }: {
   /** CANDIDATOS de URL em ordem de tentativa (v23: com fallback automático). */
   urls: string[];
   /** HTML renderizado da página da nota (automático ou pelo botão manual). */
   onHtml: (html: string) => void;
-  /** Usuário cancelou a consulta — a tela que abriu fecha o componente. */
-  onCancel: () => void;
-  /** v24: TODOS os canais recusados — registra a despesa sem a nota. */
+  /** Falha final da consulta oficial, apresentada como mensagem no formulário. */
+  onError: (message: string) => void;
+  onCancel?: () => void;
   onFallback?: () => void;
 }) {
   const finished = React.useRef(false);
@@ -146,14 +148,20 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
   // NFC-e ficava sem itens).
   const itemWaits = React.useRef(0);
   const itemTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const failureNotified = React.useRef(false);
+  const reportFailure = (message: string) => {
+    if (failureNotified.current) return;
+    failureNotified.current = true;
+    finished.current = true;
+    onError(message);
+  };
   React.useEffect(() => () => {
     if (retryTimer.current) clearTimeout(retryTimer.current);
     if (itemTimer.current) clearTimeout(itemTimer.current);
   }, []);
   // v40.1: PORTÃO anti-ban — se a falha anterior fechou o portão, a consulta
-  // NEM COMEÇA: WebView não abre o portal, o contador roda na tela e o
-  // navegador só carrega quando o portão libera. Consulta em rajada era o
-  // que estendia o bloqueio do firewall (log do aparelho: 4 rajadas em 45 s).
+  // NEM COMEÇA: WebView não abre o portal e devolve uma falha simples; consulta
+  // Consultas em rajada estendiam o bloqueio do firewall.
   const [cooldownLeft, setCooldownLeft] = React.useState<number>(() => nfcePortalGate.blockedSecondsLeft());
   const startedRef = React.useRef(false);
   const portaoLoggedRef = React.useRef(false);
@@ -163,20 +171,20 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
         portaoLoggedRef.current = true;
         nfceLog(`webview: PORTÃO anti-ban fechado — a última consulta teve TODOS os canais recusados; aguardando ${cooldownLeft}s para não alimentar o bloqueio`);
       }
+      reportFailure(`A SEFAZ-SP recusou consultas recentes. Aguarde ${fmtCooldown(cooldownLeft)} antes de tentar novamente.`);
       return;
     }
-    if (startedRef.current) return;
-    startedRef.current = true;
-    nfcePortalGate.markHit();
-    iniciarConsulta(null);
+    if (!startedRef.current) {
+      startedRef.current = true;
+      nfcePortalGate.markHit();
+      iniciarConsulta(null);
+    }
+    const timeout = setTimeout(() => {
+      reportFailure('A consulta da NFC-e excedeu o tempo limite. Verifique a conexão e tente novamente mais tarde.');
+    }, 60000);
+    return () => clearTimeout(timeout);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cooldownLeft]);
-  // v40.1: contagem regressiva do portão (1 tick por segundo enquanto fechado)
-  React.useEffect(() => {
-    if (cooldownLeft <= 0) return;
-    const t = setInterval(() => setCooldownLeft(nfcePortalGate.blockedSecondsLeft()), 1000);
-    return () => clearInterval(t);
-  }, [cooldownLeft <= 0]);
   const bufferRef = React.useRef<{ total: number; parts: Map<number, string> }>({ total: 0, parts: new Map() });
   // v40: cronômetro da ETAPA 4 (navegador) do canal corrente — fecha com OK
   // (página chegou) ou FALHA (erro/rejeição final), sempre com o tempo gasto.
@@ -189,9 +197,6 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
   const lastHandledRef = React.useRef<{ html: string; epoch: number } | null>(null);
   const captureEpochRef = React.useRef(0);
   const webRef = React.useRef<WebView>(null);
-  // v30: DELAY ALEATÓRIO 2–5 s entre tentativas (rate-limit do portal — acesso
-  // em rajada é exatamente o padrão que o firewall da SEFAZ-SP bloqueia).
-  const sefazDelayMs = React.useRef(() => 2000 + Math.floor(Math.random() * 3000));
   // v40.1: TODO acesso ao portal passa pelo PORTÃO (src/lib/nfceGate.ts):
   // espaço mínimo de 2,5 s entre acessos + cooldown anti-ban. O callback só
   // executa quando o portão libera (polling de 1 s enquanto estiver fechado).
@@ -212,7 +217,6 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
   const [currentUrl, setCurrentUrl] = React.useState('');
   const [networkError, setNetworkError] = React.useState<null | 'offline' | 'blocked' | 'ssl'>(null);
   const [hint, setHint] = React.useState('Abrindo a página oficial da SEFAZ-SP…');
-  // v39: etapa corrente do fluxo que funciona (1–6) — mostrada na tela
   const [phase, setPhase] = React.useState(1);
 
   /** Remonta as fatias; devolve o HTML completo quando todas chegarem. */
@@ -242,8 +246,6 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
     captureEpochRef.current += 1; // v32: nova página real pode ser idêntica à anterior
     lastHandledRef.current = null;
     setNetworkError(null);
-    setHint(motivo ?? 'Abrindo a página oficial da SEFAZ-SP…');
-    setPhase(1); // v39: cada canal recomeça o fluxo na etapa 1 (loadUrl)
     setCurrentUrl(urls[idx]);
     // v40: ETAPA 4 recomeça a cada canal (com o motivo da troca)
     canalTimerRef.current = nfceTimer(NFCE_STEP.NAVEGADOR);
@@ -264,7 +266,6 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
     if (finished.current) return;
     finished.current = true;
     nfcePortalGate.markSuccess(); // v40.1: nota abriu — histórico de falhas zerado
-    setPhase(6); // v39: etapa final — extraindo os dados da nota
     // v40: ETAPA 5 fecha OK — HTML entregue ao parser (tamanho + marcadores)
     nfceStep(NFCE_STEP.HTML, 'ok', `ENTREGUE ao parser (${nfceHtmlSummary(html)})`);
     onHtml(html);
@@ -298,7 +299,7 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
       const gate = nfcePortalGate.markAllRejected();
       setCooldownLeft(Math.ceil(gate.waitMs / 1000));
       setNetworkError('blocked');
-      setHint('Consulta interrompida após resposta de bloqueio da SEFAZ-SP.');
+      reportFailure('A SEFAZ-SP recusou esta consulta. Tente novamente mais tarde ou registre o lançamento manualmente.');
       return;
     }
     if (looksLikeNfcePage(html)) {
@@ -307,8 +308,6 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
         itemWaits.current += 1;
         // v40: espera por itens visível como ATENÇÃO na trilha
         nfceStep(NFCE_STEP.HTML, 'warn', `nota reconhecida SEM itens ainda — esperando renderizar (espera ${itemWaits.current}/6)`);
-        setHint('Nota reconhecida — aguardando carregar os itens…');
-        setPhase(6); // v39: já é a etapa de extração — itens renderizando
         if (itemTimer.current) clearTimeout(itemTimer.current);
         itemTimer.current = setTimeout(() => {
           if (finished.current) return;
@@ -316,7 +315,6 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
         }, 1500);
         return;
       }
-      setHint('Nota reconhecida — registrando os dados…');
       deliver(html);
       return;
     }
@@ -331,14 +329,11 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
       manualArmed.current = false;
       // v40: página visível não era a nota — ATENÇÃO na trilha
       nfceStep(NFCE_STEP.HTML, 'warn', 'botão manual — página visível ainda não tem dados da nota');
-      setHint('Esta página ainda não é a nota — aguarde a nota abrir e toque de novo.');
       return;
     }
     // desafio/intermediária: o portal recarrega sozinho — o próximo onLoadEnd
     // injeta de novo e o HTML final checa aqui de novo
     nfceStep(NFCE_STEP.HTML, 'info', 'página intermediária (desafio do firewall) — aguardando o portal resolver sozinho');
-    setHint('Resolvendo a verificação do portal… a nota abre em instantes.');
-    setPhase(5); // v39: desafio de segurança sendo resolvido pelo motor do aparelho
   };
 
   /** Botão manual: captura a página que está NA TELA agora. */
@@ -349,12 +344,16 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
     lastHandledRef.current = null;
     // v31: uso do botão manual visível no terminal
     nfceLog('webview: botão "A nota abriu?" tocado — capturando a página exibida');
-    setHint('Lendo a página exibida…');
     webRef.current?.injectJavaScript(INJECT_CHUNKED_CAPTURE);
   };
 
   return (
-    <Modal visible animationType="slide" onRequestClose={onCancel}>
+    <View
+      pointerEvents="none"
+      style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, opacity: 0 }}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+    >
       <View className="flex-1 bg-slate-100">
         {/* Cabeçalho do navegador interno */}
         <View className="bg-white border-b border-slate-200 px-4 pt-3 pb-3 gap-1">
@@ -381,7 +380,7 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
           </Text>
         </View>
 
-        {/* Navegador VISÍVEL — o desafio do F5 resolve na frente do usuário */}
+        {/* WebView oficial em segundo plano; o desafio roda no motor do aparelho. */}
         <View className="flex-1 m-3 rounded-2xl overflow-hidden bg-white border border-slate-200">
           <WebView
             ref={webRef}
@@ -420,13 +419,8 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
                 // mensagem não-JSON (injeção) — ignora
               }
             }}
-            onLoadStart={() => {
-              // v39: etapa 3 do JSON — o aparelho está estabelecendo a conexão
-              if (!finished.current) setPhase((p) => (p < 3 ? 3 : p));
-            }}
             onLoadEnd={() => {
               // v39: etapa 4 — pedido saiu e voltou pelo túnel TLS (sem erro SSL)
-              if (!finished.current) setPhase((p) => (p < 4 ? 4 : p));
               // cada fim de carga (desafio → reload → nota) captura de novo —
               // garantia de que o HTML FINAL da nota é enviado ao app
               if (!finished.current && !networkError) {
@@ -461,6 +455,7 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
                     'rede corporativa/proxy que re-assina HTTPS',
                   ], 'confira o relógio do aparelho (a hora certa é mostrada no início da trilha) e confira se a nota abre no Chrome do celular');
                   setNetworkError('ssl');
+                  reportFailure('O celular não confiou no certificado do portal da SEFAZ. Confira data e hora do aparelho e tente novamente mais tarde.');
                 }
                 return;
               }
@@ -471,6 +466,7 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
                 'portal da SEFAZ-SP fora do ar',
               ], 'confira a internet e toque em "Tentar de novo"');
               setNetworkError((cur) => cur ?? 'offline');
+              reportFailure('Não foi possível conectar à SEFAZ-SP. Verifique a internet e tente novamente mais tarde.');
             }}
             onRenderProcessGone={() => {
               // engine do navegador morreu — recarrega (até 2 vezes)
@@ -479,6 +475,8 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
               if (!finished.current && renderGone.current < 2) {
                 renderGone.current += 1;
                 webRef.current?.reload();
+              } else if (!finished.current) {
+                reportFailure('O navegador interno falhou ao carregar a NFC-e. Tente novamente mais tarde.');
               }
             }}
           />
@@ -567,6 +565,6 @@ export function NfceWebFetch({ urls, onHtml, onCancel, onFallback }: {
           </Text>
         </View>
       </View>
-    </Modal>
+    </View>
   );
 }

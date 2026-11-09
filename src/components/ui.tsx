@@ -17,7 +17,7 @@ import { Footer } from './Footer';
 /** Telas "raiz" (rodapé + início): não mostram o botão Voltar. */
 const MAIN_SCREENS = ['/', '/lancamento', '/fluxo', '/cadastro', '/ajustes'];
 
-export function Screen({ title, subtitle, children, action, accent, accentTextClass, footerArea, headerArea }: {
+export function Screen({ title, subtitle, children, action, accent, accentTextClass, footerArea, headerArea, scrollable = true }: {
   title: string;
   subtitle?: string;
   children: React.ReactNode;
@@ -31,6 +31,8 @@ export function Screen({ title, subtitle, children, action, accent, accentTextCl
   /** v10: conteúdo FIXO abaixo do cabeçalho (ex.: saldo consolidado + seletor de mês do Fluxo) —
    *  fica preso no layout e não some quando a lista rola. */
   headerArea?: React.ReactNode;
+  /** Desativa o ScrollView interno quando o conteúdo já é virtualizado. */
+  scrollable?: boolean;
 }) {
   const pathname = usePathname() ?? '/';
   const insets = useSafeAreaInsets();
@@ -74,9 +76,13 @@ export function Screen({ title, subtitle, children, action, accent, accentTextCl
       {accent ? <View className={`h-1.5 ${accent}`} /> : null}
       {/* v10: área fixa abaixo do cabeçalho (não rola) — saldo consolidado + seletor de mês */}
       {headerArea ? <View className="px-4 pt-3 gap-2">{headerArea}</View> : null}
-      <ScrollView className="flex-1" contentContainerClassName="px-4 pt-4 pb-8 gap-3">
-        {children}
-      </ScrollView>
+      {scrollable ? (
+        <ScrollView className="flex-1" contentContainerClassName="px-4 pt-4 pb-8 gap-3">
+          {children}
+        </ScrollView>
+      ) : (
+        <View className="flex-1">{children}</View>
+      )}
       {/* v9: área fixa acima do rodapé (não rola) — cards de saldo do Fluxo */}
       {footerArea ? (
         <View className={`${theme.surface} border-t ${theme.border} px-3 pt-2.5 pb-1.5 gap-1.5`}>

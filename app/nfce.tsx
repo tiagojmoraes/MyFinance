@@ -8,22 +8,19 @@
  *  estabelecimento, CNPJ e itens (nome, qtde, un, código).
  *  v21 (melhoria 2): o campo de DIGITAR chave/URL foi REMOVIDO — o fluxo é
  *  só a CÂMERA (QR Code), direto no ponto.
- *  v22: sem legendas internas de arquitetura na tela; a consulta roda num
- *  navegador VISÍVEL em modal (o usuário vê a página abrir e pode registrar
- *  a nota com um toque, mesmo se a detecção automática falhar).
- *  v24 (solução definitiva): "já registrada" só vale para nota com transação
- *  real (documentos PENDING/FAILED antigos são reprocessados); se TODOS os
- *  canais do portal forem recusados, o navegador interno oferece o registro
- *  manual da despesa — o usuário nunca fica preso numa tela de erro.
+ *  v22: a consulta já foi apresentada em navegador interno; na v73, a
+ *  consulta roda sem tela intermediária e falhas são exibidas como mensagem.
+ *  v24: "já registrada" só vale para nota com transação real (documentos
+ *  PENDING/FAILED antigos são reprocessados); o fallback manual da consulta
+ *  foi substituído na v73 por uma mensagem de falha.
  *  v38 (câmera à prova de falhas): a permissão de câmera agora tem 4 estados
  *  (NfceCameraArea) — incluindo "negada em definitivo", que abre os Ajustes
  *  do Android direto na tela do app. E o caminho manual VOLTOU (NfceManualInput):
  *  colar o link do QR ou a chave de 44 dígitos — nunca mais o usuário fica
  *  sem jeito de puxar os dados da nota quando a câmera falha.
- *  v39 (O JEITO QUE FUNCIONA): o fluxo da captura Reqable (WebView.loadUrl()
- *  com identidade genuína, 6 etapas) é o 1º e ÚNICO passo da leitura — o fetch
- *  direto silencioso saiu do caminho (o firewall sempre o recusava). O usuário
- *  VÊ a consulta inteira acontecer, com a barra de etapas na tela.
+ *  v39: o WebView oficial do aparelho executa a consulta com identidade
+ *  genuína; na v73 ele opera em segundo plano, sem mudar o preenchimento
+ *  automático do formulário após sucesso.
  *  v40 (DIAGNÓSTICO TOTAL no terminal do VS Code): cada consulta imprime uma
  *  TRILHA de 8 etapas numeradas (1/8…8/8) com resultado ✓ OK / ⚠ ATENÇÃO /
  *  ✗ FALHA, TEMPO gasto e no fim um VEREDICTO com a causa raiz provável e o
@@ -154,14 +151,11 @@ export default function NfceScreen() {
     }
   };
 
-  /** v19: em vez de fetch (bloqueado pelo portal), abre o navegador interno.
+  /** v19: em vez de fetch (bloqueado pelo portal), usa o WebView do aparelho.
    *  v23: sanitiza a URL do QR e monta os CANDIDATOS (QR → portal público) para
    *  fallback automático em caso de rejeição do firewall.
-   *  v39 (O JEITO QUE FUNCIONA — pedido do usuário): este é o 1º e ÚNICO caminho
-   *  da leitura — nada de tentativa silenciosa de fetch antes. O app abre o
-   *  WebView.loadUrl() VISÍVEL com a identidade genuína do aparelho (User-Agent
-   *  automático do Android, como na captura Reqable do app que funciona), com as
-   *  6 etapas do fluxo aparecendo na tela. É o mesmo processo do app nativo. */
+   *  v39: o WebView.loadUrl() é o primeiro caminho e mantém a identidade
+   *  genuína do aparelho. Desde a v73, a consulta não abre uma tela própria. */
   const ingest = async (input: string, origem = 'câmera (QR Code)') => {
     setBusy(true);
     // v40: abre a TRILHA de etapas no terminal do VS Code (1/8…8/8 + veredicto)
@@ -222,8 +216,7 @@ export default function NfceScreen() {
 
   return (
     <Screen title="NFC-e">
-      {/* v22 (bug 4): navegador interno VISÍVEL em modal — desafio resolve na
-          frente do usuário; botão manual registra a nota se a detecção falhar */}
+      {/* Consulta oficial em segundo plano; exibe uma mensagem apenas em caso de falha. */}
       {webUrls && pendingRef.current ? (
         <NfceWebFetch
           urls={webUrls}
@@ -236,18 +229,12 @@ export default function NfceScreen() {
               setBusy(false);
             });
           }}
-          onCancel={() => { pendingRef.current = null; setWebUrls(null); setBusy(false); nfceVerdict(false, 'consulta CANCELADA pelo usuário', undefined, 'escaneie de novo quando quiser'); }}
-          // v24: portal recusou TODOS os canais — registra a despesa à mão
-          onFallback={() => {
+          onError={(message) => {
             pendingRef.current = null;
             setWebUrls(null);
             setBusy(false);
-            nfceVerdict(false, 'TODOS os canais do portal recusados — saída manual escolhida', [
-              'firewall da SEFAZ-SP bloqueou este acesso/IP (vale para fetch e navegador)',
-              'portal instável ou fora do ar no momento',
-            ], 'aguarde alguns minutos e reescaneie (o histórico abaixo repete a nota sem digitar); ou registre a despesa à mão');
-            showToast('Portal indisponível — registre a despesa em Novo Lançamento');
-            router.push('/lancamento');
+            nfceVerdict(false, 'falha na consulta da NFC-e', undefined, message);
+            showToast(message, 'err');
           }}
         />
       ) : null}

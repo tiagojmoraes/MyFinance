@@ -9,6 +9,18 @@ Como rodar os testes: `BATERIA-COMO-RODAR.md` (raiz) · Começar de novo:
 
 ---
 
+## v73
+
+**MELHORIAS**
+- **Desempenho**: telas fora de foco não repetem cargas globais; Fluxo usa
+  lista virtualizada, consultas em lote para grupos e atualizações em lote
+  para alternar status, preservando as validações e datas dos movimentos.
+- **NFC-e**: a consulta oficial continua no WebView do aparelho, mas sem a
+  tela intermediária “Consultando a SEFAZ”; em caso de falha, o app exibe
+  apenas uma mensagem e, em caso de sucesso, preenche o formulário como antes.
+
+---
+
 ## v72
 
 **BUGS**

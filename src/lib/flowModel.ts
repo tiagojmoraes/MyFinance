@@ -89,20 +89,32 @@ const FLOW_JOINS = `LEFT JOIN categories c ON c.id = t.category_id
          LEFT JOIN (SELECT plan_id, COUNT(*) AS paid_count FROM installments WHERE status = 'PAID' GROUP BY plan_id) paid_agg ON paid_agg.plan_id = ip.id
          LEFT JOIN (SELECT parent_transaction_id, COUNT(*) AS child_count, SUM(CASE WHEN type='EXPENSE' THEN amount_cents ELSE 0 END) AS debits, SUM(CASE WHEN type='INCOME' THEN amount_cents ELSE 0 END) AS credits FROM transactions WHERE status != 'VOIDED' AND parent_transaction_id IS NOT NULL GROUP BY parent_transaction_id) child_agg ON child_agg.parent_transaction_id = t.id`;
 
+const FLOW_QUERY_BATCH_SIZE = 400;
+
+function batches<T>(items: T[], size = FLOW_QUERY_BATCH_SIZE): T[][] {
+  const result: T[][] = [];
+  for (let i = 0; i < items.length; i += size) result.push(items.slice(i, i + size));
+  return result;
+}
+
 /** Cabeçalhos de grupos consolidados por ID (mesma forma do listMonth — v13, bug 1.A).
  *  v14 (bug 3): âncoras de parcelamento (source INSTALLMENT) nunca entram —
  *  elas NÃO são grupos consolidados do usuário. */
 async function listGroupHeadersByIds(db: DbDriver, ids: string[]): Promise<FlowTx[]> {
   if (ids.length === 0) return [];
-  const marks = ids.map(() => '?').join(',');
-  const rows = await db.getAllAsync(
-    `SELECT ${FLOW_COLUMNS}
-       FROM transactions t
-       ${FLOW_JOINS}
-      WHERE t.id IN (${marks}) AND t.kind = 'CONSOLIDATED' AND t.source_system != 'INSTALLMENT' AND t.parent_transaction_id IS NULL`,
-    ids as never
-  );
-  return rows as unknown as FlowTx[];
+  const result: FlowTx[] = [];
+  for (const batch of batches(ids)) {
+    const marks = batch.map(() => '?').join(',');
+    const rows = await db.getAllAsync(
+      `SELECT ${FLOW_COLUMNS}
+         FROM transactions t
+         ${FLOW_JOINS}
+        WHERE t.id IN (${marks}) AND t.kind = 'CONSOLIDATED' AND t.source_system != 'INSTALLMENT' AND t.parent_transaction_id IS NULL`,
+      batch
+    );
+    result.push(...(rows as unknown as FlowTx[]));
+  }
+  return result;
 }
 
 export interface GroupMonthsResult {
@@ -137,34 +149,71 @@ export async function buildGroupMonths(
 
   // v13 (bug 1.A): cabeçalhos que NÃO estão no listFlow deste mês vêm direto
   // do banco — é o que faz o grupo PERPETUAR nos meses seguintes.
-  const missing = linkedRows.map((r) => r.id).filter((gid) => !headerRows.some((t) => t.id === gid));
+  const headerIds = new Set(headerRows.map((t) => t.id));
+  const missing = linkedRows.map((r) => r.id).filter((gid) => !headerIds.has(gid));
   const extraHeaders = await listGroupHeadersByIds(db, missing);
-  const headerPool = [...headerRows, ...extraHeaders];
-
-  const groupIds = Array.from(new Set([...headerPool.map((t) => t.id), ...linkedRows.map((r) => r.id)]));
+  const headerById = new Map([...headerRows, ...extraHeaders].map((header) => [header.id, header]));
+  const groupIds = Array.from(new Set([...headerById.keys(), ...linkedRows.map((r) => r.id)]));
+  const occurrencesByGroup: Record<string, FlowTx[]> = {};
+  const installmentsByGroup: Record<string, InstAgg[]> = {};
   const gm: Record<string, GroupMonth> = {};
   const occIds = new Set<string>();
   const instIds = new Set<string>();
   const childrenByGroup: Record<string, FlowTx[]> = {};
 
-  for (const gid of groupIds) {
-    const header = headerPool.find((t) => t.id === gid);
-    if (!header) continue;
-    const ruleRows = await db.getAllAsync<{ id: string }>(
-      'SELECT id FROM recurrence_rules WHERE group_transaction_id = ?',
-      [gid]
-    );
-    const planRows = await db.getAllAsync<{ id: string; card_id: string | null; account_id: string | null }>(
-      'SELECT id, card_id, account_id FROM installment_plans WHERE group_transaction_id = ?',
-      [gid]
-    );
-    // Ocorrências das fixas do grupo NESTE mês (entram DENTRO do card do grupo)
-    let occurrences: FlowTx[] = [];
-    if (ruleRows.length > 0) {
-      const marks = ruleRows.map(() => '?').join(',');
-      occurrences = (await db.getAllAsync(
-        `SELECT t.*, c.name AS category_name, a.name AS account_name,
-                cd.name AS card_name, ta.name AS transfer_account_name,
+  for (const groupBatch of batches(groupIds)) {
+    const marks = groupBatch.map(() => '?').join(',');
+    const occurrenceRows = await db.getAllAsync(
+      `SELECT rr.group_transaction_id AS group_id, t.*, c.name AS category_name,
+              a.name AS account_name, cd.name AS card_name, ta.name AS transfer_account_name,
+              NULL AS plan_id, NULL AS plan_total_installments, NULL AS plan_paid_count,
+              0 AS child_count, 0 AS group_debits_cents, 0 AS group_credits_cents
+         FROM recurrence_rules rr
+         JOIN transactions t ON t.recurrence_rule_id = rr.id
+         LEFT JOIN categories c ON c.id = t.category_id
+         LEFT JOIN accounts a ON a.id = t.account_id
+         LEFT JOIN cards cd ON cd.id = t.card_id
+         LEFT JOIN accounts ta ON ta.id = t.transfer_account_id
+        WHERE rr.group_transaction_id IN (${marks})
+          AND substr(t.occurred_on, 1, 7) = ? AND t.status != 'VOIDED'`,
+      [...groupBatch, month]
+    ) as unknown as Array<FlowTx & { group_id: string }>;
+    for (const row of occurrenceRows) {
+      (occurrencesByGroup[row.group_id] ??= []).push(row);
+      occIds.add(row.id);
+    }
+
+    const installmentRows = await db.getAllAsync(
+      `SELECT p.group_transaction_id AS group_id,
+              ins.id AS installmentId, ins.plan_id AS planId,
+              COALESCE(t.description, 'Parcelamento') AS description,
+              ins.sequence_number AS sequenceNumber, p.total_installments AS totalInstallments,
+              ins.amount_cents AS amountCents, ins.due_date AS dueDate, ins.status AS status,
+              COALESCE(t.type, 'EXPENSE') AS type, a.name AS accountName
+         FROM installment_plans p
+         JOIN installments ins ON ins.plan_id = p.id
+         LEFT JOIN transactions t ON t.id = p.original_transaction_id
+         LEFT JOIN accounts a ON a.id = p.account_id
+        WHERE p.group_transaction_id IN (${marks}) AND p.card_id IS NULL
+          AND p.account_id IS NOT NULL AND ins.status != 'CANCELED'
+          AND ins.due_date LIKE ?`,
+      [...groupBatch, `${month}-%`]
+    ) as unknown as Array<InstAgg & { group_id: string }>;
+    for (const row of installmentRows) {
+      (installmentsByGroup[row.group_id] ??= []).push(row);
+      instIds.add(row.installmentId);
+    }
+
+    const monthHeaders = groupBatch.filter((id) => {
+      const header = headerById.get(id);
+      return header?.occurred_on.slice(0, 7) === month;
+    });
+    for (const id of monthHeaders) childrenByGroup[id] = [];
+    for (const headerBatch of batches(monthHeaders)) {
+      const headerMarks = headerBatch.map(() => '?').join(',');
+      const childRows = await db.getAllAsync(
+        `SELECT t.parent_transaction_id AS group_id, t.*, c.name AS category_name,
+                a.name AS account_name, cd.name AS card_name, ta.name AS transfer_account_name,
                 NULL AS plan_id, NULL AS plan_total_installments, NULL AS plan_paid_count,
                 0 AS child_count, 0 AS group_debits_cents, 0 AS group_credits_cents
            FROM transactions t
@@ -172,60 +221,24 @@ export async function buildGroupMonths(
            LEFT JOIN accounts a ON a.id = t.account_id
            LEFT JOIN cards cd ON cd.id = t.card_id
            LEFT JOIN accounts ta ON ta.id = t.transfer_account_id
-          WHERE t.recurrence_rule_id IN (${marks})
-            AND substr(t.occurred_on, 1, 7) = ? AND t.status != 'VOIDED'`,
-        [...ruleRows.map((r) => r.id), month] as never
-      )) as unknown as FlowTx[];
+          WHERE t.parent_transaction_id IN (${headerMarks})
+          ORDER BY t.parent_transaction_id, t.type DESC, t.amount_cents DESC`,
+        headerBatch
+      ) as unknown as Array<FlowTx & { group_id: string }>;
+      for (const row of childRows) (childrenByGroup[row.group_id] ??= []).push(row);
     }
-    // Parcelas EM CONTA dos planos do grupo com vencimento NESTE mês
-    let installments: InstAgg[] = [];
-    const contaPlanIds = planRows.filter((p) => !p.card_id && p.account_id).map((p) => p.id);
-    if (contaPlanIds.length > 0) {
-      const marks = contaPlanIds.map(() => '?').join(',');
-      installments = (await db.getAllAsync(
-        `SELECT ins.id AS installmentId,
-                ins.plan_id AS planId,
-                COALESCE(t.description, 'Parcelamento') AS description,
-                ins.sequence_number AS sequenceNumber,
-                p.total_installments AS totalInstallments,
-                ins.amount_cents AS amountCents,
-                ins.due_date AS dueDate,
-                ins.status AS status,
-                COALESCE(t.type, 'EXPENSE') AS type,
-                a.name AS accountName
-           FROM installments ins
-           JOIN installment_plans p ON p.id = ins.plan_id
-           LEFT JOIN transactions t ON t.id = p.original_transaction_id
-           LEFT JOIN accounts a ON a.id = p.account_id
-          WHERE ins.plan_id IN (${marks}) AND ins.status != 'CANCELED' AND ins.due_date LIKE ?`,
-        [...contaPlanIds, `${month}-%`] as never
-      )) as unknown as InstAgg[];
-    }
+  }
+
+  for (const gid of groupIds) {
+    const header = headerById.get(gid);
+    if (!header) continue;
+    const occurrences = occurrencesByGroup[gid] ?? [];
+    const installments = installmentsByGroup[gid] ?? [];
     const isHeaderMonth = header.occurred_on.slice(0, 7) === month;
     // Sem conteúdo no mês (cabeçalho em outro mês, sem ocorrência/parcela):
     // o grupo não aparece neste mês (ex.: ocorrência do mês foi excluída).
     if (!isHeaderMonth && occurrences.length === 0 && installments.length === 0) continue;
     gm[gid] = { header, occurrences, installments, isHeaderMonth };
-    for (const o of occurrences) occIds.add(o.id);
-    for (const i of installments) instIds.add(i.installmentId);
-    // v13 (2.B): filhos à vista carregados JÁ na carga do mês (o chip de status
-    // do grupo funciona com a setinha RECOLHIDA e a expansão não refaz a busca).
-    if (isHeaderMonth) {
-      childrenByGroup[gid] = (await db.getAllAsync(
-        `SELECT t.*, c.name AS category_name, a.name AS account_name,
-                cd.name AS card_name, ta.name AS transfer_account_name,
-                NULL AS plan_id, NULL AS plan_total_installments, NULL AS plan_paid_count,
-                0 AS child_count, 0 AS group_debits_cents, 0 AS group_credits_cents
-           FROM transactions t
-           LEFT JOIN categories c ON c.id = t.category_id
-           LEFT JOIN accounts a ON a.id = t.account_id
-           LEFT JOIN cards cd ON cd.id = t.card_id
-           LEFT JOIN accounts ta ON ta.id = t.transfer_account_id
-          WHERE t.parent_transaction_id = ?
-          ORDER BY t.type DESC, t.amount_cents DESC`,
-        [gid]
-      )) as unknown as FlowTx[];
-    }
   }
   return { gm, occIds, instIds, childrenByGroup };
 }

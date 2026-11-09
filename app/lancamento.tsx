@@ -448,12 +448,10 @@ export default function LancamentoScreen() {
       // v23: lista de CANDIDATOS (QR sanitizado → portal público) —
       // se o firewall recusar um caminho, o NfceWebFetch tenta o próximo sozinho
       const candidates = listConsultUrlsNfce(input, accessKey);
-      // v39 (O JEITO QUE FUNCIONA — pedido do usuário): o WebView.loadUrl()
-      // VISÍVEL é o 1º passo — nada de fetch silencioso antes (o firewall
-      // sempre o recusava). O usuário VÊ as 6 etapas do fluxo da captura
-      // Reqable acontecerem, com a identidade genuína do aparelho.
+      // v39: o WebView.loadUrl() oficial é o primeiro passo com a identidade
+      // genuína do aparelho; a consulta não abre uma tela intermediária.
       nfceLog(`entrada: ${candidates.length} canal(is) na fila de tentativa`);
-      nfceLog('tela: v39 — abrindo o fluxo que funciona: WebView.loadUrl() VISÍVEL (6 etapas na tela)');
+      nfceLog('tela: consultando a NFC-e com o WebView oficial em segundo plano');
       pendingScanRef.current = { key: accessKey, url: candidates[0] };
       setScannerOpen(false);
       setWebUrl(candidates);
@@ -1704,21 +1702,17 @@ export default function LancamentoScreen() {
         bottomHint="A nota vem para este formulário: você escolhe categoria, pagamento e o estoque antes de salvar."
       />
 
-      {/* v22 (bugs 3+4): consulta da SEFAZ-SP em MODAL tela-cheia — o navegador
-          fica VISÍVEL (o desafio do portal resolve na frente do usuário) e há o
-          botão manual "A nota abriu? Toque para registrar" como rede de segurança */}
+      {/* Consulta o portal oficial em segundo plano; somente falhas são exibidas. */}
       {webUrl ? (
         <NfceWebFetch
           urls={webUrl}
           onHtml={(html) => {
             finalizeNfceHtml(html).catch((err) => showToast(err instanceof Error ? err.message : String(err), 'err'));
           }}
-          onCancel={() => { pendingScanRef.current = null; setWebUrl(null); }}
-          // v24: portal recusou todos os canais — a despesa é digitada aqui mesmo
-          onFallback={() => {
+          onError={(message) => {
             pendingScanRef.current = null;
             setWebUrl(null);
-            showToast('Portal indisponível — digite o valor e a data da compra');
+            showToast(message, 'err');
           }}
         />
       ) : null}

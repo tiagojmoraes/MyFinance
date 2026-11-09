@@ -315,7 +315,11 @@ export default function NfceReviewScreen() {
               }
             })();
           }}
-          onCancel={() => { setWebUrl(null); setBusy(false); }}
+          onError={(message) => {
+            setWebUrl(null);
+            setBusy(false);
+            showToast(message, 'err');
+          }}
         />
       ) : null}
 

@@ -857,34 +857,76 @@ export class TransactionService {
    * e não passam por aqui.
    */
   async setPaymentStatus(transactionId: string, paid: boolean): Promise<void> {
-    await this.db.transactionAsync(async () => {
-      const tx = await this.transactions.getById(transactionId);
-      if (!tx) throw new Error('Transação não encontrada');
-      if (tx.status === 'VOIDED') throw new Error('Lançamento excluído — status indisponível');
-      if (tx.kind !== 'SIMPLE') throw new Error('Status se aplica apenas a lançamentos simples');
-      if (tx.type === 'TRANSFER') throw new Error('Transferência não tem status Pago/Não Pago');
-      if (tx.card_id) throw new Error('Compra no cartão é paga pela fatura — marque o pagamento na fatura');
-      if (!tx.account_id) throw new Error('Lançamento sem conta vinculada');
+    await this.setPaymentStatuses([transactionId], paid);
+  }
 
+  /** Atualiza vários lançamentos de um consolidado em uma única transação. */
+  async setPaymentStatuses(transactionIds: string[], paid: boolean): Promise<void> {
+    const ids = Array.from(new Set(transactionIds));
+    if (ids.length === 0) return;
+    await this.db.transactionAsync(async () => {
+      const txs: Array<Pick<TransactionRow, 'id' | 'kind' | 'type' | 'status' | 'card_id' | 'account_id' | 'amount_cents' | 'occurred_on'>> = [];
+      for (let i = 0; i < ids.length; i += 400) {
+        const batch = ids.slice(i, i + 400);
+        const marks = batch.map(() => '?').join(',');
+        txs.push(...await this.db.getAllAsync<
+          Pick<TransactionRow, 'id' | 'kind' | 'type' | 'status' | 'card_id' | 'account_id' | 'amount_cents' | 'occurred_on'>
+        >(
+          `SELECT id, kind, type, status, card_id, account_id, amount_cents, occurred_on
+             FROM transactions WHERE id IN (${marks})`,
+          batch
+        ));
+      }
+      if (txs.length !== ids.length) throw new Error('Transação não encontrada');
+      for (const tx of txs) {
+        if (tx.status === 'VOIDED') throw new Error('Lançamento excluído — status indisponível');
+        if (tx.kind !== 'SIMPLE') throw new Error('Status se aplica apenas a lançamentos simples');
+        if (tx.type === 'TRANSFER') throw new Error('Transferência não tem status Pago/Não Pago');
+        if (tx.card_id) throw new Error('Compra no cartão é paga pela fatura — marque o pagamento na fatura');
+        if (!tx.account_id) throw new Error('Lançamento sem conta vinculada');
+      }
       if (paid) {
-        const moves = await this.moves.getByTransaction(transactionId);
-        if (!moves.some((m) => m.status === 'CONFIRMED')) {
-          await this.moves.insert({
-            id: genId(),
-            transaction_id: transactionId,
-            installment_id: null,
-            invoice_payment_id: null,
-            account_id: tx.account_id,
-            direction: tx.type === 'INCOME' ? 'CREDIT' : 'DEBIT',
-            amount_cents: tx.amount_cents,
-            effective_date: tx.occurred_on,
-            status: 'CONFIRMED',
-          });
+        const confirmedIds = new Set<string>();
+        for (let i = 0; i < ids.length; i += 400) {
+          const batch = ids.slice(i, i + 400);
+          const marks = batch.map(() => '?').join(',');
+          const rows = await this.db.getAllAsync<{ transaction_id: string }>(
+            `SELECT DISTINCT transaction_id FROM financial_moves
+              WHERE status = 'CONFIRMED' AND transaction_id IN (${marks})`,
+            batch
+          );
+          for (const row of rows) confirmedIds.add(row.transaction_id);
         }
-        await this.transactions.setStatus(transactionId, 'CONFIRMED');
-      } else {
-        await this.moves.voidByTransaction(transactionId);
-        await this.transactions.setStatus(transactionId, 'PENDING');
+        const missingMoves = txs.filter((tx) => !confirmedIds.has(tx.id));
+        for (let i = 0; i < missingMoves.length; i += 100) {
+          const batch = missingMoves.slice(i, i + 100);
+          const values = batch.map(() => '(?,?,?,?,?,?,?,?,?)').join(',');
+          const params = batch.flatMap((tx) => [
+            genId(), tx.id, null, null, tx.account_id,
+            tx.type === 'INCOME' ? 'CREDIT' : 'DEBIT', tx.amount_cents, tx.occurred_on, 'CONFIRMED',
+          ]);
+          await this.db.runAsync(
+            `INSERT INTO financial_moves
+              (id, transaction_id, installment_id, invoice_payment_id, account_id, direction, amount_cents, effective_date, status)
+             VALUES ${values}`,
+            params
+          );
+        }
+      }
+      for (let i = 0; i < ids.length; i += 400) {
+        const batch = ids.slice(i, i + 400);
+        const marks = batch.map(() => '?').join(',');
+        if (!paid) {
+          await this.db.runAsync(
+            `UPDATE financial_moves SET status = 'VOIDED'
+              WHERE status = 'CONFIRMED' AND transaction_id IN (${marks})`,
+            batch
+          );
+        }
+        await this.db.runAsync(
+          `UPDATE transactions SET status = ? WHERE id IN (${marks})`,
+          [paid ? 'CONFIRMED' : 'PENDING', ...batch]
+        );
       }
     });
   }

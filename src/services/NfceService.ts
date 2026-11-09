@@ -234,7 +234,7 @@ export class NfceService {
    * v35 — CAMINHO 1: MOTOR DO APARELHO (WebView oculta, identidade genuína).
    * Mesmo contrato dos demais degraus: null quando indisponível ou sem
    * sucesso — aí a cadeia segue (fetch Dalvik/navegador → serviço de leitura
-   * → navegador interno visível). Sem componente montado (ex.: testes), o
+   * → WebView interno). Sem componente montado (ex.: testes), o
    * degrau é pulado em milissegundos.
    */
   async ingestViaWebEngine(input: string): Promise<({
@@ -309,8 +309,8 @@ export class NfceService {
    *     degrau automático que o teste real do usuário nunca viu falhar;
    *     subiu para cá na v36 para não esperar o fetch falhar antes);
    *  3º FETCH DIRETO com a identidade Dalvik (2 canais, reserva gratuita);
-   *  4º NAVEGADOR INTERNO visível (NfceWebFetch — a tela abre quando aqui
-   *     devolve null). Devolve o resultado JÁ REGISTRADO e o HTML usado
+   *  4º WebView interno (NfceWebFetch — consulta sem tela intermediária
+   *     quando aqui devolve null). Devolve o resultado JÁ REGISTRADO e o HTML usado
    *     (para itens); null só se TODOS os degraus falharem.
    */
   async ingestByDirectFetch(input: string): Promise<({

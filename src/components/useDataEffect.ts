@@ -16,6 +16,7 @@
  */
 
 import React from 'react';
+import { useIsFocused } from '@react-navigation/native';
 import { getServices, type Services } from '../services';
 import { useAppStore } from '../store/appStore';
 import { enqueueLoad } from '../lib/loadQueue';
@@ -43,20 +44,22 @@ export type IsCurrent = () => boolean;
  */
 /** Effect que roda após bootstrap + em cada bump de dados. `fn` é opcional. */
 /**
- * v47 #6 — só a tela focada recarrega na hora: o bump global ainda existe,
- * mas telas fora de foco aguardam useFocusEffect (já implementado nas telas).
- * Este hook agora debounceia bumps em rajada (ex: salvar 3x rápido) em 100ms.
+ * v73 — só a tela focada reage aos bumps globais. Ao voltar ao foco, o seletor
+ *  passa a observar a versão atual e executa uma carga com os dados mais novos,
+ *  sem disputar a conexão SQLite durante a navegação.
  */
 export function useDataEffect(
   fn?: (services: Services, isCurrent: IsCurrent) => void | Promise<void>,
   deps: unknown[] = []
 ) {
   const services = useServices();
-  const dataVersion = useAppStore((s) => s.dataVersion);
+  const isFocused = useIsFocused();
+  const dataVersion = useAppStore((s) => (isFocused ? s.dataVersion : -1));
   // Número da carga mais recente pedida para ESTA tela (bump/foco/mudança de deps).
   const runRef = React.useRef(0);
 
   React.useEffect(() => {
+    if (!isFocused) return;
     const myRun = ++runRef.current;
     let alive = true;
     const isCurrent: IsCurrent = () => alive && myRun === runRef.current;
@@ -79,7 +82,7 @@ export function useDataEffect(
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataVersion, ...deps]);
+  }, [isFocused, dataVersion, ...deps]);
 
   return services;
 }
