@@ -173,7 +173,7 @@ export default function MensagensScreen() {
             Permita o acesso às notificações do aparelho
           </Text>
           <Text className="text-xs text-amber-800">
-            Toque no botão, procure “MyFinance &amp; Pantry Manager” na lista
+            Toque no botão, procure “MyFinance” na lista
             “Acesso às notificações” do Android e ATIVE. É o Android quem pede a
             autorização — sem ela o app não lê nada.
           </Text>

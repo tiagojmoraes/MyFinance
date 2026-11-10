@@ -45,7 +45,6 @@ export default function RootLayout() {
         <View className="items-center gap-3">
           <Text className="text-6xl">🪙</Text>
           <Text className="text-3xl font-bold text-white">MyFinance</Text>
-          <Text className="text-lg text-emerald-200">& Pantry Manager</Text>
         </View>
         <ActivityIndicator size="large" color="#a7f3d0" />
         <Text className="text-sm text-emerald-200">Preparando seus dados...</Text>

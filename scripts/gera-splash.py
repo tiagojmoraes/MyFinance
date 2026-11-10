@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-# v70 (MELHORIA 2.2) — gera a imagem do SPLASH do app (não pode abrir em branco).
-# Design: fundo verde-esmeralda (cor primária do app), cifrão/carteira estilizada
-# com moedas — remete a "moderno, inteligente e útil": controle financeiro +
-# despensa. Saída: assets/splash.png (1242×2436, proporção de tela Android/iOS
-# moderna) e assets/splash-icon.png (1024×1024 para o centro).
+# Gera os ícones nativos e o splash da marca MyFinance.
 import os
 from PIL import Image, ImageDraw, ImageFont
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-ASSETS = os.path.join(BASE, "assets")
+ASSETS = os.path.join(os.path.dirname(BASE), "assets")
 os.makedirs(ASSETS, exist_ok=True)
 
 # Paleta do app (src/theme): esmeralda #059669 (primária) com degradê para #036c50
@@ -32,6 +28,8 @@ def vertical_gradient(w, h, top, bottom):
 
 def load_font(size):
     for cand in (
+        r"C:\Windows\Fonts\arialbd.ttf",
+        r"C:\Windows\Fonts\arial.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ):
@@ -60,27 +58,25 @@ def draw_coin(d, cx, cy, r, face=WHITE, ring=SOFT):
     d.text((cx - tw / 2 - bbox[0], cy - th / 2 - bbox[1]), "$", font=f, fill=TOP)
 
 
-# ------------------------------------------------ splash-icon (1024×1024) ----
+def draw_wallet_art(image):
+    d = ImageDraw.Draw(image)
+    rounded_rect(d, (192, 392, 832, 712), 56, fill=WHITE)
+    rounded_rect(d, (240, 488, 784, 664), 36, fill=(224, 245, 233))
+    rounded_rect(d, (600, 508, 760, 648), 32, fill=TOP)
+    draw_coin(d, 360, 320, 64)
+    draw_coin(d, 512, 260, 76)
+    draw_coin(d, 664, 320, 64)
+
+
+# ---------------------------------------------------- app icons (1024×1024) ----
 S = 1024
-icon = vertical_gradient(S, S, TOP, BOTTOM)
-d = ImageDraw.Draw(icon)
+foreground = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+draw_wallet_art(foreground)
+foreground.save(os.path.join(ASSETS, "adaptive-icon.png"))
 
-# Carteira (rounded rect) com fecho e moedas saindo — marca do app
-card_x0, card_y0, card_x1, card_y1 = 192, 392, 832, 712
-rounded_rect(d, (card_x0, card_y0, card_x1, card_y1), 56, fill=WHITE)
-# bolso da carteira
-rounded_rect(d, (card_x0 + 48, card_y0 + 96, card_x1 - 48, card_y1 - 48), 36, fill=(224, 245, 233))
-# fivela
-rounded_rect(d, (card_x1 - 232, card_y0 + 116, card_x1 - 96, card_y1 - 116), 28, fill=TOP)
-# moedas
-draw_coin(d, 360, 320, 64)
-draw_coin(d, 512, 260, 76)
-draw_coin(d, 664, 320, 64)
-# nome + tagline
-y = 768
-y = draw_centered(d, "MyFinance", y, 104, WHITE, S)
-draw_centered(d, "& Pantry Manager", y, 64, SOFT, S)
-
+icon = vertical_gradient(S, S, TOP, BOTTOM).convert("RGBA")
+icon.alpha_composite(foreground)
+icon.save(os.path.join(ASSETS, "icon.png"))
 icon.save(os.path.join(ASSETS, "splash-icon.png"))
 
 # ------------------------------------- splash (1242×2436, tela inteira) ----
@@ -88,19 +84,11 @@ W, H = 1242, 2436
 splash = vertical_gradient(W, H, TOP, BOTTOM)
 d = ImageDraw.Draw(splash)
 
-# ícone central (reaproveita o desenho da carteira em escala)
-ix0, iy0, ix1, iy1 = W // 2 - 320, H // 2 - 460, W // 2 + 320, H // 2 + 180
-d.rounded_rectangle((ix0, iy0 + 200, ix1, iy1), 56, fill=WHITE)
-d.rounded_rectangle((ix0 + 48, iy0 + 296, ix1 - 48, iy1 - 48), 36, fill=(224, 245, 233))
-d.rounded_rectangle((ix1 - 232, iy0 + 316, ix1 - 96, iy1 - 116), 28, fill=TOP)
-draw_coin(d, W // 2 - 152, iy0 + 120, 64)
-draw_coin(d, W // 2, iy0 + 60, 76)
-draw_coin(d, W // 2 + 152, iy0 + 120, 64)
+art = foreground.resize((768, 768), Image.Resampling.LANCZOS)
+splash_rgba = splash.convert("RGBA")
+splash_rgba.alpha_composite(art, (W // 2 - 384, H // 2 - 620))
+d = ImageDraw.Draw(splash_rgba)
+draw_centered(d, "MyFinance", H // 2 + 280, 128, WHITE, W)
 
-y = H // 2 + 320
-y = draw_centered(d, "MyFinance", y, 128, WHITE, W)
-y = draw_centered(d, "& Pantry Manager", y, 76, SOFT, W)
-draw_centered(d, "Financeiro, despensa e NFC-e — tudo no lugar.", y + 40, 44, (209, 250, 229), W)
-
-splash.save(os.path.join(ASSETS, "splash.png"))
-print("OK:", os.path.join(ASSETS, "splash.png"), os.path.join(ASSETS, "splash-icon.png"))
+splash_rgba.convert("RGB").save(os.path.join(ASSETS, "splash.png"))
+print("OK: icon.png, adaptive-icon.png, splash-icon.png, splash.png")

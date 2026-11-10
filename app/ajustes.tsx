@@ -405,7 +405,7 @@ export default function AjustesScreen() {
 
       {/* v69 — SOBRE: SEMPRE ABERTO, SEM SETA */}
       <AboutBlock>
-        <KeyValue k="App" v="MyFinance & Pantry Manager" />
+        <KeyValue k="App" v="MyFinance" />
         <KeyValue k="Versão" v={APP_VERSION} bold />
         <KeyValue k="Versão do Schema" v={String(schemaVersion ?? '—')} />
       </AboutBlock>

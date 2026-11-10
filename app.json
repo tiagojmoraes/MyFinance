@@ -1,9 +1,10 @@
 {
   "expo": {
-    "name": "MyFinance & Pantry Manager",
+    "name": "MyFinance",
     "slug": "myfinance-pantry-manager",
     "version": "74.0.0",
     "scheme": "myfinancepantry",
+    "icon": "./assets/icon.png",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
@@ -17,6 +18,10 @@
     },
     "android": {
       "package": "com.zai.myfinancepantry",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#036c50"
+      },
       "softwareKeyboardLayoutMode": "pan",
       "permissions": [
         "android.permission.CAMERA",

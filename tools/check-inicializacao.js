@@ -17,12 +17,11 @@ function warn(msg){ console.log('  ⚠️  ' + msg); avisos++; }
 const aqui = process.cwd();
 const temApp = fs.existsSync(path.join(aqui, 'app')) && fs.existsSync(path.join(aqui, 'src'));
 const temPackage = fs.existsSync(path.join(aqui, 'package.json'));
-const pastaDobrada = aqui.endsWith('myfinance-pantry-manager\\myfinance-pantry-manager') || aqui.endsWith('myfinance-pantry-manager/myfinance-pantry-manager');
-if ((temApp && temPackage) || pastaDobrada) ok('Pasta certa (tem app/ + src/ + package.json)');
-else err(`Você está na pasta de fora: ${aqui}\n     → Entre na pasta que TEM app/ e src/ (cd myfinance-pantry-manager\\myfinance-pantry-manager)`);
+if (temApp && temPackage) ok('Pasta certa (tem app/ + src/ + package.json)');
+else err(`Você está na pasta de fora: ${aqui}\n     → Entre na pasta myfinance, que TEM app/ e src/ (cd myfinance)`);
 
 // 2. OneDrive?
-if (aqui.includes('OneDrive')) warn('Projeto dentro do OneDrive — o OneDrive já quebrou o projeto 3x (arquivo cortado no meio + cópias de conflito _1/_2).\n     → Ideal: mover para C:\\myfinance-pantry-manager. Se ficar no OneDrive, pause a sincronização antes do npm install e ao editar arquivos.');
+if (aqui.includes('OneDrive')) warn('Projeto dentro do OneDrive — o OneDrive já quebrou o projeto 3x (arquivo cortado no meio + cópias de conflito _1/_2).\n     → Ideal: mover para C:\\myfinance. Se ficar no OneDrive, pause a sincronização antes do npm install e ao editar arquivos.');
 else ok('Fora do OneDrive');
 
 // 3. query-string versão?

@@ -12,7 +12,7 @@
 
 ```powershell
 # 1. Entra na pasta de DENTRO (tem que ter app/ e src/)
-cd "C:\Users\tiago\OneDrive\Desktop\myfinance-pantry-manager\myfinance-pantry-manager"
+cd "C:\Users\tiago\OneDrive\Desktop\myfinance"
 
 # 2. Pausa o OneDrive 2h (ícone lá embaixo, perto do relógio) — senão ele quebra o install
 

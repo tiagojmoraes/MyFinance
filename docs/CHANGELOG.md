@@ -1,4 +1,4 @@
-# CHANGELOG — MyFinance & Pantry Manager
+# CHANGELOG — MyFinance
 
 Histórico UNIFICADO do projeto (1 arquivo). Os guias antigos de cada versão
 (BATERIA-v*, OTIMIZACAO-v*, etc.) foram movidos para `docs/arquivo/` — continuam

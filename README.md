@@ -1,4 +1,4 @@
-# MyFinance & Pantry Manager
+# MyFinance
 
 App Expo/React Native para finanças pessoais, cartões, NFC-e e despensa.
 
