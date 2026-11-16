@@ -1,18 +1,22 @@
 /** v60 — PRÉ-VOO: todos os erros de inicialização já mapeados
- *  Garante: query-string travado em 7.x (a v9 quebra o Hermes), sem duplicatas,
- *  scripts de 2 terminais existem, check-inicializacao existe.
+ *  Garante: expo SDK alvo declarado, sem query-string (removida na v91 porque
+ *  expo-router 58 não usa mais), sem duplicatas, scripts de 2 terminais existem,
+ *  check-inicializacao existe.
  */
 import * as fs from 'fs';
 import * as path from 'path';
 
 describe('v60 PRÉ-VOO — inicialização sem erro', () => {
   const root = path.join(__dirname, '..', '..', '..');
-  test('package.json trava query-string em 8.x (a v9 quebra o Hermes com Invalid regular expression)', () => {
+  test('v91 package.json no SDK 58 (expo e expo-router), SEM query-string', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-    expect(pkg.dependencies['query-string']).toBeDefined();
-    expect(pkg.dependencies['query-string']).toMatch(/^8\./);
-    expect(pkg.dependencies['expo']).toMatch(/^~53\./);
-    expect(pkg.dependencies['expo-router']).toMatch(/^~5\./);
+    // v91: query-string saiu (expo-router 58 não depende mais dela, e Hermes
+    // 0.88 já aceita o regex da v9 — a trava do SDK 53 virou desnecessária).
+    expect(pkg.dependencies['query-string']).toBeUndefined();
+    expect(pkg.dependencies['expo']).toMatch(/^~58\./);
+    expect(pkg.dependencies['expo-router']).toMatch(/^~58\./);
+    expect(pkg.dependencies['react-native']).toMatch(/^0\.88\./);
+    expect(pkg.dependencies['react']).toMatch(/^19\.3\./);
   });
   test('Scripts de 2 terminais existem (servidor à parte, do jeito do usuário)', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));

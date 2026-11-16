@@ -1457,7 +1457,6 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
           extraData={expansaoTick}
           keyExtractor={(row) => row.key}
           renderItem={renderRow}
-          estimatedItemSize={104}
           contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 16, paddingBottom: 32 }}
           ListHeaderComponent={
             <View className="gap-3 pb-3">

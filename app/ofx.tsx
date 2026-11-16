@@ -5,7 +5,7 @@ import { View, Text, Pressable } from 'react-native';
 import { showToast } from '../lib/toast';
 import { router } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Screen, Card, Select, Button, EmptyState, SectionTitle, Badge } from '../src/components/ui';
 import { useDataEffect } from '../src/components/useDataEffect';
 import { useAppStore } from '../src/store/appStore';
