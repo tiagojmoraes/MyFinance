@@ -243,7 +243,6 @@ export default function DespensaScreen() {
                 <PantryRow item={item} qtyLabel={fmtQty(item)} onMove={moveById} />
               </View>
             )}
-            estimatedItemSize={104}
             contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 32 }}
             ListEmptyComponent={
               <View className="pt-4">

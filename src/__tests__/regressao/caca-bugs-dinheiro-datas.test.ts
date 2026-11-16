@@ -171,20 +171,66 @@ describe('v52 BUG — Fatura: fechamento, vencimento, pagamento', () => {
     const total = invs.reduce((s: number, i: any) => s + i.total_cents, 0);
     expect(total).toBe(1000); // soma total tem que bater, mesmo que caia em 1 ou 2 faturas, não 2000
   });
-  test('BUG v52-22 pagar fatura 2x não paga 2x (idempotência)', async () => {
+  test('BUG v52-22 pagar fatura 2x não paga 2x (idempotência, mesmo ciclo)', async () => {
+    // v91 — paidOn FIXO em dia ANTERIOR ao fechamento (close 15) para a guarda
+    // disparar sem depender de "hoje"; caso o calendário ultrapasse o close
+    // do mês corrente, este teste continua passando porque pagina em out/2026.
     const { services } = await makeCtx();
     const acc = await seedAccount(services.db, 'Banco', 100000);
     const card = await seedCard(services.db, acc, 'Nubank', 15, 10);
-    await services.transactions.createCardExpense({ description: 'Compra', amountCents: 5000, cardId: card, date: '2026-11-05' });
-    const inv = await services.db.getFirstAsync<any>('SELECT * FROM invoices WHERE card_id=?', [card]);
-    await services.invoices.payInvoice({ invoiceId: inv.id, fromAccountId: acc, amountCents: 5000 } as any);
+    await services.transactions.createCardExpense({ description: 'Compra', amountCents: 5000, cardId: card, date: '2026-10-10' });
+    const inv = await services.db.getFirstAsync<any>("SELECT * FROM invoices WHERE card_id=? AND reference_month='2026-10'", [card]);
+    // 1º pagamento: quita dentro do mesmo ciclo (out, antes do close 15).
+    await services.invoices.payInvoice({ invoiceId: inv.id, fromAccountId: acc, amountCents: 5000, paidOn: '2026-10-12' } as any);
     const bal1 = await services.balance.getAccountBalance(acc);
-    // Segundo pagamento do mesmo valor deve ser rejeitado ou não debitar de novo
-    try { await services.invoices.payInvoice({ invoiceId: inv.id, fromAccountId: acc, amountCents: 5000 } as any); } catch {}
+    // 2º pagamento do mesmo valor no MESMO ciclo: rejeitado (idempotência).
+    await expect(
+      services.invoices.payInvoice({ invoiceId: inv.id, fromAccountId: acc, amountCents: 5000, paidOn: '2026-10-12' } as any)
+    ).rejects.toThrow(/já está paga|nada a pagar/i);
     const bal2 = await services.balance.getAccountBalance(acc);
-    expect(bal2).toBeGreaterThanOrEqual(bal1 - 0); // não pode debitar 5000 de novo sem motivo
-    // Se debitou de novo, o teste mostra: bal2 = bal1 - 5000 (bug) — aqui aceitamos só se não debitou ou se rejeitou
-    expect(bal2 === bal1 || bal2 === bal1 - 5000).toBe(true);
+    expect(bal2).toBe(bal1);
+  });
+  test('BUG v52-22b CROSS-CYCLE: pagar fatura PAGA em outro ciclo distribui excedente (BUG 4 pré-pagamento do próximo ciclo)', async () => {
+    // v91 — O design v16 do BUG 4 (pagamento adicional) ROTEIA o excedente
+    // para a fatura EM ABERTO pela data de corte, criando-a vazia se preciso
+    // (pré-pagamento do próximo ciclo). Isso NÃO É idempotência quebrada:
+    // o segundo pagamento tem efeito REAL (antecipa o ciclo que vai chegar).
+    const { services } = await makeCtx();
+    const acc = await seedAccount(services.db, 'Banco', 100000);
+    const card = await seedCard(services.db, acc, 'Nubank', 15, 10);
+    await services.transactions.createCardExpense({ description: 'Tenis', amountCents: 3000, cardId: card, date: '2026-10-10' });
+    const outInv = await services.db.getFirstAsync<any>("SELECT * FROM invoices WHERE card_id=? AND reference_month='2026-10'", [card]);
+    await services.invoices.payInvoice({ invoiceId: outInv.id, fromAccountId: acc, amountCents: 3000, paidOn: '2026-10-12' } as any);
+    const bal1 = await services.balance.getAccountBalance(acc);
+    // 2º pagamento depois do close (cai no ciclo nov, antes do close nov/15)
+    // aplicado=0 (out já paga), excedente=2000 → cria fatura vazia NOV PAID.
+    const r = await services.invoices.payInvoice({ invoiceId: outInv.id, fromAccountId: acc, amountCents: 2000, paidOn: '2026-11-02' } as any);
+    expect(r.surplusCents).toBe(2000);
+    expect(r.routedMonth).toBe('2026-11');
+    const bal2 = await services.balance.getAccountBalance(acc);
+    expect(bal2).toBe(bal1 - 2000); // segundo débito é o excedente legítimo
+    const novInv = await services.db.getFirstAsync<any>("SELECT paid_cents, total_cents FROM invoices WHERE reference_month='2026-11' AND card_id=?", [card]);
+    expect(novInv.total_cents).toBe(0);
+    expect(novInv.paid_cents).toBe(2000);
+  });
+  test('BUG v52-22c CROSS-CYCLE: pagar fatura paga com ciclo futuro já populado ABATE itens da próxima fatura', async () => {
+    // v91 — Mesmo cenário do anterior, mas com compra real em nov → excedente
+    // abate o devido da fatura de nov em vez de criar uma vazia.
+    const { services } = await makeCtx();
+    const acc = await seedAccount(services.db, 'Banco', 100000);
+    const card = await seedCard(services.db, acc, 'Nubank', 15, 10);
+    await services.transactions.createCardExpense({ description: 'Tenis', amountCents: 5000, cardId: card, date: '2026-10-10' });
+    await services.transactions.createCardExpense({ description: 'Futura', amountCents: 7000, cardId: card, date: '2026-11-10' });
+    const outInv = await services.db.getFirstAsync<any>("SELECT * FROM invoices WHERE reference_month='2026-10' AND card_id=?", [card]);
+    await services.invoices.payInvoice({ invoiceId: outInv.id, fromAccountId: acc, amountCents: 5000, paidOn: '2026-10-12' } as any);
+    // Segundo pagamento agora cai em NOV (que já tem itens reais 7000): excedente 5000 → abater devido.
+    const r = await services.invoices.payInvoice({ invoiceId: outInv.id, fromAccountId: acc, amountCents: 5000, paidOn: '2026-11-02' } as any);
+    expect(r.surplusCents).toBe(5000);
+    expect(r.routedMonth).toBe('2026-11');
+    const nov = await services.invoices.getInvoiceDetailByCardMonth(card, '2026-11');
+    expect(nov!.invoice.total_cents).toBe(7000);
+    expect(nov!.invoice.paid_cents).toBe(5000);
+    expect(nov!.dueCents).toBe(2000); // 7000 − 5000 antecipados
   });
   test('BUG v52-23 fatura com parcela de receita (INCOME) abate, não soma', async () => {
     const { services } = await makeCtx();

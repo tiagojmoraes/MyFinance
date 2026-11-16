@@ -11,7 +11,7 @@
  */
 
 import React from 'react';
-import { View, Text, Pressable, ScrollView } from 'react-native';
+import { View, Text, Pressable, ScrollView, type ScrollViewInstance } from 'react-native';
 import { monthOf, todaySP, monthAdd, type Ym } from '../lib/dates';
 import { theme } from '../theme';
 import { ICONS } from '../theme/icons';
@@ -51,7 +51,7 @@ export function MonthScroller({ value, onChange }: {
   for (let i = -PAST_MONTHS; i <= FUTURE_MONTHS; i++) months.push(monthAdd(current, i));
   const selectedIndex = months.indexOf(value);
 
-  const scrollerRef = React.useRef<ScrollView>(null);
+  const scrollerRef = React.useRef<ScrollViewInstance | null>(null);
   const didInitialScroll = React.useRef(false);
   // v10: largura visível da barra — necessária para CENTRAR o chip selecionado
   const [viewW, setViewW] = React.useState(0);

@@ -25,13 +25,16 @@ else err(`Você está na pasta de fora: ${aqui}\n     → Entre na pasta que TEM
 if (aqui.includes('OneDrive')) warn('Projeto dentro do OneDrive — o OneDrive já quebrou o projeto 3x (arquivo cortado no meio + cópias de conflito _1/_2).\n     → Ideal: mover para C:\\myfinance. Se ficar no OneDrive, pause a sincronização antes do npm install e ao editar arquivos.');
 else ok('Fora do OneDrive');
 
-// 3. query-string versão?
+// 3. query-string? (v91 — REMOVIDA: expo-router 58 não depende mais e o Hermes
+//    do RN 0.88 já aceita o regex da v9. A trava do "v9 quebra o Hermes" era
+//    do tempo do RN 0.79 com SDK 53. Só fica como aviso informativo se
+//    aparecer de volta instalada.)
 const qsPkg = path.join(root, 'node_modules', 'query-string', 'package.json');
-if (!fs.existsSync(qsPkg)) err('query-string NÃO instalado → Rode: npm install query-string@8.1.0');
-else {
+if (fs.existsSync(qsPkg)) {
   const v = JSON.parse(fs.readFileSync(qsPkg, 'utf8')).version;
-  if (v.startsWith('8.')) ok(`query-string ${v} (certa — a v9 quebra o Hermes com "Invalid regular expression")`);
-  else err(`query-string ${v} ERRADA — a v9 quebra o Hermes.\n     → Rode: npm uninstall query-string && npm install query-string@8.1.0`);
+  warn(`query-string instalado (${v}) — não é mais necessário em v91 (expo-router 58). Pode desinstalar.`);
+} else {
+  ok('query-string NÃO instalado (correto em v91 — expo-router 58 já não depende)');
 }
 
 // 4. Arquivos duplicados (sobra de cópia de conflito — OneDrive)?

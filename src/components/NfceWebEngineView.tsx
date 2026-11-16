@@ -51,7 +51,7 @@ interface ActiveJob {
 }
 
 export function NfceWebEngineView() {
-  const webRef = React.useRef<WebView | null>(null);
+  const webRef = React.useRef<React.ComponentRef<typeof WebView>>(null);
   const jobRef = React.useRef<ActiveJob | null>(null);
   const canalTimerRef = React.useRef<NfceStepTimer | null>(null);
   const captureTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -198,7 +198,7 @@ export function NfceWebEngineView() {
           originWhitelist={['*']}
           setSupportMultipleWindows={false}
           injectedJavaScript={INJECT_CHUNKED_CAPTURE}
-          onMessage={(event) => {
+          onMessage={(event: { nativeEvent: { data: string } }) => {
             if (!jobRef.current) return;
             try {
               const msg = JSON.parse(event.nativeEvent.data);
@@ -222,7 +222,7 @@ export function NfceWebEngineView() {
             }
             scheduleCapture(SETTLE_MS, 'página assentada');
           }}
-          onError={(e) => {
+          onError={(e: { nativeEvent: { code?: number; description?: string } }) => {
             if (!jobRef.current) return;
             const ne = (e?.nativeEvent ?? {}) as { description?: string; code?: number };
             nfceLog(`motor: ERRO de carregamento — descrição="${ne.description ?? '(sem descrição)'}" código=${ne.code ?? '?'}`);

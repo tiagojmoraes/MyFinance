@@ -20,7 +20,7 @@
 import React from 'react';
 import { View, Text, Pressable } from 'react-native';
 import Constants from 'expo-constants';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
 import * as SQLite from 'expo-sqlite';

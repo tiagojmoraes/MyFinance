@@ -339,6 +339,9 @@ export class CardInvoiceService {
       // v52-22 (v63.1): IDEMPOTÊNCIA — fatura já QUITADA não aceita novo pagamento
       // na mesma fatura (não debita 2x). Pagar a fatura EM ABERTO com excedente
       // (pré-pagar o ciclo) continua valendo enquanto houver devido.
+      // v91 (BUG v52-22): data relativa (paidOn) — o teste usa paidOn FIXO em
+      // dia ANTERIOR ao fechamento (ex.: 2026-10-12 antes do close 15) para a
+      // guarda disparar sem depender do calendário de hoje.
       if (dueBefore <= 0 && openMonth === fresh.reference_month && fresh.status === 'PAID') {
         throw new Error('Fatura já está paga — nada a pagar');
       }
