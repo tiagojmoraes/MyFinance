@@ -1,0 +1,20 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- v71 — CAPTURA DAS NOTIFICAÇÕES DO BANCO.
+         O BIND_NOTIFICATION_LISTENER_SERVICE é uma permissão concedida PELO
+         ANDROID ao serviço apenas depois que o usuário autoriza o app na tela
+         do sistema "Acesso às notificações" (o app pede a autorização na tela
+         Notificações do banco — botão "Permitir acesso às notificações").
+         Enquanto o usuário não autoriza, o serviço NÃO roda e NADA é lido. -->
+    <application>
+        <service
+            android:name=".BankNotificationListenerService"
+            android:exported="true"
+            android:label="MyFinance — captura de notificações do banco"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

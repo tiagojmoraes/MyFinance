@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "opencode/minimax-m3.1-flash-free",
+  "small_model": "opencode/nemotron-3.5-lightning-free",
+  "agent": {
+    "planejador": {
+      "description": "Analisa e planeja",
+      "model": "opencode/glm-5.3-flash-free",
+      "prompt": "Você é analista + planejador. Leia AGENTS.md, COMECE-AQUI.md e docs/CHANGELOG.md. Responda em português. Analise, depois crie plano com cronograma na conversa. Não escreva código. Termine pedindo autorização expressa, conforme AGENTS.md §0."
+    },
+    "Executor": {
+      "description": "Executa o plano",
+      "model": "opencode/minimax-m3",
+      "prompt": "Você é o executor. Só execute após autorização expressa. Siga AGENTS.md §1, §2, §3, §4. Um arquivo por vez. Rode npm run typecheck e npm test antes de entregar."
+    }
+  }
+}

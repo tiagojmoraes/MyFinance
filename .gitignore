@@ -1,0 +1,8 @@
+# Fora do git (e do zip de entrega — AGENTS.md §2)
+node_modules/
+.expo/
+.jest-coverage/
+dist/
+*.apk
+*.aab
+.env*
