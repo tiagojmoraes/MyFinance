@@ -1,4 +1,4 @@
-# COMECE AQUI — v90
+# COMECE AQUI — v91
 
 Guia ÚNICO do projeto: instalar, rodar no dia a dia, os erros que já
 apareceram (com a solução de cada um), versões travadas e como rodar os
@@ -83,11 +83,17 @@ Tem que aparecer o QR code limpo.
 
 ## 5. Versões travadas (não atualiza)
 
-- `expo ~53.0.9` — o upgrade SDK 53→58 foi PERMANENTEMENTE ARQUIVADO (quebrou
-  o install); e fora da pasta, `npx expo` tenta baixar o Expo 58.
-- `expo-router ~5.1.11` — precisa do `query-string@8.1.0`.
-- `query-string 8.1.0` — a v9 quebra o Hermes do RN 0.79.
-- `react-native 0.79.6` / `react 19.0.0`.
+- `expo ~58.0.13` — agora no SDK 58 (Expo 58.0.25 latest resolve). O upgrade
+  53→58 que estava arquivado foi destravado com `"overrides"` no
+  `package.json` (reanimated/worklets/RN).
+- `expo-router ~58.0.31` — não precisa mais do `query-string` (o peer sumiu).
+- **`query-string` foi REMOVIDA** — `expo-router` 58 não usa mais e o
+  Hermes 0.88 aceita o regex da v9. A trava "v9 quebra o Hermes" era do SDK 53.
+- `react-native 0.88.1` / `react 19.3.1` / `typescript ~5.9.3` /
+  `jest ^29.7.0` / `@types/jest ^29.5.14` — tentei subir para Jest 30 + TS 6.0
+  (que o expo-doctor recomenda) e explodiram +4.196 erros TS nos tests por
+  incompatibilidade do `infer` em `test.each(...)`. Por isso estão em
+  `expo.install.exclude`. Quieto, verde.
 
 ## 6. Testes (bateria por TEMA)
 

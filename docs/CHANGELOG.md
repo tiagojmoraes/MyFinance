@@ -6,7 +6,73 @@ completo de cada entrega é ESTE arquivo.
 
 Como rodar o projeto e os testes: `COMECE-AQUI.md` (raiz).
 
+---
+## v91 (2026-11-16) - Upgrade SDK 53 para 58 (Expo 58, React Native 0.88, React 19.3)
+
+### INFRA
+- **Upgrade do Expo SDK 53 para 58** (ultimo SDK estavel, out/2026). A tentativa
+  arquivada no COMECE-AQUI §5 agora funcionou com rede de seguranca (branch
+  `upgrade-sdk-58`, baseline testado ANTES). Causa raiz da quebra passada
+  resolvida com `"overrides"` no `package.json` (`react-native`, `react-
+  native-reanimated`, `react-native-worklets` - sem isso o `npm install` ainda
+  quebra com ERESOLVE no peer range `0.86 - 0.88` vs `0.88.1`).
+- **Expo 58.0.25** (latest), **React Native 0.88.1** (V1 default Hermes),
+  **React 19.3.1**, **expo-router 58.0.31**.
+- 16 modulos `expo-*` bumpados para a linha ~58 (camera 58.0.14, sqlite
+  58.0.17, file-system 58.0.13, etc.).
+- **flash-list 1.7.6 -> 2.3.3** - prop `estimatedItemSize` virou opcional
+  (removida das 2 telas; mesmo comportamento visual, auto-sizing do v2).
+- **react-native-webview 13.13.5 -> 14.0.1** - a assinatura Java
+  `onReceivedSslError(final WebView, final SslErrorHandler, final SslError)`
+  continua IDENTICA; o plugin `withWebViewSefazSsl` casa e aplica o patch do
+  SEFAZ-SP sem mudanca no codigo do plugin (verificado em prebuild, marker
+  `MYFINANCE_SEFAZ_SSL` no `RNCWebViewClient.java`).
+- **gesture-handler 2.24 -> 3.5**, **screens 4.11 -> 4.30**, **safe-area 5.4 -> 5.11**.
+- **reanimated 3.17.5 -> 4.7.1** + **worklets 0.13** (peer obrigatorio do
+  reanimated 4; o app NAO usa reanimated diretamente). Override fixo em 4.7.1/0.13.0.
+- **nativewind 4.1.23 -> 4.2.7** (alvo nominal Expo 57 - ainda sem release
+  estavel nativa para SDK 58, mas funciona com RN 0.88 sem ajustes de
+  metro/babel/tailwind).
+- **css-interop 0.1.22 -> ^0.2.7** (junto do nativewind 4.2.7), **zustand
+  ^5.0.5 -> ^5.1.0**, **tailwindcss 3.4.17 -> 3.4.19**, **better-sqlite3
+  11.9.1 -> 13.2.0**, **ts-jest ^29.3.4 -> ^29.4.15**.
+- **typescript 5.8.3 -> 5.9.3**, **@types/react 19.0.10 -> 19.3.0**.
+- **expo-file-system API legada**: import `'expo-file-system'` migrado para
+  `'expo-file-system/legacy'` em 3 telas (`ajustes.tsx`, `ofx.tsx`,
+  `nfce/[key].tsx`). Mesmo comportamento - so o caminho do import mudou
+  porque o default do expo-file-system 58 ja saiu da API legada.
+- **query-string REMOVIDA** do `package.json` (e das travas no
+  `tools/check-inicializacao.js` e em `preflight-inicializacao.test.ts`):
+  expo-router 58 nao depende mais dela, e o Hermes do RN 0.88 aceita o regex
+  que fazia a v9 quebrar o RN 0.79. A trava "v9 quebra o Hermes" era do SDK 53
+  - morreu.
+- **newArchEnabled removido de app.json** - passou a ser obrigatorio no SDK 58.
+- **Strict TypeScript API do RN 0.88**: ajustes mecanicos em ScrollView ref
+  (`ScrollViewInstance`) em `MonthScroller.tsx` e em WebView ref + callbacks
+  em `NfceWebEngineView.tsx`. Zero mudanca de runtime.
+- **expo.install.exclude** adicionado (jest/@types/jest/typescript): o
+  expo-doctor recomenda subir essas para 30/6.0, mas a tentativa explodiu
+  +4.196 erros TS nos tests. Mantemos as versoes que passam e removemos o
+  warning do `expo install --fix`.
+
+### BUGS
+- **payInvoice - idempotencia calendar-safe (BUG v52-22)**: o teste vermelho
+  que existia no master antes deste upgrade NAO era bug de servico - a guarda
+  estava correta, era o teste usando `paidOn = todaySP()` e hoje (16/11/2026)
+  ja passou do fechamento (close day 15). Teste agora usa `paidOn` FIXO em
+  dia anterior ao fechamento do ciclo (imune ao calendario, AGENTS §3).
+  2 testes novos (v52-22b e v52-22c) documentam o cross-cycle (BUG 4 v16 -
+  pre-pagamento do proximo ciclo, intencional) com e sem itens na fatura futura.
+
+### INFRA-Testes
+- `src/__tests__/infra/preflight-inicializacao.test.ts`: travas agora verificam
+  expo ^~58, expo-router ^~58, react-native ^0.88, react ^19.3, e **assert que
+  `query-string` NAO esta nas dependencies** (substitui as 4 asserts antigas).
+- `tools/check-inicializacao.js`: passo 3 (query-string) virou aviso informativo
+  (se voltar a aparecer, nao bloqueia).
+
 ---
+
 
 ## v90 (2026-11-15) - Cascata mês a mês; cartão Poupança enxuto; atalhos/Fluxo separados
 
