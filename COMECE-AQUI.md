@@ -1,4 +1,4 @@
-# COMECE AQUI — v91
+# COMECE AQUI — v92
 
 Guia ÚNICO do projeto: instalar, rodar no dia a dia, os erros que já
 apareceram (com a solução de cada um), versões travadas e como rodar os
@@ -77,6 +77,7 @@ Tem que aparecer o QR code limpo.
 | `VirtualizeUtils` / arquivos sumindo, cada vez um diferente | OneDrive cortou o install no meio. Pause o OneDrive e rode `npm run check` + `npm install`. |
 | `EADDRINUSE :8081 / :8082` | Outro Metro já está rodando. Feche o terminal antigo (ou `npx kill-port 8081 8082`). |
 | `EADDRINUSE :3000` | O servidor NFC-e já está rodando em outro terminal — feche um dos dois. |
+| `RNGestureHandlerModule.getModuleId is not a function` em `GestureHandlerRootView` | O Expo 58 exige `react-native-gesture-handler ~3.3.0`. Rode `npm install`; em development build, reconstrua e reinstale com `npx expo run:android`. Depois inicie o Metro com `npx expo start --clear`. |
 | QR "não achei 44 dígitos" | O código escaneado não é o QR fiscal da NFC-e (SAT/cupom) ou o link veio truncado. Use o QR da NFC-e paulista / cole a URL inteira (44 dígitos, validação com DV). |
 | `Request Rejected / Your support ID` na NFC-e | Firewall F5 BIG-IP do portal SEFAZ-SP. A leitura é SÓ pelo motor do aparelho (WebView oculta): aguarde alguns minutos e tente de novo — e o Terminal 1 precisa estar aberto. |
 | Tela vermelha com outro arquivo faltando | `npm run check`, depois `npm install` com o OneDrive pausado. |
@@ -87,6 +88,8 @@ Tem que aparecer o QR code limpo.
   53→58 que estava arquivado foi destravado com `"overrides"` no
   `package.json` (reanimated/worklets/RN).
 - `expo-router ~58.0.31` — não precisa mais do `query-string` (o peer sumiu).
+- `react-native-gesture-handler ~3.3.0` — versão esperada pelo Expo 58; depois
+  de atualizar, development builds Android precisam ser reconstruídas.
 - **`query-string` foi REMOVIDA** — `expo-router` 58 não usa mais e o
   Hermes 0.88 aceita o regex da v9. A trava "v9 quebra o Hermes" era do SDK 53.
 - `react-native 0.88.1` / `react 19.3.1` / `typescript ~5.9.3` /

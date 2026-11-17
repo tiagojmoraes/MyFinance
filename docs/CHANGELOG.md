@@ -7,6 +7,18 @@ completo de cada entrega é ESTE arquivo.
 Como rodar o projeto e os testes: `COMECE-AQUI.md` (raiz).
 
 ---
+
+## v92 (2026-11-16) - Correção de compatibilidade do Gesture Handler
+
+### BUGS / INFRA
+- Alinhado `react-native-gesture-handler` em `~3.3.0`, versão esperada pelo
+  Expo 58. A versão 3.5.0 incompatível causava
+  `RNGestureHandlerModule.getModuleId is not a function` ao montar
+  `GestureHandlerRootView` no Android.
+- Para development builds Android existentes, é necessário reconstruir e
+  reinstalar o app nativo; limpar o cache do Metro, sozinho, não atualiza o
+  módulo nativo.
+
 ## v91 (2026-11-16) - Upgrade SDK 53 para 58 (Expo 58, React Native 0.88, React 19.3)
 
 ### INFRA

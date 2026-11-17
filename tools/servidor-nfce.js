@@ -180,12 +180,15 @@ function ipDeRedeLocal(){
 }
 const enderecos=['127.0.0.1',...ipDeRedeLocal()];
 let prontos=0;
+let bannerMostrado=false;
 for(const endereco of enderecos){
   server.listen(PORTA,endereco,()=>{
     prontos++;
     const okNode=typeof fetch==='function';
     const exe=acharNavegador();
     const ips=ipDeRedeLocal();
+    if(bannerMostrado) return;
+    bannerMostrado=true;
     console.log('──────────────────────────────────────────────────────────');
     console.log(`  SERVIDOR NFC-e para o MyFinance · v${VERSAO}`);
     console.log(`  Node ${process.version} · fetch nativo: ${okNode?'OK':'AUSENTE'}`);
