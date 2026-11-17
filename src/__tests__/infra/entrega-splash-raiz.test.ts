@@ -52,20 +52,14 @@ describe('entrega — splash configurado e raiz limpa (origem v70 · 7)', () => 
     expect(fs.existsSync(path.join(root, appJson.expo.splash.image))).toBe(true);
   });
 
-  test('raiz limpa: guias antigos removidos (CHANGELOG unificado) e COMECE-AQUI presente', () => {
+  test('raiz limpa: só AGENTS.md como documentação (sem guias nem CHANGELOG)', () => {
     const raiz = fs.readdirSync(root).filter((f) => /^BATERIA-v|^OTIMIZACAO-v|^GARANTIA-|^NFCE-/.test(f));
     expect(raiz).toEqual([]); // nenhum guia antigo solto na raiz
-    expect(fs.existsSync(path.join(root, 'docs', 'CHANGELOG.md'))).toBe(true);
-    // v85+: os guias antigos por versão foram REMOVIDOS (o CHANGELOG é o
-    // histórico único) — não existe mais a pasta docs/arquivo/.
-    expect(fs.existsSync(path.join(root, 'docs', 'arquivo'))).toBe(false);
-    // essenciais permanecem na raiz
-    expect(fs.existsSync(path.join(root, 'COMECE-AQUI.md'))).toBe(true);
-    // v85: guia renomeado sem cedilha — o nome antigo não volta
-    expect(fs.existsSync(path.join(root, 'COMEÇAR-AQUI.md'))).toBe(false);
-    // v80: guias unificados — INICIO-AQUI e BATERIA-COMO-RODAR viraram o COMECE-AQUI
-    expect(fs.existsSync(path.join(root, 'INICIO-AQUI.md'))).toBe(false);
-    expect(fs.existsSync(path.join(root, 'BATERIA-COMO-RODAR.md'))).toBe(false);
+    expect(fs.existsSync(path.join(root, 'AGENTS.md'))).toBe(true);
+    // histórico = git (mensagens vXX); estes arquivos não voltam
+    for (const f of ['COMECE-AQUI.md', 'docs/CHANGELOG.md', 'docs/arquivo']) {
+      expect(fs.existsSync(path.join(root, f))).toBe(false);
+    }
   });
 
   test('migração v53: bank_messages com payment_method e card_final', async () => {

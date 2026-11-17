@@ -38,12 +38,10 @@ describe('v60 PRÉ-VOO — inicialização sem erro', () => {
     expect(txt).toContain('8082');
     expect(txt).toContain('OneDrive');
   });
-  test('COMECE-AQUI.md existe e documenta todos os erros já vistos', () => {
-    const txt = fs.readFileSync(path.join(root, 'COMECE-AQUI.md'), 'utf8');
-    for (const erro of ['expo@58', 'EADDRINUSE', 'query-string', 'hermes', 'Request Rejected', 'QR']) {
+  test('AGENTS.md documenta os erros já vistos', () => {
+    const txt = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
+    for (const erro of ['expo@58', 'EADDRINUSE', 'getModuleId', 'Request Rejected', 'QR']) {
       expect(txt).toContain(erro);
     }
-    // v85: pasta oficial de entrega documentada
-    expect(txt).toContain('MyFinance - appVersion');
   });
 });

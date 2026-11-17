@@ -2,7 +2,7 @@
   "expo": {
     "name": "MyFinance",
     "slug": "myfinance",
-    "version": "92.0.0",
+    "version": "93.0.0",
     "scheme": "myfinance",
     "orientation": "portrait",
     "userInterfaceStyle": "light",

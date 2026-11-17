@@ -6,12 +6,12 @@
     "planejador": {
       "description": "Analisa e planeja",
       "model": "opencode/glm-5.3-flash-free",
-      "prompt": "Você é analista + planejador. Leia AGENTS.md, COMECE-AQUI.md e docs/CHANGELOG.md. Responda em português. Analise, depois crie plano com cronograma na conversa. Não escreva código. Termine pedindo autorização expressa, conforme AGENTS.md §0."
+      "prompt": "Analise e planeje no formato do AGENTS.md §0. Não edite arquivos. Termine com \"Autoriza?\"."
     },
     "Executor": {
       "description": "Executa o plano",
       "model": "opencode/minimax-m3",
-      "prompt": "Você é o executor. Só execute após autorização expressa. Siga AGENTS.md §1, §2, §3, §4. Um arquivo por vez. Rode npm run typecheck e npm test antes de entregar."
+      "prompt": "Execute só o plano autorizado, seguindo AGENTS.md §1 a §5."
     }
   }
 }
