@@ -285,13 +285,35 @@ export default function LancamentoScreen() {
       // v17 (melhoria 5): categorias ARQUIVADAS saem das escolhas de lançamento
       svc.db.getAllAsync<CategoryOption>('SELECT id, name, parent_id, icon, direction FROM categories WHERE archived_at IS NULL ORDER BY name'),
       // contas/cartões ARQUIVADOS não aparecem nas escolhas (regra de arquivamento)
-      svc.db.getAllAsync<{ id: string; name: string }>('SELECT id, name FROM accounts WHERE archived_at IS NULL ORDER BY name'),
+// v94: no cadastro de RECEITA e DESPESA só conta CORRENTE entra — poupança/
+// dinheiro ficam fora (não são destino/débito do lançamento à vista). A edição
+// mantém a conta original SOMANDO o id dela à lista (legacy).
+      svc.db.getAllAsync<{ id: string; name: string }>("SELECT id, name FROM accounts WHERE archived_at IS NULL AND type = 'CHECKING' ORDER BY name"),
       svc.db.getAllAsync<{ id: string; name: string; last_four_digits: string | null; closing_day: number }>(
         'SELECT id, name, last_four_digits, closing_day FROM cards WHERE archived_at IS NULL ORDER BY name'
       ),
     ]);
     setCategories(cats);
-    setAccounts(accs.map((a) => ({ id: a.id, label: a.name })));
+    // v94: lista é só CORRENTE; mas, em modo EDIÇÃO, devolvemos também a conta
+    // do lançamento original (cacheada do banco), caso ela seja POUPANÇA/
+    // DINHEIRO de um registro já criado — sem isso, a tela Editar não
+    // conseguiria nem mostrar o nome.
+    let accList = accs.map((a) => ({ id: a.id, label: a.name }));
+    if (params.edit) {
+      const originalAccId = await svc.db.getFirstAsync<{ account_id: string | null }>(
+        'SELECT account_id FROM transactions WHERE id = ?',
+        [String(params.edit)]
+      );
+      const oid = originalAccId?.account_id;
+      if (oid && !accList.some((a) => a.id === oid)) {
+        const orig = await svc.db.getFirstAsync<{ name: string }>(
+          'SELECT name FROM accounts WHERE id = ?',
+          [oid]
+        );
+        if (orig) accList = [...accList, { id: oid, label: `${orig.name} (orig.)` }];
+      }
+    }
+    setAccounts(accList);
     setCards(cds.map((c) => ({ id: c.id, closingDay: c.closing_day, label: c.last_four_digits ? `${c.name} ••${c.last_four_digits}` : c.name })));
 
     // ---------- ALTERAR (v9/v10): preenche o formulário com o lançamento real ----------
@@ -1417,7 +1439,16 @@ export default function LancamentoScreen() {
               item (catálogo de produto), não a do lançamento. */}
           {!isTransfer && !isConsolidated && !nfceNote ? (
             <CategorySelect
-              label="Categoria (opcional)"
+              label={
+                // v94 — o filtro já vinha por direção (v67); o rótulo passa a
+                // dizer a direção: "Categoria de despesa" / "Categoria de
+                // receita" para deixar claro EXATAMENTE o que está aparecendo.
+                kind === 'INCOME'
+                  ? 'Categoria de receita'
+                  : kind === 'EXPENSE'
+                  ? 'Categoria de despesa'
+                  : 'Categoria (opcional)'
+              }
               categories={categories}
               value={categoryId}
               onChange={setCategoryId}

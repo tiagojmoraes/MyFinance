@@ -102,6 +102,41 @@ describe('Migrações (sistema user_version)', () => {
     const idx56 = MIGRATIONS.findIndex((m) => m.version === 56);
     expect(idx56).toBe(idx55 + 1);
   });
+
+  test('v94: migração 58 normaliza contas POUPANÇA para fora do saldo geral', async () => {
+    const db = BetterSQLiteDriver.memory();
+    await runMigrations(db);
+    // base antiga: poupança marcada como SIM (bug), corrente marcada como SIM (ok).
+    await db.runAsync(
+      "INSERT INTO accounts (id, name, type, initial_balance_cents, include_in_general_balance) VALUES ('acc-sav','Minha Poupança','SAVINGS',0,1)"
+    );
+    await db.runAsync(
+      "INSERT INTO accounts (id, name, type, initial_balance_cents, include_in_general_balance) VALUES ('acc-chk','Conta','CHECKING',0,1)"
+    );
+    await db.runAsync(
+      "INSERT INTO accounts (id, name, type, initial_balance_cents, include_in_general_balance) VALUES ('acc-cash','Dinheiro','CASH',0,1)"
+    );
+    // aplica migração 58
+    const m58 = MIGRATIONS.find((m) => m.version === 58);
+    expect(m58).toBeDefined();
+    expect(m58!.name).toBe('v94_poupanca_fora_saldo');
+    await db.runAsync(m58!.sql);
+    const rows = await db.getAllAsync<{ id: string; include_in_general_balance: number }>(
+      'SELECT id, include_in_general_balance FROM accounts ORDER BY id'
+    );
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r.include_in_general_balance]));
+    // SAVINGS sempre 0
+    expect(byId['acc-sav']).toBe(0);
+    // CHECKING e CASH continuam como estavam
+    expect(byId['acc-chk']).toBe(1);
+    expect(byId['acc-cash']).toBe(1);
+    // idempotente: rodar de novo não faz nada
+    await db.runAsync(m58!.sql);
+    const after = await db.getFirstAsync<{ include_in_general_balance: number }>(
+      "SELECT include_in_general_balance FROM accounts WHERE id = 'acc-sav'"
+    );
+    expect(after?.include_in_general_balance).toBe(0);
+  });
 });
 
 describe('Constraints do schema v7', () => {

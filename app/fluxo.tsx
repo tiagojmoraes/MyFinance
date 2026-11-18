@@ -103,7 +103,7 @@ import { startLoad } from '../src/lib/perf';
 import { MonthScroller } from '../src/components/MonthScroller';
 import { useDataEffect } from '../src/components/useDataEffect';
 import { formatBRL } from '../src/lib/money';
-import { orcadoPrevistoGastoLinha } from '../src/lib/fluxoFormat'; // v69: linha única com % por movimento
+import { orcadoPrevistoGastoLinha, orcadoGastoLinha } from '../src/lib/fluxoFormat'; // v69: linha única com % por movimento | v94: sem Previsto
 import {
   applyMonthEndBalanceHierarchy,
   mergeDailyAdjust,
@@ -1234,33 +1234,33 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
       footer={
         budgetSum && budgetSum.items.length > 0 ? (
           <View className="gap-1.5">
-            {/* v69 (BUG 3): "Orçado • Previsto • Gasto" TUDO NA MESMA LINHA, com
-                porcentagem por movimento (número redondo, sem decimal) */}
+            {/* v94: o card mostra "Orçado R$ (x%) • Gasto R$ (x%)" na MESMA
+                linha, com a MESMA regra de % por movimento do v69 (sem o
+                "Previsto": agora o denominador é orçado+gasto).
+                · falta (orçado − efetivado) segue ao lado, intacto. */}
             <Text className="text-[11px] text-slate-500">
-              {orcadoPrevistoGastoLinha(budgetSum.budgetedCents, budgetSum.previstoCents, budgetSum.efetivadoCents)} · falta {formatBRL(budgetSum.remainingCents)}
+              {orcadoGastoLinha(budgetSum.budgetedCents, budgetSum.efetivadoCents)} · falta {formatBRL(budgetSum.remainingCents)}
             </Text>
             {budgetSum.items.map((it) => (
               <LancamentoRow
                 key={it.budgetId}
                 dashed
                 title={it.label}
-                subtitle={orcadoPrevistoGastoLinha(it.amountCents, it.previstoCents, it.efetivadoCents)}
+                subtitle={orcadoGastoLinha(it.amountCents, it.efetivadoCents)}
                 amount={`falta ${formatBRL(it.remainingCents)}`}
                 amountClass={it.remainingCents < 0 ? 'text-rose-600' : 'text-slate-700'}
                 footer={<ProgressBar pct={it.pct} />}
               />
             ))}
-            {/* v70 (BUG 1.1): a METODOLOGIA da Programação de Compra SAIU daqui —
-                virou bloco PRÓPRIO no Fluxo (ordem: Orçamento → Lista de
-                Desejos → Poupança), com a mesma fechinha de expandir. */}
+            {/* v94: botão "Cadastrar / alterar" agora vive DENTRO do card (no
+                rodapé), visível quando o card está expandido — o link verde do
+                LancamentoRow saiu (regra geral). */}
           </View>
         ) : (
           <Text className="text-xs text-slate-500">Nenhum orçamento ativo — cadastre em Ações rápidas › Orçamento.</Text>
         )
       }
       footerOpen={budgetOpen}
-      onCadastrar={() => router.push('/orcamento')}
-      cadastrarLabel="Cadastrar / alterar orçamentos ›"
     />
   ) : null;
 
@@ -1269,23 +1269,47 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
   // saiu de DENTRO do card de Orçamento. Ordem no Fluxo: Orçamentos →
   // Programação de Compra → Poupança. Mostra as classificações (Prioridade >
   // Necessário > Desejo) com itens, barra de progressão e o texto sucinto
-  // de meses para comprar; o cadastro segue na tela da Programação de Compra. */
-  const wishTotalCents = wishClasses.reduce((a, c) => a + c.totalCents, 0);
+  // v94:
+  //  · CABEÇALHO (contraído): amount = saldo que AINDA FALTA para comprar
+  //    TUDO, calculado pela projeção do mês VISTO (esperado − reservado −
+  //    abatimento aplicado pela projeção). Quando a visualização é de um mês
+  //    passado, a projeção é vazia (hoje ela começa no mês corrente) e o
+  //    número vira a soma de (target − reserved) do momento — sem isso
+  //    "alterava no tempo" pedido pelo usuário;
+  //  · EXPANDIDO: a barra de progressão por mês (2026-11…) SAIU — o usuário
+  //    pediu para removê-la (era cumulativa e ocupava espaço sem
+  //    acrescentar informação nova). O saldo dinâmico do cabeçalho já
+  //    mostra o "quanto falta" mês a mês.
+  const wishTotalTarget = wishClasses.reduce((a, c) => a + c.totalCents, 0);
+  const wishTotalReserved = wishClasses.reduce(
+    (a, c) => a + c.items.reduce((b, i) => b + i.reserved_cents, 0),
+    0
+  );
   const wishTotalItens = wishClasses.reduce((a, c) => a + c.itemCount, 0);
+  /** v94: saldo do m\u00eas visto = (target \u2212 reservado) \u2212 abatido pela proje\u00e7\u00e3o. */
+  const wishHeaderSaldoCents = React.useMemo(() => {
+    const baseFalta = Math.max(0, wishTotalTarget - wishTotalReserved);
+    if (!wishProjection || wishProjection.months.length === 0) return baseFalta;
+    // pega o \u00faltimo m\u00eas projetado \u2264 viewed month; abate o que ele consumiu
+    const accumulatedAbatido = wishProjection.months.reduce((acc, m) => {
+      if (m.month > month) return acc;
+      const abate = m.classes.reduce((s, c) => s + c.abatidoCents, 0);
+      return acc + abate;
+    }, 0);
+    return Math.max(0, baseFalta - accumulatedAbatido);
+  }, [wishProjection, wishTotalTarget, wishTotalReserved, month]);
   const wishlistCard = wishlistOn ? (
     <LancamentoRow
       key="card-lista-desejos"
       arrow={{ open: wishOpen, onPress: () => setWishOpen((v) => !v), label: wishOpen ? 'Recolher programação de compra' : 'Expandir programação de compra' }}
       title={`${ICONS.listaDesejos} Programação de Compra`}
       subtitle={wishTotalItens > 0 ? `${wishTotalItens} item(ns) na lista` : 'Nenhum item cadastrado'}
-      amount={formatBRL(wishTotalCents)}
-      amountClass={wishTotalCents > 0 ? 'text-violet-700' : 'text-slate-900'}
+      amount={formatBRL(wishHeaderSaldoCents)}
+      amountClass={wishHeaderSaldoCents > 0 ? 'text-violet-700' : 'text-emerald-700'}
       footer={
         <View className="gap-1.5">
-          {/* v89 (MELHORIA card Programação): as frases "Para comprar tudo de
-              Prioridade…", "Para comprar tudo, você demora…" e "Sobra do mês…"
-              SAÍRAM — no lugar, a Projeção MÊS A MÊS aparece EXPANDIDA com a
-              sobra mensal e quanto ela abate em cada classe (com barras). */}
+          {/* v94: a barra de progress\u00e3o por m\u00eas (v90) saiu do rodap\u00e9
+              (o saldo din\u00e2mico do cabe\u00e7alho j\u00e1 mostra o resultado). */}
           {wishClasses.filter((c) => c.itemCount > 0).map((c) => {
             const clsOpen = !!wishClassOpen[c.cls];
             return (
@@ -1324,69 +1348,43 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
               </View>
             );
           })}
-          {/* v90: Projeção MÊS A MÊS em cascata (Prioridade → Necessário →
-              Desejo) SALDO POR MÊS com carryover. A linha "Projeção mês a mês
-              (sobra mensal XXXX)" do v89 SUMIU — só ocupava espaço sem
-              acrescentar informação nova (cada mês já mostra o saldo usado). */}
-          {wishOpen && wishProjection ? (
-            <View className="gap-1.5">
-              {wishProjection.months.map((m) => (
-                <View key={m.month} className="gap-1">
-                  <View className="flex-row justify-between items-center gap-2">
-                    <Text className="text-[11px] font-semibold text-slate-700">{m.month}</Text>
-                    <Text className="text-[11px] font-semibold text-violet-700">+{formatBRL(m.contributionCents)}</Text>
-                  </View>
-                  {(['PRIORIDADE', 'NECESSARIO', 'DESEJO'] as const).map((cls) => {
-                    const found = m.classes.find((c) => c.cls === cls);
-                    if (!found || (found.faltaInicioCents === 0 && found.abatidoCents === 0)) return null;
-                    const pct = found.faltaInicioCents > 0
-                      ? Math.max(0, Math.min(100, Math.round((1 - found.faltaFimCents / found.faltaInicioCents) * 100)))
-                      : 0;
-                    return (
-                      <View key={cls} className="gap-0.5">
-                        <View className="flex-row justify-between items-center gap-2">
-                          <Text className="text-[10px] text-slate-700 flex-1">{found.label}</Text>
-                          <Text className="text-[10px] font-semibold text-slate-800">
-                            {found.faltaFimCents > 0
-                              ? `${formatBRL(found.abatidoCents)} → falta ${formatBRL(found.faltaFimCents)}`
-                              : 'concluído'}
-                          </Text>
-                        </View>
-                        <ProgressBar pct={pct} />
-                      </View>
-                    );
-                  })}
-                </View>
-              ))}
-              {wishProjection.monthsUntilDone != null ? (
-                <Text className="text-[11px] font-semibold text-emerald-700">
-                  Compra tudo em {wishProjection.monthsUntilDone} {wishProjection.monthsUntilDone === 1 ? 'mês' : 'meses'}.
-                </Text>
-              ) : (
-                <Text className="text-[11px] text-slate-500">
-                  Continua nos meses seguintes — abra o app para acompanhar.
-                </Text>
-              )}
-            </View>
-          ) : null}
+          {/* v94: "Cadastrar / alterar" agora vive dentro do footer (o link
+              verde do LancamentoRow saiu — regra geral dos cards aqui). */}
           <Button label="Cadastrar / alterar itens ›" variant="outline" onPress={() => router.push('/lista-desejos')} />
         </View>
       }
       footerOpen={wishOpen}
-      onCadastrar={() => router.push('/lista-desejos')}
-      cadastrarLabel="Cadastrar / alterar itens ›"
     />
   ) : null;
 
+  // v94: estado/busy do botão "Efetivar" do Fechamento do Mês (cria+efetiva
+  // a transferência de fechamento quando o mês ainda não foi confirmado).
+  const [efetivandoFechamento, setEfetivandoFechamento] = React.useState(false);
+  const onEfetivarFechamento = async () => {
+    if (!savingsSum) return;
+    if (efetivandoFechamento) return;
+    setEfetivandoFechamento(true);
+    try {
+      const r = await services.savings.efetivarFechamento(month);
+      if (r.efetivadas > 0) {
+        showToast(`Fechamento de ${formatBRL(r.amountCents)} transferido`);
+      } else {
+        showToast('Sem sobra para guardar neste mês — nada a efetivar');
+      }
+      bump();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), 'err');
+    } finally {
+      setEfetivandoFechamento(false);
+    }
+  };
   const savingsCard = showSavingsCard ? (
     <LancamentoRow
       key="card-poupanca"
       arrow={{ open: savingsOpen, onPress: () => setSavingsOpen((v) => !v), label: savingsOpen ? 'Recolher poupança' : 'Expandir poupança' }}
       title={`${ICONS.poupanca} Poupança`}
-      // v69: PLANO cadastrado aparece no cabeçalho — valor = PROGRAMADO do mês
-      // (previsões + estimativa do fechamento) — nunca mais "R$ 0,00" + plano
-      // ativo. v90: subtítulo mais limpo (antes contava "N plano(s) cadastrado(s)"
-      // — agora mostra apenas o QUE IMPORTA: quanto já foi guardado).
+      // v94: cabeçalho mantém o QUE importa — quanto JÁ está guardado e quanto
+      // falta — sem contar "N plano(s) cadastrado(s)".
       subtitle={
         savingsSum && savingsSum.plans.length > 0
           ? `Guardado no mês ${formatBRL(savingsSum.effectedCents)} de ${formatBRL(savingsSum.programadoCents || 1)}`
@@ -1397,38 +1395,46 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
       footer={
         savingsSum && savingsSum.plans.length > 0 ? (
           <View className="gap-1.5">
-            {/* v90 — Card Poupança ENXUTO: por plano só nome e "guardado X de Y"
-                com barra. Sem as linhas de "Programado / Falta / Já transferido"
-                (repetição do próprio cabeçalho), sem modalidade, sem as últimas
-                5 transferências. Menos é mais: o usuário só precisa de saldo
-                e visão de como anda. */}
-            {savingsSum.plans.map((p) => {
-              const meta = p.mode === 'CLOSING'
-                ? (savingsSum.closingSuggestion?.amountCents ?? 0)
-                : (p.amountCents ?? 0);
-              const pct = meta > 0
-                ? Math.min(100, Math.round((p.guardadoCents / meta) * 100))
-                : p.guardadoCents > 0 ? 100 : 0;
-              return (
-                <LancamentoRow
-                  key={p.planId}
-                  dashed
-                  title={p.name}
-                  subtitle={`Guardado ${formatBRL(p.guardadoCents)} de ${formatBRL(meta)}`}
-                  amount={`${pct}%`}
-                  amountClass={pct >= 100 ? 'text-emerald-700' : 'text-slate-700'}
-                  footer={<ProgressBar pct={pct} />}
-                />
-              );
-            })}
+            {/* v94 — Card Poupança expandido: DUAS informações (a lista por
+                plano saiu — o usuário só precisa do CONSOLIDADO por modalidade).
+                · Linha 1 — Mensal: soma de TODAS as programações planejadas
+                  (plannedCents já considera apenas planos ATIVOS, v87).
+                · Linha 2 — Fechamento: saldo que SOBRA no fim do mês (sugestão
+                  viva) ou 0 quando já foi confirmado/efetivado. */}
+            <View className="flex-row justify-between items-center gap-2">
+              <Text className="text-sm text-slate-700">Poupança · Mensal</Text>
+              <Text className="text-sm font-bold text-slate-900">{formatBRL(savingsSum.plannedCents)}</Text>
+            </View>
+            <View className="flex-row justify-between items-center gap-2">
+              <Text className="text-sm text-slate-700">Poupança · Fechamento</Text>
+              <Text className={`text-sm font-bold ${(savingsSum.closingSuggestion?.amountCents ?? 0) > 0 ? 'text-violet-700' : 'text-emerald-700'}`}>
+                {formatBRL(savingsSum.closingSuggestion?.amountCents ?? 0)}
+              </Text>
+            </View>
+            {/* v94 — botão Efetivar (Fechamento). SÓ aparece quando existe plano
+                CLOSING ativo e o fechamento do mês ainda não foi confirmado
+                (uma sugestão de valor positiva OU uma transferência pendente). */}
+            {(savingsSum.closingSuggestion && savingsSum.closingSuggestion.amountCents > 0) ||
+            savingsSum.entries.some((e) => e.kind === 'CLOSING' && !e.effected) ? (
+              <Button
+                label={efetivandoFechamento ? 'Efetivando…' : 'Efetivar fechamento'}
+                variant="primary"
+                onPress={onEfetivarFechamento}
+                loading={efetivandoFechamento}
+              />
+            ) : null}
+            {/* v94 — botão "Cadastrar / alterar" dentro do footer (o link verde
+                do LancamentoRow saiu — regra geral dos cards aqui). */}
+            <Button label="Cadastrar / alterar poupança ›" variant="outline" onPress={() => router.push('/poupanca')} />
           </View>
         ) : (
-          <Text className="text-xs text-slate-500">Nenhum plano de poupança — cadastre em Ações rápidas › Poupança.</Text>
+          <View className="gap-2">
+            <Text className="text-xs text-slate-500">Nenhum plano de poupança — cadastre em Ações rápidas › Poupança.</Text>
+            <Button label="Cadastrar / alterar poupança ›" variant="outline" onPress={() => router.push('/poupanca')} />
+          </View>
         )
       }
       footerOpen={savingsOpen}
-      onCadastrar={() => router.push('/poupanca')}
-      cadastrarLabel="Cadastrar / alterar poupança ›"
     />
   ) : null;
 

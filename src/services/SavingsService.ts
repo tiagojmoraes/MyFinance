@@ -451,6 +451,53 @@ export class SavingsService {
     });
   }
 
+  /**
+   * v94 — Botão "Efetivar" do card Poupança expandido, confirmando SOMENTE o
+   * Fechamento do Mês (recurso pedido pelo usuário). Comportamento:
+   *  · se já existe estimativa CONFIRMADA (entrada CLOSING do mês) com transação
+   *    PENDING, efetiva a transferência (`setTransferStatus(true)`);
+   *  · se NÃO existe ainda e há plano CLOSING ativo + sobra positiva, cria a
+   *    transferência do fechamento (via `confirmClosing`) e a efetiva;
+   *  · sem plano CLOSING ativo ou sem sobra — `efetivadas` = 0, sem efeito.
+   * Devolve o número de transferências CONFIRMADAS pelo usuário (0 ou 1) para
+   * que a tela saiba se deve mostrar aviso.
+   */
+  async efetivarFechamento(month: string): Promise<{ efetivadas: number; amountCents: number }> {
+    // 1) já existe entrada CLOSING para o mês? Efetiva o movimento pendente.
+    const row = await this.db.getFirstAsync<{
+      id: string;
+      amount_cents: number;
+      transaction_id: string | null;
+      tx_status: string | null;
+    }>(
+      `SELECT se.id, se.amount_cents, se.transaction_id, t.status AS tx_status
+         FROM savings_entries se
+         LEFT JOIN transactions t ON t.id = se.transaction_id
+        WHERE se.month = ? AND se.kind = 'CLOSING'`,
+      [month]
+    );
+    if (row?.transaction_id) {
+      if (row.tx_status !== 'CONFIRMED') {
+        await this.transactions.setTransferStatus(row.transaction_id, true);
+      }
+      return { efetivadas: 1, amountCents: row.amount_cents };
+    }
+    // 2) sem entrada: pega a SUGESTÃO viva (sobra prevista após hierarquia) e
+    //    cria+efetiva a transferência de fechamento.
+    const suggestion = await this.getClosingSuggestion(month);
+    if (!suggestion) return { efetivadas: 0, amountCents: 0 };
+    await this.confirmClosing(month, suggestion.amountCents);
+    const created = await this.db.getFirstAsync<{ transaction_id: string | null }>(
+      `SELECT transaction_id FROM savings_entries
+        WHERE month = ? AND kind = 'CLOSING'`,
+      [month]
+    );
+    if (created?.transaction_id) {
+      await this.transactions.setTransferStatus(created.transaction_id, true);
+    }
+    return { efetivadas: 1, amountCents: suggestion.amountCents };
+  }
+
   // ------------------------------------------------------- resumo ----
 
   /** Resumo do mês para o card no Fluxo (previsão · falta · efetivadas). */

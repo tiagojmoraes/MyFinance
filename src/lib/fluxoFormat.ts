@@ -11,10 +11,19 @@ export function pctOf(part: number, total: number): number {
   return Math.round((part / total) * 100);
 }
 
-/** Linha ÚNICA "Orçado X • Previsto Y (p1%) • Gasto Z (p2%)" — a porcentagem
- *  é POR MOVIMENTO: fatia do valor sobre o total movimentado (previsto + gasto).
- *  Ex.: Orçado 350,00, Previsto 160,00, Gasto 0,00 → 100% / 0%.
- *       Orçado 350,00, Previsto 250,00, Gasto 100,00 → 71% / 29%. */
+/** Linha ÚNICA "Orçado X (p1%) • Gasto Z (p2%)" — a porcentagem é POR
+ *  MOVIMENTO: fatia de cada valor sobre o total movimentado (orçado + gasto);
+ *  mesmo critério do helper antigo (v69), só sem o "Previsto" (v94).
+ *  Ex.: Orçado 350,00, Gasto 0,00 → 100% / 0%.
+ *       Orçado 350,00, Gasto 100,00 → 78% / 22%. */
+export function orcadoGastoLinha(orcado: number, gasto: number): string {
+  const movimento = orcado + gasto;
+  return `Orçado ${formatBRL(orcado)} (${pctOf(orcado, movimento)}%) • Gasto ${formatBRL(gasto)} (${pctOf(gasto, movimento)}%)`;
+}
+
+/** v69 — mantido para compat (lançamentos legados / testes até v94): mesma
+ *  regra de fatia, com "Previsto" no meio. A partir de v94 o Fluxo usa
+ *  `orcadoGastoLinha`. */
 export function orcadoPrevistoGastoLinha(orcado: number, previsto: number, gasto: number): string {
   const movimento = previsto + gasto;
   return `Orçado ${formatBRL(orcado)} • Previsto ${formatBRL(previsto)} (${pctOf(previsto, movimento)}%) • Gasto ${formatBRL(gasto)} (${pctOf(gasto, movimento)}%)`;

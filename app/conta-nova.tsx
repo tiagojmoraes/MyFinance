@@ -65,18 +65,22 @@ export default function ContaNovaScreen() {
       showToast('Selecione o tipo', 'err');
       return;
     }
+    // v94: conta POUPANÇA jamais soma no saldo do Fluxo (é destino de
+    // transferência, não parte do escopo). Forçamos include=0 em criar/editar
+    // para alinhar com a regra (a migração 58 já normaliza bancos antigos).
+    const includeFlag = type === 'SAVINGS' ? 0 : 1;
     setSaving(true);
     try {
       if (editId) {
         await services.db.runAsync(
-          'UPDATE accounts SET name = ?, type = ?, initial_balance_cents = ?, initial_balance_date = ? WHERE id = ?',
-          [name.trim(), type, initialCents, initialDate || null, editId]
+          'UPDATE accounts SET name = ?, type = ?, initial_balance_cents = ?, initial_balance_date = ?, include_in_general_balance = ? WHERE id = ?',
+          [name.trim(), type, initialCents, initialDate || null, includeFlag, editId]
         );
         showToast('Conta alterada');
       } else {
         await services.db.runAsync(
-          'INSERT INTO accounts (id, name, type, initial_balance_cents, initial_balance_date, include_in_general_balance, archived_at) VALUES (?,?,?,?,?,1,NULL)',
-          [genId(), name.trim(), type, initialCents, initialDate || null]
+          'INSERT INTO accounts (id, name, type, initial_balance_cents, initial_balance_date, include_in_general_balance, archived_at) VALUES (?,?,?,?,?,?,NULL)',
+          [genId(), name.trim(), type, initialCents, initialDate || null, includeFlag]
         );
         showToast(`Conta criada — saldo inicial ${formatBRL(initialCents)}`);
       }

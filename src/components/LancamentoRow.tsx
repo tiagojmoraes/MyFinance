@@ -45,17 +45,10 @@ export interface LancamentoRowProps {
   footer?: React.ReactNode | null;
   /** v67 (BUG 3): quando definido, o rodapé só aparece se footerOpen. */
   footerOpen?: boolean;
-  /** v67: link "Cadastrar / alterar … ›" no fim do card (orçamento/poupança). */
-  onCadastrar?: (() => void) | null;
-  cadastrarLabel?: string;
 }
 
-export function LancamentoRowBase({
-  footerOpen = true,
-  onCadastrar,
-  cadastrarLabel,
-  ...a
-}: LancamentoRowProps) {
+export function LancamentoRowBase(a: LancamentoRowProps) {
+  const { footerOpen = true } = a;
   const arrowBoxClass = a.arrow?.tone === 'rose' ? 'bg-rose-50' : 'bg-violet-50';
   const arrowTextClass = a.arrow?.tone === 'rose' ? 'text-rose-700' : 'text-violet-700';
   return (
@@ -127,16 +120,6 @@ export function LancamentoRowBase({
         </View>
         {a.footer && footerOpen ? (
           <View className="mt-2 gap-1 border-t border-dashed border-slate-200 pt-2">{a.footer}</View>
-        ) : null}
-        {onCadastrar && footerOpen ? (
-          <Text
-            onPress={onCadastrar}
-            accessibilityRole="button"
-            accessibilityLabel={cadastrarLabel ?? 'Cadastrar'}
-            className="text-[11px] font-semibold text-emerald-700 mt-1"
-          >
-            {cadastrarLabel ?? 'Cadastrar ›'}
-          </Text>
         ) : null}
       </Card>
     </Pressable>

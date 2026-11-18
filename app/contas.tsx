@@ -206,6 +206,9 @@ export default function ContasScreen() {
               description={acc.include ? 'Esta conta soma no saldo geral da tela Início.' : 'Esta conta NÃO soma no saldo geral.'}
               value={acc.include}
               onChange={(v) => toggleInclude(acc, v)}
+              // v94: conta poupança é destino de transferência — não pode entrar
+              // no saldo geral; a migração 58 + /conta-nova já fixam em 0.
+              hidden={acc.type === 'SAVINGS'}
             />
 
             <View className="flex-row gap-2 items-center">

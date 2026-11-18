@@ -138,17 +138,25 @@ describe('v67 BUG 1 (atualizado na v68) — saldo do dia sem bloco de orçamento
     expect(src).toContain('savAdj?.efetivado[lastActivityDate]');
   });
 
-  test('v90: card Poupança ENXUTO — só cabeçalho mostra "Guardado no mês"; nada compete com saldo do dia', () => {
+  test('v94: card Poupança — só cabeçalho mostra "Guardado no mês"; expandido tem 2 linhas consolidadas + Efetivar', () => {
     const src = fluxoSrc();
-    // enxugou: o cabeçalho mostra PROGRAMADO no amount à direita e a linha
-    // "Guardado no mês X de Y" como subtítulo. Nada de "Programado p/ poupança"
-    // / "Falta transferir" / "Já transferido p/ poupança" repetidos abaixo.
+    // v94 enxugou: cabeçalho mostra PROGRAMADO no amount à direita e a linha
+    // "Guardado no mês X de Y" como subtítulo. O expandido NÃO lista mais
+    // plano a plano (a lista por plano saiu — virou 2 linhas: Mensal/Fechamento
+    // + botão "Efetivar fechamento").
     expect(src).toContain('Guardado no mês ${formatBRL(savingsSum.effectedCents)} de ${formatBRL(savingsSum.programadoCents || 1)}');
-    expect(src).toContain('Guardado ${formatBRL(p.guardadoCents)} de ${formatBRL(meta)}');
+    expect(src).toContain('Poupança · Mensal');
+    expect(src).toContain('Poupança · Fechamento');
+    expect(src).toContain('Efetivar fechamento');
+    // Garantia: nada de lista-por-plano nem de vocabulário antigo.
+    expect(src).not.toContain('Guardado ${formatBRL(p.guardadoCents)} de ${formatBRL(meta)}');
     expect(src).not.toContain('Programado p/ poupança');
     expect(src).not.toContain('Falta transferir');
     expect(src).not.toContain('Já transferido p/ poupança');
     expect(src).not.toContain('Previsão do mês (programado)');
+    // o link verde "Cadastrar / alterar" do LancamentoRow saiu também.
+    expect(src).not.toContain('onCadastrar=');
+    expect(src).not.toContain('cadastrarLabel=');
   });
 
   test('REGRESSÃO: sem módulos ativos, o saldo do dia continua sendo o do BalanceService', async () => {

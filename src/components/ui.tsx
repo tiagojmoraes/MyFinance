@@ -488,12 +488,15 @@ export function DateField({ label, value, onChange }: { label: string; value: st
 }
 
 /** Interruptor com rótulo (v8) — ex.: "Aparece no saldo do Fluxo" em Contas. */
-export function ToggleRow({ label, description, value, onChange }: {
+export function ToggleRow({ label, description, value, onChange, hidden }: {
   label: string;
   description?: string;
   value: boolean;
   onChange: (v: boolean) => void;
+  /** v94: quando true, NÃO renderiza (ex.: SAVINGS não tem o toggle). */
+  hidden?: boolean;
 }) {
+  if (hidden) return null;
   return (
     <View className="flex-row items-center justify-between gap-3 py-1">
       <View className="flex-1">

@@ -619,6 +619,20 @@ UPDATE accounts SET name = 'Reserva · Programação de Compra'
         }
       },
     },
+    // v94: a regra do produto pediu que toda conta do tipo POUPANÇA saia do
+    // saldo geral (a caderneta é um destino de transferência — não pode
+    // somar de novo em "Aparece no saldo do Fluxo"). A tela de cadastro já
+    // impede o toggle para SAVINGS e força o flag em 0 na criação/edição;
+    // esta migração normaliza bancos existentes (poupança marcada como
+    // SIM volta para NÃO). Idempotente.
+    {
+      version: 58,
+      name: 'v94_poupanca_fora_saldo',
+      sql: `
+UPDATE accounts SET include_in_general_balance = 0
+ WHERE type = 'SAVINGS' AND include_in_general_balance <> 0;
+`,
+    },
 ];
 
 /** Aplica migrações pendentes de forma atômica. Idempotente. */

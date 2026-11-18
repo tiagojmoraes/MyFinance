@@ -26,7 +26,7 @@ import {
   WishlistService, RESERVA_ACCOUNT_NAME, CLASS_LABELS,
   type WishlistMethodology,
 } from '../../services/WishlistService';
-import { pctOf, orcadoPrevistoGastoLinha } from '../../lib/fluxoFormat';
+import { pctOf, orcadoPrevistoGastoLinha, orcadoGastoLinha } from '../../lib/fluxoFormat';
 import { TransactionService } from '../../services/TransactionService';
 import { formatBRL } from '../../lib/money';
 import {
@@ -381,35 +381,112 @@ describe('v69 · 6 — Poupança do Fluxo (cabeçalho, programado, falta, transf
 
 // ----------------------------------------------------- formato da linha ----
 
-describe('v69 · 7 — linha "Orçado • Previsto • Gasto" (uma linha, % redonda)', () => {
-  test('porcentagem por movimento — exemplo 1 do usuário (160/0 de 160 movimentados)', () => {
-    expect(pctOf(160, 160)).toBe(100);
-    expect(pctOf(0, 160)).toBe(0);
-    const linha = orcadoPrevistoGastoLinha(35_000, 16_000, 0);
+describe('v94 · 7 — linha "Orçado • Gasto" (uma linha, % por movimento, sem Previsto)', () => {
+  test('porcentagem por movimento — exemplo 1 do usuário (400/0 de 400 → 100/0)', () => {
+    expect(pctOf(400, 400)).toBe(100);
+    expect(pctOf(0, 400)).toBe(0);
+    const linha = orcadoGastoLinha(40_000, 0);
     expect(linha).toBe(
-      `Orçado ${formatBRL(35000)} • Previsto ${formatBRL(16000)} (100%) • Gasto ${formatBRL(0)} (0%)`
+      `Orçado ${formatBRL(40000)} (100%) • Gasto ${formatBRL(0)} (0%)`
     );
   });
 
-  test('porcentagem por movimento — exemplo 2 do usuário (250/100 de 350 movimentados)', () => {
-    expect(pctOf(250, 350)).toBe(71); // 71,42… → 71 (número redondo, sem decimal)
-    expect(pctOf(100, 350)).toBe(29); // 28,57… → 29
-    const linha = orcadoPrevistoGastoLinha(35_000, 25_000, 10_000);
+  test('porcentagem por movimento — exemplo 2 do usuário (350/100 de 450 → 78/22)', () => {
+    // 350/450 = 77,77… → 78; 100/450 = 22,22… → 22.
+    expect(pctOf(350, 450)).toBe(78);
+    expect(pctOf(100, 450)).toBe(22);
+    const linha = orcadoGastoLinha(35_000, 10_000);
     expect(linha).toBe(
-      `Orçado ${formatBRL(35000)} • Previsto ${formatBRL(25000)} (71%) • Gasto ${formatBRL(10000)} (29%)`
+      `Orçado ${formatBRL(35000)} (78%) • Gasto ${formatBRL(10000)} (22%)`
     );
   });
 
   test('total zerado não divide por zero', () => {
     expect(pctOf(0, 0)).toBe(0);
-    expect(orcadoPrevistoGastoLinha(10_000, 0, 0)).toBe(
-      `Orçado ${formatBRL(10000)} • Previsto ${formatBRL(0)} (0%) • Gasto ${formatBRL(0)} (0%)`
+    expect(orcadoGastoLinha(0, 0)).toBe(
+      `Orçado ${formatBRL(0)} (0%) • Gasto ${formatBRL(0)} (0%)`
     );
   });
 
   test('estouro arredonda sem decimal', () => {
     expect(pctOf(1, 3)).toBe(33);
     expect(pctOf(2, 3)).toBe(67);
+  });
+
+  // v69 mantida para compat: testa que o helper legado (3 números) ainda
+  // monta a linha com "Previsto" no meio — alguns testes antigos podem usar.
+  test('helper legado orcadoPrevistoGastoLinha continua renderizando o Previsto', () => {
+    const linha = orcadoPrevistoGastoLinha(35_000, 16_000, 0);
+    expect(linha).toContain('Previsto');
+    expect(linha).toContain(`Orçado ${formatBRL(35000)}`);
+  });
+});
+
+// ----------------------------------------------------- v94 · Efetivar Fechamento ----
+
+describe('v94 · 8 — Efetivar Fechamento do Mês (botão "Efetivar")', () => {
+  /** Sobe um cenário CLOSING clássico: 1 conta com saldo positivo e plano
+   *  CLOSING ativo — sobra vira estimativa de fechamento. */
+  async function setupClosing(mes: string) {
+    const { services, db } = await makeCtx();
+    const origem = await seedAccount(services.db, 'Conta Origem', 100_000);
+    const destinoId = `acc-dest-${Math.random().toString(36).slice(2, 8)}`;
+    await db.runAsync(
+      "INSERT INTO accounts (id, name, type, initial_balance_cents, include_in_general_balance) VALUES (?,?,?,?,0)",
+      [destinoId, 'Caderneta', 'SAVINGS', 0]
+    );
+    await services.savings.createClosingPlan({ fromAccountId: origem, toAccountId: destinoId });
+    // garante SALDO POSITIVO previsto no fim do mês para que a sugestão apareça
+    return { services, db, origem, destinoId };
+  }
+
+  test('cria + efetiva a transferência do fechamento a partir da SUGESTÃO viva', async () => {
+    const mes = monthOf(todaySP());
+    const { services, db } = await setupClosing(mes);
+    const ov0 = await services.savings.getMonthOverview(mes);
+    expect(ov0.closingSuggestion).not.toBeNull();
+    const expected = ov0.closingSuggestion!.amountCents;
+
+    const r = await services.savings.efetivarFechamento(mes);
+    expect(r.efetivadas).toBe(1);
+    expect(r.amountCents).toBe(expected);
+
+    // entrada CLOSING do mês com transação CONFIRMED e valor = expected
+    const row = await db.getFirstAsync<{
+      amount_cents: number; kind: string; tx_status: string;
+    }>(
+      `SELECT se.amount_cents, se.kind, t.status AS tx_status
+         FROM savings_entries se
+         LEFT JOIN transactions t ON t.id = se.transaction_id
+        WHERE se.month = ? AND se.kind = 'CLOSING'`,
+      [mes]
+    );
+    expect(row?.amount_cents).toBe(expected);
+    expect(row?.tx_status).toBe('CONFIRMED');
+    // sugestão seguinte some (já confirmado)
+    const ov2 = await services.savings.getMonthOverview(mes);
+    expect(ov2.closingSuggestion).toBeNull();
+  });
+
+  test('segundo toque: efetiva a transferência PENDING já criada', async () => {
+    const mes = monthOf(todaySP());
+    const { services } = await setupClosing(mes);
+    // cria a transferência PENDING via confirmClosing (equivale ao 1º toque)
+    const sug = (await services.savings.getClosingSuggestion(mes))!;
+    await services.savings.confirmClosing(mes, sug.amountCents);
+    const r = await services.savings.efetivarFechamento(mes);
+    expect(r.efetivadas).toBe(1);
+    expect(r.amountCents).toBe(sug.amountCents);
+  });
+
+  test('sem plano CLOSING ativo OU sem sobra → devolve efetivadas = 0', async () => {
+    const { services } = await makeCtx();
+    const mes = monthOf(todaySP());
+    // sem plano CLOSING, com saldo zerado
+    const r = await services.savings.efetivarFechamento(mes);
+    expect(r.efetivadas).toBe(0);
+    expect(r.amountCents).toBe(0);
+    void services;
   });
 });
 

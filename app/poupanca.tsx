@@ -43,15 +43,21 @@ export default function PoupancaScreen() {
   const [deleting, setDeleting] = React.useState<SavingsPlanRow | null>(null);
   const [busy, setBusy] = React.useState(false);
 
+  // v94: origem do plano é só CORRENTE — poupança/dinheiro não são origem de
+  // transferência programada de poupança (estamos guardando dinheiro, não
+  // esvaziando uma caderneta).
   const load = React.useCallback(async () => {
     const accs = await services.db.getAllAsync<{ id: string; name: string; type: string }>(
-      'SELECT id, name, type FROM accounts WHERE archived_at IS NULL ORDER BY name'
+      "SELECT id, name, type FROM accounts WHERE archived_at IS NULL AND type = 'CHECKING' ORDER BY name"
     );
     setAccounts(accs.map((a) => ({ id: a.id, label: a.name })));
     // v87 (BUG BAIXO): o destino era QUALQUER conta — o usuário podia escolher
     // a própria conta corrente como "conta poupança". Agora o destino lista
     // só contas de POUPANÇA (type = 'SAVINGS').
-    setSavingsAccounts(accs.filter((a) => a.type === 'SAVINGS').map((a) => ({ id: a.id, label: a.name })));
+    const allSavingCandidates = await services.db.getAllAsync<{ id: string; name: string; type: string }>(
+      "SELECT id, name, type FROM accounts WHERE archived_at IS NULL AND type = 'SAVINGS' ORDER BY name"
+    );
+    setSavingsAccounts(allSavingCandidates.map((a) => ({ id: a.id, label: a.name })));
     setPlans(await services.savings.listPlans());
   }, [services]);
 

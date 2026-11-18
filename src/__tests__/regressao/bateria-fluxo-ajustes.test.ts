@@ -73,11 +73,16 @@ describe('v68 FLUXO 1 — Orçamento expandido: Orçado • Previsto • Gasto',
     expect(sum.efetivadoCents).toBe(10_000);
   });
 
-  test('a tela mostra "Orçado • Previsto • Gasto" por orçamento e no total', () => {
+  test('a tela mostra "Orçado • Gasto" por orçamento e no total (v94: sem Previsto)', () => {
     const src = fluxoSrc();
-    // v69: a linha única virou o helper orcadoPrevistoGastoLinha (com % por movimento)
-    expect(src).toContain("orcadoPrevistoGastoLinha(budgetSum.budgetedCents, budgetSum.previstoCents, budgetSum.efetivadoCents)");
-    expect(src).toContain("orcadoPrevistoGastoLinha(it.amountCents, it.previstoCents, it.efetivadoCents)");
+    // v94: o helper virou orcadoGastoLinha (sem o "Previsto"); a regra de % por
+    // movimento continua (orçado + gasto = denominador).
+    expect(src).toContain('orcadoGastoLinha(budgetSum.budgetedCents, budgetSum.efetivadoCents)');
+    expect(src).toContain('orcadoGastoLinha(it.amountCents, it.efetivadoCents)');
+    // o helper com "Previsto" saiu dos cards do Fluxo (mantém disponibilidade
+    // para outros usos internos/testes).
+    expect(src).not.toContain('orcadoPrevistoGastoLinha(');
+    expect(src).not.toContain('previsto: budgetSum'); // sem campo separado de Previsto no rodapé
     // nada de "gastou" (vocabulário antigo)
     expect(src).not.toContain('gastou');
   });
@@ -117,18 +122,28 @@ describe('v68 FLUXO 2 — Poupança expandida mostra o plano cadastrado', () => 
     expect(pn?.faltaCents).toBe(30_000);
   });
 
-  test('a tela mostra por plano só o saldo guardado × programado e a barra', () => {
+  test('a tela mostra APENAS 2 informações consolidadas + botão Efetivar (v94)', () => {
     const src = fluxoSrc();
-    // v90 — card ENXUTO: "Guardado X de Y" + "X%" + barra. Sem modalidade,
-    // sem "Falta transferir", sem "Já transferido", sem últimas 5 transferências.
-    expect(src).toContain('Guardado ${formatBRL(p.guardadoCents)} de ${formatBRL(meta)}');
-    // cabeçalho do card: "Guardado no mês X de Y"
+    // v94: card Poupança expandido mostra só:
+    //   · "Poupança · Mensal" (soma das programações planejadas)
+    //   · "Poupança · Fechamento" (saldo do fim do mês)
+    //   · botão "Efetivar fechamento" (só Fechamento)
+    //   · botão "Cadastrar / alterar poupança" (regras gerais)
+    expect(src).toMatch(/Poupança · Mensal/);
+    expect(src).toMatch(/Poupança · Fechamento/);
+    expect(src).toContain('Efetivar fechamento');
+    expect(src).toContain('Cadastrar / alterar poupança');
+    // cabeçalho do card segue: "Guardado no mês X de Y"
     expect(src).toMatch(/Guardado no mês /);
-    // Garantia contra regressão: nenhum dos rótulos antigos pode voltar.
+    // Garantia contra regressão: nada do card-por-plano antigo pode voltar.
+    expect(src).not.toContain('Guardado ${formatBRL(p.guardadoCents)} de ${formatBRL(meta)}');
     expect(src).not.toContain('Modalidade: ${p.modalityLabel}');
     expect(src).not.toContain('Falta transferir');
     expect(src).not.toContain('Já transferido p/ poupança');
     expect(src).not.toContain('Programado p/ poupança');
+    // o link verde "Cadastrar / alterar (...)" saiu do LancamentoRow (regra geral)
+    expect(src).not.toContain('onCadastrar=');
+    expect(src).not.toContain('cadastrarLabel=');
   });
 });
 
