@@ -110,6 +110,11 @@ export class BalanceService {
                  WHERE i.id = fm.installment_id AND i.status = 'PENDING'
               )
             WHERE a.include_in_general_balance = 1 AND a.archived_at IS NULL
+              -- v94: POUPANÇA fica FORA do saldo do Fluxo, sempre. O dinheiro
+              -- guardado é reserva, não disponibilidade corrente — e a
+              -- transferência da poupança credita a conta destino; com ela no
+              -- escopo o total não diminuía ao guardar.
+              AND a.type != 'SAVINGS'
             GROUP BY a.id
          )`,
       [date, date]
@@ -155,7 +160,9 @@ export class BalanceService {
       accountId: row.id,
       name: row.name,
       type: row.type,
-      includeInGeneral: row.include === 1,
+      // v94: Poupança nunca "aparece no saldo do Fluxo" — a flag bruta pode ter
+      // ficado 1 em dado antigo; aqui ela já sai desligada para as telas.
+      includeInGeneral: row.include === 1 && row.type !== 'SAVINGS',
       balanceCents: row.balance,
     }));
   }
@@ -243,9 +250,15 @@ export class BalanceService {
     const endDate = `${month}-${String(lastDay).padStart(2, '0')}`;
 
     // ---------- ESCOPO: contas ativadas para o saldo do Fluxo ----------
+    // v94: conta do tipo POUPANÇA nunca compõe o saldo, mesmo que a coluna
+    // esteja marcada (dado antigo) — a migração 58 já desliga a marca, e esta
+    // guarda garante a regra em qualquer base. Com isso, no 1º dia com conta o
+    // "Saldo do dia Efetivado" é EXATAMENTE a soma dos saldos iniciais das
+    // contas que o usuário marcou "Aparece no saldo do Fluxo".
     const contas = await this.db.getAllAsync<{ id: string; initial_balance_cents: number; initial_balance_date: string | null }>(
       `SELECT id, initial_balance_cents, initial_balance_date FROM accounts
-        WHERE include_in_general_balance = 1 AND archived_at IS NULL`
+        WHERE include_in_general_balance = 1 AND archived_at IS NULL
+          AND type != 'SAVINGS'`
     );
     // v20: o saldo inicial entra na CONTAGEM só a partir da âncora da conta.
     //  · s0Pre: âncoras nulas ("desde sempre") ou anteriores ao mês visto;

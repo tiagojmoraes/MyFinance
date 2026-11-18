@@ -125,6 +125,8 @@ export default function ContasScreen() {
 
   const toggleInclude = async (a: AccountItem, value: boolean) => {
     // v87: sem try/catch, um erro virava unhandled rejection (sem aviso)
+    // v94: POUPANÇA não tem essa opção — nunca entra no saldo do Fluxo.
+    if (a.type === 'SAVINGS') return;
     try {
       await services.db.runAsync(
         'UPDATE accounts SET include_in_general_balance = ? WHERE id = ?',
@@ -201,12 +203,20 @@ export default function ContasScreen() {
               </Text>
             </View>
 
-            <ToggleRow
-              label="Aparece no saldo do Fluxo"
-              description={acc.include ? 'Esta conta soma no saldo geral da tela Início.' : 'Esta conta NÃO soma no saldo geral.'}
-              value={acc.include}
-              onChange={(v) => toggleInclude(acc, v)}
-            />
+            {/* v94: Poupança NÃO oferece o toggle — o dinheiro guardado é
+                reserva, não disponibilidade; fica sempre fora do Fluxo. */}
+            {acc.type === 'SAVINGS' ? (
+              <Text className="text-[11px] text-slate-400 leading-4">
+                Poupança não soma no saldo do Fluxo — o dinheiro guardado fica fora da disponibilidade.
+              </Text>
+            ) : (
+              <ToggleRow
+                label="Aparece no saldo do Fluxo"
+                description={acc.include ? 'Esta conta soma no saldo geral da tela Início.' : 'Esta conta NÃO soma no saldo geral.'}
+                value={acc.include}
+                onChange={(v) => toggleInclude(acc, v)}
+              />
+            )}
 
             <View className="flex-row gap-2 items-center">
               {canDelete(acc) ? (

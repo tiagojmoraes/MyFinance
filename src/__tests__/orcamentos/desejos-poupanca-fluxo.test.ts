@@ -280,6 +280,17 @@ describe('v69 · 5 — metodologia da hierarquia (meses para comprar)', () => {
         true
       )).toEqual({ '2026-11-01': 0, '2026-11-02': 10_000 });
     });
+
+    test('v94: a MESMA regra zera a abertura do EFETIVADO no mês subsequente', () => {
+      const efetivado = { '2026-11-01': 100_000, '2026-11-02': 110_000 };
+      expect(removeClosingMonthOpening(efetivado, 100_000, true))
+        .toEqual({ '2026-11-01': 0, '2026-11-02': 10_000 });
+      // Fechamento DESLIGADO: a abertura continua no número
+      expect(removeClosingMonthOpening(efetivado, 100_000, false)).toEqual(efetivado);
+      // abertura NEGATIVA (dívida real) nunca é zerada
+      expect(removeClosingMonthOpening({ '2026-11-01': -5_000 }, -5_000, true))
+        .toEqual({ '2026-11-01': -5_000 });
+    });
   });
 
   test('prioridade que CABE no mês libera a classificação seguinte no mês seguinte', async () => {

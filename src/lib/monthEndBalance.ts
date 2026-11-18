@@ -5,6 +5,12 @@ export function availableForWishlistAtMonthEnd(
   return Math.max(0, balanceCents - Math.max(0, budgetRemainingCents));
 }
 
+/**
+ * v70/v94 — remove a ABERTURA do mês (saldo carregado antes do dia 1) quando a
+ * Poupança "Fechamento do mês" rege o mês: o dinheiro já foi retido para a
+ * poupança e não é disponibilidade do mês visto. Aplicado às DUAS visões
+ * (Previsto e Efetivado) — antes só o previsto era zerado.
+ */
 export function removeClosingMonthOpening(
   balanceByDay: Record<string, number>,
   openingBalanceCents: number,

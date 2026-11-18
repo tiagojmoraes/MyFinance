@@ -95,7 +95,7 @@ import React from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { FlashList } from '@shopify/flash-list';
-import { Screen, Card, Button, EmptyState, Badge, Segmented, FixedDot, InstallmentPill, ProgressBar } from '../src/components/ui';
+import { Screen, Button, EmptyState, Badge, Segmented, FixedDot, InstallmentPill, ProgressBar } from '../src/components/ui';
 import { ConfirmDialog } from '../src/components/ConfirmDialog';
 import { LancamentoRow } from '../src/components/LancamentoRow'; // v67 (BUG 2): esqueleto ÚNICO das linhas
 import { showToast } from '../lib/toast';
@@ -166,6 +166,8 @@ export default function FluxoScreen() {
   const [dailyBal, setDailyBal] = React.useState<{
     efetivado: Record<string, number>;
     previsto: Record<string, number>;
+    /** v94: abertura EFETIVADA do mês — zerada quando a Poupança "Fechamento do mês" rege o mês. */
+    openingEfetivado?: number;
     openingPrevisto?: number;
   }>({ efetivado: {}, previsto: {} });
   const [lastActivityDate, setLastActivityDate] = React.useState<string | null>(null);
@@ -278,6 +280,7 @@ export default function FluxoScreen() {
       type DailyDual = {
         efetivado: Record<string, number>;
         previsto: Record<string, number>;
+        openingEfetivado?: number;
         openingPrevisto?: number;
       };
       let showDailyFlag = false;
@@ -534,13 +537,18 @@ export default function FluxoScreen() {
     // movimentos DE DENTRO do mês visto (abertura zerada; nunca negativa —
     // abertura negativa é dívida real e continua entrando).
     prev = removeClosingMonthOpening(prev, dailyBal.openingPrevisto ?? 0, closingRegendo);
+    // v94 (BUG relatado) — o Fechamento do Mês também zera a ABERTURA do
+    // Efetivado: no mês subsequente ao fechamento, o dinheiro retido não pode
+    // aparecer como saldo disponível. Antes só o Previsto era zerado e o
+    // Efetivado continuava carregando o montante guardado mês a mês.
+    const efetZerado = removeClosingMonthOpening(efet, dailyBal.openingEfetivado ?? 0, closingRegendo);
     // v89 (BUG do usuário — "lançar Poupança com dia anterior não recalcula
     // / meses subsequentes errados"): o Saldo do dia EXIBIDO NÃO compensa mais
     // a POUPANÇA (savAdj). A transferência efetivada/previsa diminui o saldo,
     // como qualquer despesa. A compensação continua SÓ para os cálculos
     // internos de "sobra" (fechamento/wishlist) — vai junto no hierarchy abaixo.
     prev = mergeDailyAdjust(prev, budAdj?.previsto);
-    const efetMerged = mergeDailyAdjust(efet, budAdj?.efetivado);
+    const efetMerged = mergeDailyAdjust(efetZerado, budAdj?.efetivado);
     if (lastActivityDate != null && prev[lastActivityDate] != null) {
       const monthlySavingsCents = savingsOn
         ? (savingsSum?.entries ?? [])
@@ -591,6 +599,25 @@ export default function FluxoScreen() {
     return t.type === 'EXPENSE' || t.type === 'TRANSFER';
   };
 
+  /** v94: natureza e valor de cada entrada do dia — base da ORDENAÇÃO do mês
+   *  vista pelo usuário: RECEITAS do maior para o menor, depois as DESPESAS
+   *  do maior para o menor (faturas e transferências entram como saída). */
+  const entrySortKey = (e: Entry): { income: boolean; value: number } => {
+    if (e.kind === 'invoice') return { income: false, value: e.inv.dueCents };
+    if (e.kind === 'installment') return { income: e.inst.type === 'INCOME', value: e.inst.amountCents };
+    if (e.kind === 'group') {
+      const { debits, credits } = totalsByGroupV48.get(e.grp?.header?.id) ?? groupMonthTotals(e.grp);
+      const income = credits > 0 && debits === 0;
+      return { income, value: income ? credits : debits };
+    }
+    const t = e.tx;
+    if (isGroup(t)) {
+      const income = t.group_credits_cents > 0 && t.group_debits_cents === 0;
+      return { income, value: income ? t.group_credits_cents : t.group_debits_cents };
+    }
+    return { income: t.type === 'INCOME', value: t.amount_cents };
+  };
+
   const days = React.useMemo(() => {
     const byDay = new Map<string, Entry[]>();
     for (const e of entries) {
@@ -599,9 +626,18 @@ export default function FluxoScreen() {
       arr.push(e);
       byDay.set(e.date, arr);
     }
+    // v94: dentro do dia, receitas (maior→menor) e depois despesas (maior→menor).
+    for (const arr of byDay.values()) {
+      arr.sort((a, b) => {
+        const ka = entrySortKey(a);
+        const kb = entrySortKey(b);
+        if (ka.income !== kb.income) return ka.income ? -1 : 1;
+        return kb.value - ka.value;
+      });
+    }
     return Array.from(byDay.entries()).sort((a, b) => (a[0] < b[0] ? 1 : -1));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries, filter, showDaily, closingRegendo, month]);
+  }, [entries, filter, showDaily, closingRegendo, month, totalsByGroupV48]);
 
   // ---------- v86: linhas da lista virtualizada ----------
   // Cada linha é OU o cabeçalho de um dia OU um lançamento. O FlashList monta
@@ -634,7 +670,12 @@ export default function FluxoScreen() {
     return rows;
   }, [days, dailyShown]);
 
-  const renderRow = ({ item }: { item: FlowRow }) => {
+  // v94 (RENDERIZAÇÃO): o FlashList recebe um renderItem ESTÁVEL (ref atualizada
+  // a cada render). Antes a função era recriada a todo render e a lista
+  // redesenhava as linhas visíveis sem necessidade — tela "piscando"/feia ao
+  // voltar do mês, trocar filtro ou receber bump.
+  const entryRendererRef = React.useRef<(e: Entry) => React.ReactNode>(() => null);
+  const renderRow = React.useCallback(({ item }: { item: FlowRow }) => {
     if (item.kind === 'day') {
       return (
         <View className="flex-row justify-between items-start mt-1 gap-2">
@@ -642,13 +683,16 @@ export default function FluxoScreen() {
             {ymdToBr(item.day).slice(0, 5)} · {weekdayOf(item.day)}
           </Text>
           {showDaily && item.prev != null ? (
+            // v94: rótulos CURTOS e alinhados à direita — os textos
+            // "Saldo do dia Previsto/Efetivado" ocupavam duas linhas na
+            // largura do celular e quebravam o cabeçalho do dia.
             <View className="items-end gap-0.5 shrink">
-              <Text className={`text-xs font-bold ${item.prev < 0 ? 'text-rose-600' : 'text-slate-700'}`}>
-                Saldo do dia Previsto: {formatBRL(item.prev)}
+              <Text className={`text-[11px] font-bold ${item.prev < 0 ? 'text-rose-600' : 'text-slate-700'}`}>
+                Previsto {formatBRL(item.prev)}
               </Text>
               {item.efet != null ? (
-                <Text className={`text-[11px] font-semibold ${item.efet < 0 ? 'text-rose-500' : 'text-slate-500'}`}>
-                  Saldo do dia Efetivado: {formatBRL(item.efet)}
+                <Text className={`text-[10px] font-semibold ${item.efet < 0 ? 'text-rose-500' : 'text-slate-500'}`}>
+                  Efetivado {formatBRL(item.efet)}
                 </Text>
               ) : null}
             </View>
@@ -656,8 +700,8 @@ export default function FluxoScreen() {
         </View>
       );
     }
-    return <View className="pb-1.5">{renderEntry(item.entry)}</View>;
-  };
+    return <View className="pb-1.5">{entryRendererRef.current(item.entry)}</View>;
+  }, [dailyShown, showDaily]);
 
 
   // ---------- Exclusão FÍSICA (v10) — v21 (bug 4): exige CONFIRMAÇÃO ----------
@@ -933,6 +977,9 @@ export default function FluxoScreen() {
       voided: tx.status === 'VOIDED',
       subtitle:
         `${ymdToBr(tx.occurred_on)}` +
+        // v94 (melhoria): o número da PARCELA ATUAL em texto, junto da data —
+        // a pill X/Y continua, mas o texto responde "qual parcela é esta".
+        `${hasPill ? ` · parcela ${(tx.plan_paid_count ?? 0) + 1}/${tx.plan_total_installments}` : ''}` +
         `${tx.category_name ? ` · ${tx.category_name}` : ''}` +
         `${tx.card_name ? ` · ${tx.card_name}` : ''}` +
         `${tx.account_name && tx.type === 'TRANSFER' ? ` · ${tx.account_name} → ${tx.transfer_account_name}` : tx.account_name ? ` · ${tx.account_name}` : ''}`,
@@ -994,6 +1041,9 @@ export default function FluxoScreen() {
     const saldoCor = groupSaldo > 0 ? 'text-emerald-600' : groupSaldo < 0 ? 'text-rose-600' : 'text-slate-500';
     // Itens EXATOS do mês — o que a expansão mostra é isto (bug 1.B)
     const itemCount = (grp.isHeaderMonth ? tx.child_count : 0) + grp.occurrences.length + grp.installments.length;
+    // v94 (melhoria): no mês visto, o card do parcelado em conta diz QUAL
+    // parcela é a deste mês (a pill X/N continua nos itens internos).
+    const instDoMes = grp.installments[0];
     // v17 (melhoria 2) substituída pela v18 (melhoria 1): o CABEÇALHO fica
     // LIMPO — sem texto nem iconografia de Fixo/Parcelado. Os marcadores
     // padrão (bolinha ✓, pill X/N, status) ficam EXCLUSIVAMENTE nos itens
@@ -1012,7 +1062,8 @@ export default function FluxoScreen() {
           title: tx.description,
           // v88 (BUG): a data exibida é a DO MÊS VISTO (não a do lançamento) —
           // antes, ao passar os meses, a data ficava presa na data original.
-          subtitle: `${ymdToBr(groupMonthDate(grp))} · ${itemCount} item(ns) neste mês`,
+          subtitle: `${ymdToBr(groupMonthDate(grp))} · ${itemCount} item(ns) neste mês` +
+            (instDoMes ? ` · parcela ${instDoMes.sequenceNumber}/${instDoMes.totalInstallments}` : ''),
           chips: (
             <>
               <Text className="text-[10px] text-violet-600 bg-violet-50 px-1.5 py-0.5 rounded font-semibold">
@@ -1154,7 +1205,7 @@ export default function FluxoScreen() {
       dashed: opts.child,
       title: inst.description,
       subtitle:
-        `${ymdToBr(inst.dueDate)} · parcela em conta` +
+        `${ymdToBr(inst.dueDate)} · parcela ${inst.sequenceNumber}/${inst.totalInstallments} em conta` +
         `${inst.accountName ? ` · ${inst.accountName}` : ''}` +
         `${paid ? ' · paga' : ' · previsão'}`,
       // v19: pill X/N ANTES da linha de detalhes nos itens internos do grupo
@@ -1189,6 +1240,8 @@ export default function FluxoScreen() {
     if (e.kind === 'group') return renderGroupCard(e.grp);
     return renderTxCard(e.tx, { child: false });
   };
+  // v94: a linha virtualizada (renderRow) sempre usa o renderEntry DESTE render.
+  entryRendererRef.current = renderEntry;
 
   // ---------- v90 — cards de ORÇAMENTO/POUPANÇA: ESCONDIDOS em meses anteriores
 //  à criação do plano/orçamento. O usuário vinha vendo o card com "N plano(s)
@@ -1473,9 +1526,20 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
               {wishlistCard}
               {savingsCard}
               {loading ? (
-                <Card>
-                  <Text className="text-slate-500">Carregando...</Text>
-                </Card>
+                // v94 (RENDERIZAÇÃO): esqueleto de PRÉ-CARGA no lugar do card
+                // "Carregando..." — a tela já nasce com o formato do Fluxo
+                // (cabeçalho do dia + linha) e os dados entram por cima.
+                <View className="gap-3 pt-1">
+                  {[0, 1, 2, 3].map((i) => (
+                    <View key={`sk-${i}`} className="gap-1.5">
+                      <View className="flex-row justify-between items-center">
+                        <View className="h-2.5 w-20 rounded bg-slate-200" />
+                        <View className="h-2.5 w-28 rounded bg-slate-200" />
+                      </View>
+                      <View className="h-14 rounded-2xl bg-white border border-slate-200" />
+                    </View>
+                  ))}
+                </View>
               ) : null}
               {!loading && days.length === 0 ? (
                 <EmptyState

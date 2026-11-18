@@ -69,14 +69,19 @@ export default function ContaNovaScreen() {
     try {
       if (editId) {
         await services.db.runAsync(
-          'UPDATE accounts SET name = ?, type = ?, initial_balance_cents = ?, initial_balance_date = ? WHERE id = ?',
-          [name.trim(), type, initialCents, initialDate || null, editId]
+          // v94: se a conta passa a ser POUPANÇA, sai do saldo do Fluxo.
+          `UPDATE accounts SET name = ?, type = ?, initial_balance_cents = ?, initial_balance_date = ?,
+             include_in_general_balance = CASE WHEN ? = 'SAVINGS' THEN 0 ELSE include_in_general_balance END
+           WHERE id = ?`,
+          [name.trim(), type, initialCents, initialDate || null, type, editId]
         );
         showToast('Conta alterada');
       } else {
+        // v94: POUPANÇA nasce FORA do saldo do Fluxo (não tem a opção).
+        const include = type === 'SAVINGS' ? 0 : 1;
         await services.db.runAsync(
-          'INSERT INTO accounts (id, name, type, initial_balance_cents, initial_balance_date, include_in_general_balance, archived_at) VALUES (?,?,?,?,?,1,NULL)',
-          [genId(), name.trim(), type, initialCents, initialDate || null]
+          'INSERT INTO accounts (id, name, type, initial_balance_cents, initial_balance_date, include_in_general_balance, archived_at) VALUES (?,?,?,?,?,?,NULL)',
+          [genId(), name.trim(), type, initialCents, initialDate || null, include]
         );
         showToast(`Conta criada — saldo inicial ${formatBRL(initialCents)}`);
       }
@@ -118,7 +123,7 @@ export default function ContaNovaScreen() {
         </View>
       </Card>
       <Text className="text-[11px] text-slate-400 text-center px-6">
-        {ICONS.contas} A nova conta entra nas escolhas de lançamento e, por padrão, soma no saldo geral da tela Início — o toggle "Aparece no saldo do Fluxo" fica na tela Contas.
+        {ICONS.contas} A nova conta entra nas escolhas de lançamento e, por padrão, soma no saldo geral da tela Início — o toggle "Aparece no saldo do Fluxo" fica na tela Contas. Conta do tipo Poupança fica SEMPRE fora do saldo do Fluxo.
       </Text>
     </Screen>
   );

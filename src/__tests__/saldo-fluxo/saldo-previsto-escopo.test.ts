@@ -118,6 +118,22 @@ describe('Bug 1 — saldo previsto respeita o escopo do saldo do Fluxo', () => {
     expect(previsto['2026-11-05']).toBe(efetivado['2026-11-05']);
   });
 
+  test('v94 — conta POUPANÇA fica FORA do saldo do Fluxo, mesmo marcada na base', async () => {
+    const { db, services } = ctx;
+    const corrente = await seedAccount(db, 'Corrente V94', 1_000_00);
+    const poupanca = await seedAccount(db, 'Poupança V94', 700_00);
+    await db.runAsync("UPDATE accounts SET type = 'SAVINGS' WHERE id = ?", [poupanca]);
+    // dado antigo que a migração 58 corrige — a regra ignora de qualquer forma
+    await db.runAsync('UPDATE accounts SET include_in_general_balance = 1 WHERE id = ?', [poupanca]);
+    await db.runAsync("UPDATE accounts SET initial_balance_date = '2026-11-01' WHERE id IN (?,?)", [corrente, poupanca]);
+
+    const { efetivado, previsto } = await services.balance.getDailyBalancesDual('2026-11');
+    // 1º dia com conta = EXATAMENTE a soma dos saldos iniciais das contas marcadas (sem a Poupança)
+    expect(efetivado['2026-11-01']).toBe(1_000_00);
+    expect(previsto['2026-11-01']).toBe(1_000_00);
+    expect(await services.balance.getGeneralBalance('2026-11-30')).toBe(1_000_00);
+  });
+
   test('recálculo IMEDIATO: efetivar a pendência move o valor do previsto para o efetivado', async () => {
     const { db, services } = ctx;
     const acc = await seedAccount(db, 'Conta Recalc', 200_00);

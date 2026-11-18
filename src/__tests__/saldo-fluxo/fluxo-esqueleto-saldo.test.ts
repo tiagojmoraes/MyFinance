@@ -119,8 +119,10 @@ describe('v67 BUG 1 (atualizado na v68) — saldo do dia sem bloco de orçamento
     expect(src).not.toContain('Resumo de orçamentos do mês');
     expect(src).not.toContain('Orçamentos: falta');
     // os dois saldos continuam em linhas empilhadas (v67 mantido)
-    expect(src).toContain('Saldo do dia Previsto:');
-    expect(src).toContain('Saldo do dia Efetivado:');
+    // v94: rótulos curtos ("Previsto"/"Efetivado") — o prefixo "Saldo do dia"
+    // quebrava a linha no celular.
+    expect(src).toContain('Previsto {formatBRL(item.prev)}');
+    expect(src).toContain('Efetivado {formatBRL(item.efet)}');
   });
 
   test('v89: o saldo EXIBIDO é o dailyShown (base + Orçamento apenas — a Poupança NÃO compensa mais)', () => {
@@ -132,7 +134,11 @@ describe('v67 BUG 1 (atualizado na v68) — saldo do dia sem bloco de orçamento
     // (mergeDailyAdjust); a compensação da Poupança ficou SÓ nos cálculos
     // internos de "sobra" (fechamento/wishlist).
     expect(src).toContain('mergeDailyAdjust(prev, budAdj?.previsto)');
-    expect(src).toContain('mergeDailyAdjust(efet, budAdj?.efetivado)');
+    // v94: o ajuste do Orçamento entra no EFETIVADO já sem a abertura retida
+    expect(src).toContain('mergeDailyAdjust(efetZerado, budAdj?.efetivado)');
+    // v94: o Fechamento do Mês zera a abertura das DUAS visões
+    expect(src).toContain('removeClosingMonthOpening(prev, dailyBal.openingPrevisto ?? 0, closingRegendo)');
+    expect(src).toContain('removeClosingMonthOpening(efet, dailyBal.openingEfetivado ?? 0, closingRegendo)');
     expect(src).not.toMatch(/prev\[d\] = \(prev\[d\] \?\? 0\) \+ \(budAdj\?\.previsto\[d\] \?\? 0\) \+ \(savAdj\?\.previsto\[d\] \?\? 0\)/);
     // a compensação interna (savAdj) continua existindo pro cálculo de sobra
     expect(src).toContain('savAdj?.efetivado[lastActivityDate]');

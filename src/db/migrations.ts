@@ -619,6 +619,16 @@ UPDATE accounts SET name = 'Reserva · Programação de Compra'
         }
       },
     },
+    // v94: conta POUPANÇA nunca soma no saldo do Fluxo. O dinheiro guardado
+    // saiu da disponibilidade corrente (é reserva, não liquidez) — inclusive
+    // porque a transferência da Poupança Mensal/Fechamento CREDITA a conta
+    // destino: com ela no escopo, o total do Fluxo não diminuía ao guardar.
+    // Esta migração desliga a marca nas contas SAVINGS que já existiam.
+    {
+      version: 58,
+      name: 'v94_poupanca_fora_do_saldo_fluxo',
+      sql: `UPDATE accounts SET include_in_general_balance = 0 WHERE type = 'SAVINGS';`,
+    },
 ];
 
 /** Aplica migrações pendentes de forma atômica. Idempotente. */
