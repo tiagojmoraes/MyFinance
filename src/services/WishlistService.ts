@@ -136,6 +136,33 @@ export interface WishlistProjection {
   done: boolean;
 }
 
+/** v95 — Plano de UM mês da Programação de Compra (o que cabe / foi abatido
+ *  NESTE mês). Usado pelo card fixo do Fluxo (chips por classificação e valor
+ *  do cabeçalho) e pela hierarquia do Saldo do dia (o que se abate da
+ *  disponibilidade).
+ *
+ *  · `planoCents`        = soma dos `abatidoCents` do mês (vai à direita do card);
+ *  · `faltaInicioCents`  = total que ENTROU neste mês (a hierarquia do Saldo do dia abate esse valor);
+ *  · `classes`           = as 3 classes com os mesmos `abatidoCents`/`faltaInicioCents`.
+ *
+ *  Quando `month` não está na projeção (mês anterior ao planejamento, ou após
+ *  a quitação total) devolve zeros — a previsão só vale para o mês em que
+ *  foi planejada; não se reflete automaticamente para os demais. */
+export function projectionMonthPlan(
+  projection: WishlistProjection | null,
+  month: string
+): {
+  planoCents: number;
+  faltaInicioCents: number;
+  classes: WishlistProjectionMonth['classes'];
+} {
+  const m = projection?.months.find((x) => x.month === month);
+  if (!m) return { planoCents: 0, faltaInicioCents: 0, classes: [] };
+  const planoCents = m.classes.reduce((a, c) => a + c.abatidoCents, 0);
+  const faltaInicioCents = m.classes.reduce((a, c) => a + c.faltaInicioCents, 0);
+  return { planoCents, faltaInicioCents, classes: m.classes };
+}
+
 /**
  * v90 — Callback opcional para a projeção MÊS A MÊS: dado o mês simulated m,
  * devolve o saldo previsto do fim daquele mês e os resumos de
@@ -486,23 +513,24 @@ export class WishlistService {
     };
   }
 
-  /** v90 — Projeção MÊS A MÊS da Programação de Compra em cascata.
+  /** v90/v95 — Projeção MÊS A MÊS da Programação de Compra em cascata.
    *
-   *  Diferente do v89 (capacidade fixa repetida em todos os meses), aqui:
-   *   - o SALDO PREVISTO REAL do fim de cada mês é consultado (por padrão via
-   *     `BalanceService.getDailyBalancesDual(m)` — ou via `opts.fetcher`, que
-   *     é o caminho do Fluxo/tela ou de testes);
-   *   - a `sobra` disponível para a Programação é
-   *     `max(0, saldoPrevistoFim − orçamentoRestante)`;
-   *   - o que SOBRA de um mês (capacidade não usada na cascata) CARREGA para
-   *     o mês seguinte — uma sobra grande em dez/2026 é USADA em dez e o
-   *     que restar dela segue para jan/2027 (carryover);
-   *   - na modalidade POUPANÇA "Fechamento do Mês" (após `closingSince`),
-   *     o carryover zera: o saldo positivo fecha na poupança (regra já
-   *     documentada na hierarquia mensal);
-   *   - a reserva de valor (v87) é uma transferência real — o saldo previsto
-   *     JÁ Carrega sua saída do escopo, então abatê-la na soma da Programação
-   *     é automático (a falta inicial é `target − reserved`).
+   *  v90: SALDO PREVISTO REAL do fim de cada mês é consultado (por padrão via
+   *       `BalanceService.getDailyBalancesDual(m)` — ou via `opts.fetcher`,
+   *       que é o caminho do Fluxo/tela ou de testes);
+   *  v95: SÓ A FALTA segue para o mês seguinte. O que SOBRA de dinheiro
+   *       (capacidade não usada na cascata) NÃO carrega adiante — cada mês
+   *       usa a PRÓPRIA disponibilidade (capacity = max(0, saldoPrevistoFim
+   *       − orçamentoRestante)). A previsão, portanto, não se reflete
+   *       automaticamente para os meses seguintes: o mês seguinte só recebe
+   *       baixa se o valor planejado exceder a disponibilidade do mês atual
+   *       e sobrar uma **parcela do plano** (regra do usuário);
+   *  · na modalidade POUPANÇA "Fechamento do Mês" (após `closingSince`), o
+   *    saldo positivo daquele mês fecha na poupança (a cascata, de qualquer
+   *    forma, só continua até a FALTA zerar);
+   *  · a reserva de valor (v87) é uma transferência real — o saldo previsto
+   *    JÁ carrega sua saída do escopo, então a falta inicial é
+   *    `target − reserved`.
    *
    *  A cascade é SEMPRE nesta ordem — Prioridade → Necessário → Desejo — e
    *  vale a cada mês. Como `listOpen()` é relido a cada chamada (dataVersion
@@ -584,15 +612,17 @@ export class WishlistService {
       return out;
     };
 
-    // 4. simulação: para cada mês, capacity = (saldo − orçamentoRestante) +
-    //    carryover do mês anterior; aplica cascade; carryover = capacity
-    //    restante. Em modo "Fechamento do Mês" (simMonth >= closingSince),
-    //    o carryover é zerado (a sobra positiva vai pra poupança).
+    // 4. simulação (v95): para cada mês, capacity = max(0, saldoPrevistoFim
+    //    − orçamentoRestante); aplica cascade Prioridade → Necessário →
+    //    Desejo; o que SOBRA de dinheiro do mês NÃO carrega para o próximo
+    //    (a previsão não se reflete automaticamente). Só a FALTA segue
+    //    adiante, dentro de `acc` — quando o valor planejado excede a
+    //    disponibilidade atual, a parcela que sobrou entra no mês seguinte
+    //    na mesma ordem (P → N → D).
     const ordemTyped = ordem;
     type ResultMonth = WishlistProjectionMonth;
     const results: ResultMonth[] = [];
     let acc: Record<string, number> = { ...faltaInicial };
-    let leftover = 0;
     let mesesAteDone: number | null = null;
     let capacityRef = 0; // capacidade do 1º mês (= valor exibido em capacityCents)
     let simMonth = startMonth;
@@ -603,8 +633,7 @@ export class WishlistService {
       const budgetRemaining = data.budgetSummary?.remainingCents ?? 0;
       const capacityMonth = Math.max(0, data.saldoPrevistoFimCents - Math.max(0, budgetRemaining));
       if (i === 0) capacityRef = capacityMonth;
-      // carryover entra ANTES da cascade (o saldo que sobrou do mês anterior).
-      let capacityFinal = capacityMonth + leftover;
+      let capacityFinal = capacityMonth;
       if (capacityFinal < 0) capacityFinal = 0;
       const abatePorClasse: Record<string, number> = {};
       for (const cls of ordemTyped) {
@@ -624,7 +653,7 @@ export class WishlistService {
         acc[cls] = fim;
         return { cls, label: labelsMap[cls], faltaInicioCents: ini, abatidoCents: abate, faltaFimCents: fim };
       });
-      const usei = capacityMonth + leftover - capacityFinal;
+      const usei = capacityMonth - capacityFinal;
       results.push({ month: simMonth, contributionCents: usei, classes: classesOut });
 
       if (
@@ -635,12 +664,6 @@ export class WishlistService {
         mesesAteDone = i + 1;
       }
 
-      // carryover para o próximo mês:
-      leftover = capacityFinal;
-      const closingSince = data.savingsOverview?.closingSinceMonth ?? null;
-      if (closingSince != null && simMonth >= closingSince && leftover > 0) {
-        leftover = 0; // o restante vai pra poupança do fechamento — não acumula
-      }
       // parar: chegou ao "done" e o mês visto já foi passado.
       simMonth = monthAdd(simMonth, 1);
       if (mesesAteDone != null && simMonth > targetMonth) break;

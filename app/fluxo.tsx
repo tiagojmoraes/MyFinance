@@ -86,6 +86,19 @@
  *     · nos meses regidos pelo "Fechamento do mês", o saldo carregado dos
  *       meses anteriores foi RETIDO para a poupança; o previsto começa zerado
  *       no dia 1, e o fim do mês segue a hierarquia de abatimentos.
+ *  · v95 (Programação de Compra — REGRAS DO USUÁRIO):
+ *     · mesmo contraído, o card mostra a somatória do planejamento em 3 chips
+ *       (Prioridade · Necessário · Desejo);
+ *     · valor do cabeçalho = PLANO do mês visto (o que cabe/foi abatido na
+ *       `projectionMonthPlan`), zerado em meses que não estão no plano —
+ *       a previsão só vale para o mês planejado; no mês seguinte só baixa
+ *       se o valor planejado exceder a disponibilidade do mês atual;
+ *     · Saldo do dia abate o que ENTRA no mês visto
+ *       (`projectionMonthPlan.faltaInicioCents`), não a lista inteira — o
+ *       plano não se reflete automaticamente nos outros meses;
+ *     · botão do card renomeado para "Cadastrar / alterar programação ›";
+ *     · `getProjection` recebe o mesmo `saldoPrevistoAjustadoFimCents` usado
+ *       pelo `getMethodology` — a "disponibilidade do mês" bate nos dois.
  *  · Mantém v11–v13: Fixo/Parcelado perpetuando nos meses seguintes; saldos do
  *    dia (Previsto/Efetivado); compras no CARTÃO estritamente na fatura;
  *    duplicar (segurar 3 s).
@@ -126,6 +139,7 @@ import { SETTING_KEYS } from '../src/services/SettingsService';
 import type { BudgetMonthSummary } from '../src/services/BudgetService';
 import type { SavingsMonthOverview } from '../src/services/SavingsService';
 import type { WishlistClassView, WishlistMethodology, WishlistProjection } from '../src/services/WishlistService';
+import { projectionMonthPlan } from '../src/services/WishlistService'; // v95: plano do mês visto (card fixo + Saldo do dia)
 import { ICONS } from '../src/theme/icons';
 
 type Filter = 'ALL' | 'INCOME' | 'EXPENSE';
@@ -402,12 +416,14 @@ export default function FluxoScreen() {
             });
             if (!isCurrent()) return;
             setWishMethod(wm);
-            // v89: projeção mês a mês (cascata) — cacheada por dataVersion no
-            // memo acima. Chamada cheap quando o getMethodology já usou o
-            // mesmo cache do saldo previsto (BalanceService memoiza).
+            // v89/v95: projeção mês a mês (cascata) — cacheada por dataVersion
+            // no memo acima. v95: passa também `saldoPrevistoAjustadoFimCents`
+            // (a mesma disponibilidade que `getMethodology` usa) — assim a
+            // capacidade do mês corrente bate na cascata e no card.
             const wp = await svc.wishlist.getProjection(month, {
               budgetSummary: bSum,
               savingsOverview: sSum,
+              saldoPrevistoAjustadoFimCents,
             });
             if (!isCurrent()) return;
             setWishProjection(wp);
@@ -497,6 +513,17 @@ export default function FluxoScreen() {
     return since != null && month >= since;
   }, [savingsOn, savingsSum, month]);
 
+  /** v95: plano do mês visto (plano = parte do plano que cabe/foi abatida
+   *  neste mês). Declarado AQUI porque o `dailyShown` (hierarquia do Saldo
+   *  do dia) já o usa — o card e o Saldo do dia passam a depender do mesmo
+   *  número. Vale a regra "previsão só para o mês planejado": a Projection
+   *  só preenche meses a partir do mês corrente; para os demais devolve
+   *  zeros (a falta não se reflete automaticamente). */
+  const wishMonthPlan = React.useMemo(
+    () => projectionMonthPlan(wishProjection, month),
+    [wishProjection, month]
+  );
+
   // ---------- Agrupamento por dia (v9 + v12) ----------
   // v48 #1 — totais por grupo calculados 1x, não 400x (1 por card). Sem mudar layout: mesmo valor, só cacheado.
   // v63.1 FIX — o useMemo referenciava `gm` (variável que NUNCA existiu como
@@ -539,6 +566,10 @@ export default function FluxoScreen() {
     // a POUPANÇA (savAdj). A transferência efetivada/previsa diminui o saldo,
     // como qualquer despesa. A compensação continua SÓ para os cálculos
     // internos de "sobra" (fechamento/wishlist) — vai junto no hierarchy abaixo.
+    //
+    // v95: a Programação de Compra abate SÓ a falta que ENTRA neste mês
+    // (`wishMonthPlan.faltaInicioCents`), não a lista inteira — a previsão
+    // não se reflete automaticamente para os outros meses.
     prev = mergeDailyAdjust(prev, budAdj?.previsto);
     const efetMerged = mergeDailyAdjust(efet, budAdj?.efetivado);
     if (lastActivityDate != null && prev[lastActivityDate] != null) {
@@ -547,12 +578,7 @@ export default function FluxoScreen() {
             .filter((entry) => entry.kind === 'MONTHLY')
             .reduce((sum, entry) => sum + entry.amountCents, 0)
         : 0;
-      const wishlistOutstandingCents = wishlistOn
-        ? wishClasses.reduce(
-            (sum, cls) => sum + cls.items.reduce((itemSum, item) => itemSum + item.faltaCents, 0),
-            0
-          )
-        : 0;
+      const wishlistOutstandingCents = wishlistOn ? wishMonthPlan.faltaInicioCents : 0;
       prev[lastActivityDate] = applyMonthEndBalanceHierarchy({
         // Normalize movements already represented by the base balance before
         // reserving the full monthly budget and savings commitments.
@@ -568,7 +594,7 @@ export default function FluxoScreen() {
     return { previsto: prev, efetivado: efetMerged };
   }, [
     dailyBal, budAdj, savAdj, closingRegendo, month, lastActivityDate,
-    savingsOn, savingsSum, wishlistOn, wishClasses, budgetsOn, budgetSum,
+    savingsOn, savingsSum, wishlistOn, wishMonthPlan, budgetsOn, budgetSum,
   ]);
 
   const passesFilter = (e: Entry): boolean => {
@@ -1264,54 +1290,62 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
     />
   ) : null;
 
-  // ---------- v70 (BUG 1.1 + MELHORIA 2.1): BLOCO PRÓPRIO da PROGRAMAÇÃO DE COMPRA
+  // ---------- v70 (BUG 1.1 + MELHORIA 2.1) → v95: BLOCO PRÓPRIO da PROGRAMAÇÃO DE COMPRA
   // (mesma visualização de Orçamento/Poupança: fechinha para expandir) —
   // saiu de DENTRO do card de Orçamento. Ordem no Fluxo: Orçamentos →
-  // Programação de Compra → Poupança. Mostra as classificações (Prioridade >
-  // Necessário > Desejo) com itens, barra de progressão e o texto sucinto
-  // v94:
-  //  · CABEÇALHO (contraído): amount = saldo que AINDA FALTA para comprar
-  //    TUDO, calculado pela projeção do mês VISTO (esperado − reservado −
-  //    abatimento aplicado pela projeção). Quando a visualização é de um mês
-  //    passado, a projeção é vazia (hoje ela começa no mês corrente) e o
-  //    número vira a soma de (target − reserved) do momento — sem isso
-  //    "alterava no tempo" pedido pelo usuário;
-  //  · EXPANDIDO: a barra de progressão por mês (2026-11…) SAIU — o usuário
-  //    pediu para removê-la (era cumulativa e ocupava espaço sem
-  //    acrescentar informação nova). O saldo dinâmico do cabeçalho já
-  //    mostra o "quanto falta" mês a mês.
-  const wishTotalTarget = wishClasses.reduce((a, c) => a + c.totalCents, 0);
-  const wishTotalReserved = wishClasses.reduce(
-    (a, c) => a + c.items.reduce((b, i) => b + i.reserved_cents, 0),
-    0
-  );
+  // Programação de Compra → Poupança.
+  //
+  // v95 (regras do usuário):
+  //  · CONTRAÍDO também mostra a somatória do planejamento em 3 chips
+  //    (Prioridade · Necessário · Desejo) — sempre visível;
+  //  · valor do cabeçalho = `projectionMonthPlan.month.planoCents` (o que
+  //    cabe/foi abatido NESTE mês). Meses fora do plano ficam zerados —
+  //    a previsão só vale para o mês planejado (não se reflete);
+  //  · cada linha de classificação EXPANDIDA mostra "neste mês R$ X" (o
+  //    plano daquela classificação no mês visto, na ordem P → N → D);
+  //  · o botão dentro do card virou "Cadastrar / alterar programação ›".
   const wishTotalItens = wishClasses.reduce((a, c) => a + c.itemCount, 0);
-  /** v94: saldo do m\u00eas visto = (target \u2212 reservado) \u2212 abatido pela proje\u00e7\u00e3o. */
-  const wishHeaderSaldoCents = React.useMemo(() => {
-    const baseFalta = Math.max(0, wishTotalTarget - wishTotalReserved);
-    if (!wishProjection || wishProjection.months.length === 0) return baseFalta;
-    // pega o \u00faltimo m\u00eas projetado \u2264 viewed month; abate o que ele consumiu
-    const accumulatedAbatido = wishProjection.months.reduce((acc, m) => {
-      if (m.month > month) return acc;
-      const abate = m.classes.reduce((s, c) => s + c.abatidoCents, 0);
-      return acc + abate;
-    }, 0);
-    return Math.max(0, baseFalta - accumulatedAbatido);
-  }, [wishProjection, wishTotalTarget, wishTotalReserved, month]);
+  const wishCardSubtitle =
+    wishTotalItens === 0
+      ? 'Nenhum item cadastrado'
+      : wishMonthPlan.planoCents > 0
+        ? `${wishTotalItens} item(ns) · plano do mês`
+        : `${wishTotalItens} item(ns) na lista`;
+  const wishCardChips =
+    wishTotalItens === 0 ? null : (
+      <>
+        {wishClasses.map((c) => (
+          <Text
+            key={c.cls}
+            className="text-[10px] font-semibold text-violet-700 bg-violet-50 px-1.5 py-0.5 rounded"
+          >
+            {c.label} {formatBRL(c.totalCents)}
+          </Text>
+        ))}
+      </>
+    );
   const wishlistCard = wishlistOn ? (
     <LancamentoRow
       key="card-lista-desejos"
       arrow={{ open: wishOpen, onPress: () => setWishOpen((v) => !v), label: wishOpen ? 'Recolher programação de compra' : 'Expandir programação de compra' }}
       title={`${ICONS.listaDesejos} Programação de Compra`}
-      subtitle={wishTotalItens > 0 ? `${wishTotalItens} item(ns) na lista` : 'Nenhum item cadastrado'}
-      amount={formatBRL(wishHeaderSaldoCents)}
-      amountClass={wishHeaderSaldoCents > 0 ? 'text-violet-700' : 'text-emerald-700'}
+      subtitle={wishCardSubtitle}
+      chips={wishCardChips}
+      amount={formatBRL(wishMonthPlan.planoCents)}
+      amountClass={wishMonthPlan.planoCents > 0 ? 'text-violet-700' : 'text-emerald-700'}
       footer={
         <View className="gap-1.5">
           {/* v94: a barra de progress\u00e3o por m\u00eas (v90) saiu do rodap\u00e9
               (o saldo din\u00e2mico do cabe\u00e7alho j\u00e1 mostra o resultado). */}
           {wishClasses.filter((c) => c.itemCount > 0).map((c) => {
             const clsOpen = !!wishClassOpen[c.cls];
+            // v95: classe filha mostra também "neste mês R$ …" (abatido
+            // desta classificação no mês visto) quando o mês tem plano.
+            const clsPlan = wishMonthPlan.classes.find((x) => x.cls === c.cls);
+            const clsMesLabel =
+              clsPlan && clsPlan.abatidoCents > 0
+                ? ` · neste mês ${formatBRL(clsPlan.abatidoCents)}`
+                : '';
             return (
               <View key={c.cls} className="gap-1">
                 <LancamentoRow
@@ -1322,7 +1356,7 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
                   }}
                   dashed
                   title={c.label}
-                  subtitle={`Total ${formatBRL(c.totalCents)} — ${c.itemCount} item(ns)`}
+                  subtitle={`Total ${formatBRL(c.totalCents)} — ${c.itemCount} item(ns)${clsMesLabel}`}
                   amount={formatBRL(c.totalCents)}
                   amountClass="text-slate-900"
                   footerOpen={clsOpen}
@@ -1350,7 +1384,7 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
           })}
           {/* v94: "Cadastrar / alterar" agora vive dentro do footer (o link
               verde do LancamentoRow saiu — regra geral dos cards aqui). */}
-          <Button label="Cadastrar / alterar itens ›" variant="outline" onPress={() => router.push('/lista-desejos')} />
+          <Button label="Cadastrar / alterar programação ›" variant="outline" onPress={() => router.push('/lista-desejos')} />
         </View>
       }
       footerOpen={wishOpen}

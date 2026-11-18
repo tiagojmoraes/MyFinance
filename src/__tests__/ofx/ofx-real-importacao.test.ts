@@ -153,6 +153,7 @@ describe('v70 · 2 — importa OFX real SEM duplicar (hash, FITID, NFC-e, data+v
       description: 'SORVETERIA GYGABON (NFC-e)',
       amountCents: 5947,
       accountId: acc,
+      date: '2026-11-07', // bate com o lançamento do OFX da fixture (antes: hojeSP → casava só quando "hoje" era o dia da SORVETERIA)
     });
     const ofx = new OfxService(ctx.db);
     const res = await ofx.importOfx(acc, OFX_REAL);
