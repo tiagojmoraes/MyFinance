@@ -88,10 +88,21 @@ describe('v36 — isGenuineWebViewUa (a identidade da captura que funciona)', ()
 });
 
 describe('v35 — decideCaptureAction (decisão pura da captura)', () => {
-  test('página da nota → deliver (mesmo com marcador de desafio no meio)', () => {
-    expect(decideCaptureAction(PAGE)).toEqual({ action: 'deliver' });
-    const mista = `<html><body>Consulta NFC-e TSPD APM_DO_NOT_TOUCH <div>Nome Empresarial: X</div><div>Valor Total: R$ 1,00</div></body></html>`;
+  test('página da nota COM itens → deliver', () => {
+    expect(decideCaptureAction(PAGE_COM_ITENS)).toEqual({ action: 'deliver' });
+    const mista = `<html><body>Consulta NFC-e TSPD APM_DO_NOT_TOUCH <div>Nome Empresarial: X</div><div>Valor Total: R$ 1,00</div><table id="tabResult"><tr><td>ITEM</td></tr></table></div></body></html>`;
     expect(decideCaptureAction(mista)).toEqual({ action: 'deliver' });
+  });
+
+  // v98: o portal às vezes renderiza o CABEÇALHO antes dos itens (layout novo
+  // que popula a tabela via JS lento). A decisão pura pede pra esperar.
+  test('página da nota SEM itens ainda → espera (wait-items)', () => {
+    const d = decideCaptureAction(PAGE);
+    expect(d.action).toBe('wait-items');
+    if (d.action === 'wait-items') {
+      expect(d.triesLeft).toBe(4);
+      expect(d.delayMs).toBe(1500);
+    }
   });
 
   test('rejeição dura do firewall → hand-over (não adianta esperar)', () => {
@@ -136,7 +147,7 @@ describe('v35 — motor do aparelho na cadeia de leitura', () => {
 
   test('motor entregando a nota no 1º canal → transação criada e ZERO fetch direto', async () => {
     const { services } = await makeCtx();
-    const driver = makeDriver(async (url) => ({ html: PAGE, url }));
+    const driver = makeDriver(async (url) => ({ html: PAGE_COM_ITENS, url }));
     nfceWebEngine.attach(driver);
     try {
       const res = await services.nfce.ingestByDirectFetch(KEY);

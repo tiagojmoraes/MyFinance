@@ -125,6 +125,7 @@ export interface NfcePreparedItem {
   qty: number | null;
   unitOriginal: string | null;
   totalCents: number | null;
+  unitPriceCents: number | null;
   productId: string | null;
   productName: string | null;
   matchType: string | null;
@@ -636,9 +637,14 @@ export class NfceService {
                   qty = COALESCE(qty, ?),
                   unit_original = COALESCE(unit_original, ?),
                   store_product_code = COALESCE(store_product_code, ?),
-                  ean_extracted = COALESCE(ean_extracted, ?)
+                  ean_extracted = COALESCE(ean_extracted, ?),
+                  unit_price_cents = COALESCE(unit_price_cents, ?)
             WHERE id = ?`,
-          [raw.totalCents, raw.qty, raw.unitOriginal, raw.storeProductCode, raw.eanExtracted, existing.id] as never
+          [
+            raw.totalCents, raw.qty, raw.unitOriginal,
+            raw.storeProductCode, raw.eanExtracted, raw.unitPriceCents,
+            existing.id,
+          ] as never
         );
         // v37 — RE-RESOLUÇÃO RETROATIVA: item que ficou SEM PRODUTO em leitura
         // antiga tenta de novo com a tabela da verdade de HOJE (com os aliases
@@ -669,10 +675,38 @@ export class NfceService {
         qty: raw.qty,
         unit_original: raw.unitOriginal,
         total_cents: raw.totalCents,
+        unit_price_cents: raw.unitPriceCents,
         product_id: null,
         status: 'PARSED',
         stock_applied: 0,
       });
+
+      // v98 — "nunca mais": se já existe regra de ignorar para (cnpj + EAN)
+      // OU (cnpj + código) OU (cnpj + descrição), o item vai AUTOMATICAMENTE
+      // como IGNORED sem voltar a perguntar na próxima nota desta loja.
+      if (doc.cnpj && (raw.description || raw.eanExtracted || raw.storeProductCode)) {
+        const descNorm = (raw.description ?? '').toLowerCase().trim();
+        const ignore = await this.db.getFirstAsync<{ id: string }>(
+          `SELECT id FROM nfce_item_ignores
+            WHERE cnpj = ?
+              AND (
+                (ean IS NOT NULL AND ? IS NOT NULL AND ean = ?)
+                OR (store_product_code IS NOT NULL AND ? IS NOT NULL AND store_product_code = ?)
+                OR (description_norm <> '' AND ? <> '' AND description_norm = ?)
+              )
+            LIMIT 1`,
+          [
+            doc.cnpj,
+            raw.eanExtracted ?? null, raw.eanExtracted ?? null,
+            raw.storeProductCode ?? null, raw.storeProductCode ?? null,
+            descNorm, descNorm,
+          ] as never
+        );
+        if (ignore) {
+          await this.items.setStatus(itemId, 'IGNORED');
+          continue;
+        }
+      }
 
       if (raw.description) {
         await resolveAndLink({
@@ -802,6 +836,7 @@ export class NfceService {
         qty: r.qty,
         unitOriginal: r.unit_original,
         totalCents: r.total_cents,
+        unitPriceCents: r.unit_price_cents ?? null,
         productId: r.product_id,
         productName: r.product_name ?? null,
         matchType: r.match_type ?? null,
@@ -958,6 +993,106 @@ export class NfceService {
   /** v37: classificar o produto do item em categoria/subitem (persistido). */
   async setItemProductCategory(productId: string, categoryId: string | null): Promise<void> {
     await this.productService.setCategory(productId, categoryId);
+  }
+
+  /**
+   * v98 — DECISÃO DO ITEM pelo assistente de 3 perguntas da tela de revisão:
+   *  1. Vai para o catálogo de produtos? Sim → cria o produto do item
+   *     (resolve a categoria na hora via `categoryId` opcional) e define a
+   *     política de estoque conforme a resposta 2.
+   *  2. Quer controle de estoque por este item? Sim → policy ALWAYS +
+   *     aplica o estoque para este item. Não → policy NEVER + não aplica.
+   *  1'. Não vai para o catálogo? → cai para a 3ª pergunta.
+   *  3. Não entrar só nesta nota OU nunca mais? `onlyThisNote` = true sai
+   *     em IGNORED só desta vez; `forever` (com `cnpj` + `descriptionNorm`
+   *     aprendidos do item/doc) grava em `nfce_item_ignores` para as
+   *     próximas notas desta loja pularem o item de cara.
+   * Devolve o `status` final do item ('PARSED' | 'IGNORED') e, no caso
+   * "nunca mais", a descrição normalizada usada como trava (para a
+   * próxima nota a tela poder mostrar "X itens ignorados por você em
+   * outras notas").
+   */
+  async decideImport(
+    itemId: string,
+    decision: {
+      // caso 1 (catálogo + estoque)
+      catalog: boolean;
+      stockControl: boolean; // ignorado se catalog === false
+      categoryId?: string | null;
+      // caso 2 (só lembrar / nunca)
+      neverAgain: boolean; // exige catalog === false
+    }
+  ): Promise<{ status: 'PARSED' | 'IGNORED'; descriptionNorm?: string }> {
+    const item = await this.items.getById(itemId);
+    if (!item) throw new Error('Item não encontrado');
+
+    if (decision.catalog) {
+      // 1) cria o produto a partir do item (já grava o alias cnpj+código).
+      const productId = await this.createProductFromItem(itemId, decision.categoryId ?? null);
+      // 2) define a política de estoque + aplica/removido.
+      const policy = decision.stockControl ? 'ALWAYS' : 'NEVER';
+      await this.productService.setPantryPolicy(productId, policy);
+      if (policy === 'ALWAYS') {
+        // Aplica o estoque deste item (já vinculado ao produto recém-criado).
+        // `createProductFromItem` acima já grava nfce_items.product_id; o
+        // `pantryService.applyNfceItems` lê essa coluna e faz a conversão de
+        // unidade/dimensão como em qualquer item confiável.
+        try {
+          await this.pantryService.applyNfceItems(item.access_key, [itemId]);
+        } catch {
+          // best-effort — a coluna stock_applied marca o que entrou
+        }
+      }
+      return { status: 'PARSED' };
+    }
+
+    // catalog === false
+    if (decision.neverAgain) {
+      const descNorm = (item.description ?? '').toLowerCase().trim();
+      const doc = await this.documents.getById(item.access_key);
+      await this.db.runAsync(
+        `INSERT INTO nfce_item_ignores (id, cnpj, ean, store_product_code, description_norm, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          genId(),
+          doc?.cnpj ?? null,
+          item.ean_extracted,
+          item.store_product_code,
+          descNorm,
+          nowIso(),
+        ]
+      );
+      await this.items.setStatus(itemId, 'IGNORED');
+      await this.documents.updateHeader(item.access_key, {
+        needs_review: await this.hasPendingReview(item.access_key),
+      });
+      return { status: 'IGNORED', descriptionNorm: descNorm };
+    }
+
+    // "Só nesta nota" — ignora sem persistir
+    await this.items.setStatus(itemId, 'IGNORED');
+    await this.documents.updateHeader(item.access_key, {
+      needs_review: await this.hasPendingReview(item.access_key),
+    });
+    return { status: 'IGNORED' };
+  }
+
+  /**
+   * v98 — ITENS JÁ IGNORADOS NESTA LOJA: devolve a contagem de regras
+   * `nfce_item_ignores` casadas com (cnpj + ean) OU (cnpj + store_product_code)
+   * OU (cnpj + description_norm). Útil para o badge da tela "nunca mais".
+   */
+  async countIgnoredMatching(accessKey: string): Promise<number> {
+    const doc = await this.documents.getById(accessKey);
+    if (!doc || !doc.cnpj) return 0;
+    const row = await this.db.getFirstAsync<{ n: number }>(
+      `SELECT COUNT(*) AS n
+         FROM nfce_item_ignores
+        WHERE cnpj = ?
+          OR (ean IS NOT NULL AND ? IS NOT NULL)`,
+      [doc.cnpj, doc.cnpj] as never
+    );
+    return row?.n ?? 0;
   }
 
   async getDocument(accessKey: string) {

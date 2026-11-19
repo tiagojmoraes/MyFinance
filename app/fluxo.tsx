@@ -258,7 +258,7 @@ export default function FluxoScreen() {
   const [confirm, setConfirm] = React.useState<ConfirmState>(null);
 
   // v86 (DESEMPENHO): a manutenção roda uma vez por mês (ver maintenanceRef).
-  useDataEffect(async (svc, isCurrent) => {
+  useDataEffect(async (svc, isCurrent, dataVersion) => {
     // v86: cronômetro por estágio — em desenvolvimento sai uma linha
     // `[perf] Fluxo · …` no terminal do Metro (em produção é no-op).
     const perf = startLoad('Fluxo');
@@ -348,12 +348,13 @@ export default function FluxoScreen() {
       // v42 - cards de ORÇAMENTO e POUPANÇA (só quando a flag está ligada em Ajustes)
       try {
         const [bSum, sSum] = await Promise.all([
-          budgetsFlag ? svc.budgets.getMonthSummary(month) : Promise.resolve(null),
-          savingsFlag ? svc.savings.getMonthOverview(month) : Promise.resolve(null),
+          budgetsFlag ? svc.budgets.getMonthSummary(month, dataVersion) : Promise.resolve(null),
+          savingsFlag ? svc.savings.getMonthOverview(month, dataVersion) : Promise.resolve(null),
         ]);
         if (!isCurrent()) return;
         setBudgetSum(bSum);
         setSavingsSum(sSum);
+        perf.lap('cards:orçamento/poupança');
 
         // v70 (BUG 1.1) - Programação de Compra: quando ativa, é um BLOCO PRÓPRIO do
         // Fluxo (ordem: Orçamentos → Programação de Compra → Poupança). A metodologia
@@ -362,7 +363,7 @@ export default function FluxoScreen() {
         let wishItems: WishlistClassView[] = [];
         if (wishlistFlag) {
           try {
-            wishItems = await svc.wishlist.listOpen();
+            wishItems = await svc.wishlist.listOpen(dataVersion);
             if (!isCurrent()) return;
             setWishClasses(wishItems);
           } catch {
@@ -387,12 +388,13 @@ export default function FluxoScreen() {
           );
           const scopeIds = scope.map((r) => r.id);
           [ba, sa] = await Promise.all([
-            budgetsFlag ? svc.budgets.getMonthFluxAdjust(month, scopeIds) : Promise.resolve(null),
-            savingsFlag ? svc.savings.getMonthFluxAdjust(month, scopeIds) : Promise.resolve(null),
+            budgetsFlag ? svc.budgets.getMonthFluxAdjust(month, scopeIds, dataVersion) : Promise.resolve(null),
+            savingsFlag ? svc.savings.getMonthFluxAdjust(month, scopeIds, dataVersion) : Promise.resolve(null),
           ]);
           if (!isCurrent()) return;
           setBudAdj(ba);
           setSavAdj(sa);
+          perf.lap('cards:ajustes');
         } else {
           setBudAdj(null);
           setSavAdj(null);
@@ -417,6 +419,7 @@ export default function FluxoScreen() {
               budgetSummary: bSum,
               savingsOverview: sSum,
               saldoPrevistoAjustadoFimCents,
+              dataVersion,
             });
             if (!isCurrent()) return;
             setWishMethod(wm);
@@ -428,9 +431,11 @@ export default function FluxoScreen() {
               budgetSummary: bSum,
               savingsOverview: sSum,
               saldoPrevistoAjustadoFimCents,
+              dataVersion,
             });
             if (!isCurrent()) return;
             setWishProjection(wp);
+            perf.lap('cards:programação');
           } catch {
             if (isCurrent()) setWishMethod(null);
           }
@@ -1282,12 +1287,17 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
                 footer={<ProgressBar pct={it.pct} />}
               />
             ))}
-            {/* v94: botão "Cadastrar / alterar" agora vive DENTRO do card (no
-                rodapé), visível quando o card está expandido — o link verde do
-                LancamentoRow saiu (regra geral). */}
+            {/* v98: botão "Cadastrar / alterar" dentro do footer (o link verde do
+                LancamentoRow saiu — regra geral dos cards aqui). Vai para a
+                tela de configuração do plano do orçamento (cadastro/altera os
+                orçamentos do mês). */}
+            <Button label="Cadastrar / alterar orçamento ›" variant="outline" onPress={() => router.push('/orcamento')} />
           </View>
         ) : (
-          <Text className="text-xs text-slate-500">Nenhum orçamento ativo — cadastre em Ações rápidas › Orçamento.</Text>
+          <View className="gap-2">
+            <Text className="text-xs text-slate-500">Nenhum orçamento ativo — cadastre em Ações rápidas › Orçamento.</Text>
+            <Button label="Cadastrar / alterar orçamento ›" variant="outline" onPress={() => router.push('/orcamento')} />
+          </View>
         )
       }
       footerOpen={budgetOpen}

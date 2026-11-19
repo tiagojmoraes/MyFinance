@@ -56,7 +56,11 @@ export type IsCurrent = () => boolean;
  *  foram substituídas por uma mais nova nem chegam a rodar.
  */
 export function useDataEffect(
-  fn?: (services: Services, isCurrent: IsCurrent) => void | Promise<void>,
+  // v98 — terceiro arg opcional: dataVersion corrente do app store.
+  // As cargas de tela que conhecem (via Fluxo, Orçamento etc.) podem
+  // passá-lo para os serviços memoizados de `versionedCache` em vez de
+  // recalcular dados que não mudaram desde a última carga.
+  fn?: (services: Services, isCurrent: IsCurrent, dataVersion: number) => void | Promise<void>,
   deps: unknown[] = [],
   /** v86: nome da tela para a linha de tempo do `[perf]` em desenvolvimento. */
   label?: string
@@ -97,7 +101,7 @@ export function useDataEffect(
         try {
           await services.ready;
           if (!isCurrent()) return;
-          if (fnRef.current) await fnRef.current(services, isCurrent);
+          if (fnRef.current) await fnRef.current(services, isCurrent, dataVersion);
           if (isCurrent()) {
             loadedVersionRef.current = dataVersion;
             loadedKeyRef.current = depsKey;

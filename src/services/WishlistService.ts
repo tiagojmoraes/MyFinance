@@ -30,6 +30,7 @@ import { BalanceService } from './BalanceService';
 import type { BudgetMonthSummary } from './BudgetService';
 import type { SavingsMonthOverview } from './SavingsService';
 import { availableForWishlistAtMonthEnd } from '../lib/monthEndBalance';
+import { VersionedCache } from '../lib/versionedCache';
 
 export type WishlistClass = 'PRIORIDADE' | 'NECESSARIO' | 'DESEJO';
 
@@ -184,6 +185,11 @@ export type WishlistProjectionFetcher = (
 const pluralMes = (n: number) => (n === 1 ? 'mês' : 'meses');
 
 export class WishlistService {
+  // v98 — DESEMPENHO DO FLUXO: memo de `listOpen` por `dataVersion`. Quando a
+  // tela do Fluxo chama metodologia e projeção no mesmo carregamento, a 2ª
+  // chamada usa a MESMA lista em vez de reler tudo.
+  private listOpenCache = new VersionedCache<WishlistClassView[]>();
+
   constructor(
     private db: DbDriver,
     private transactions: TransactionService,
@@ -210,6 +216,7 @@ export class WishlistService {
        VALUES (?, ?, ?, ?, ?, 0, 'OPEN', ?)`,
       [id, input.classificacao, input.description.trim(), input.targetCents, input.link?.trim() || null, nowIso()]
     );
+    this.invalidateListOpen();
     return id;
   }
 
@@ -236,6 +243,7 @@ export class WishlistService {
         id,
       ]
     );
+    this.invalidateListOpen();
   }
 
   /** "Excluir" — o item sai da lista; as reservas já feitas permanecem como
@@ -245,6 +253,7 @@ export class WishlistService {
       await this.db.runAsync('DELETE FROM wishlist_reserves WHERE item_id = ?', [id]);
       await this.db.runAsync('DELETE FROM wishlist_items WHERE id = ?', [id]);
     });
+    this.invalidateListOpen();
   }
 
   async getById(id: string): Promise<WishlistItemRow | null> {
@@ -254,24 +263,31 @@ export class WishlistService {
   // -------------------------------------------------------------- listas ----
 
   /** Itens abertos (OPEN) agrupados nas 3 classificações, com barra de progressão. */
-  async listOpen(): Promise<WishlistClassView[]> {
-    const rows = await this.db.getAllAsync<WishlistItemRow>(
-      `SELECT * FROM wishlist_items WHERE status = 'OPEN'
-        ORDER BY CASE classificacao WHEN 'PRIORIDADE' THEN 1 WHEN 'NECESSARIO' THEN 2 ELSE 3 END,
-                 created_at ASC`
-    );
-    return WISHLIST_CLASSES.map((cls) => {
-      const items = rows
-        .filter((r) => r.classificacao === cls)
-        .map((r) => toItemView(r));
-      return {
-        cls,
-        label: CLASS_LABELS[cls],
-        totalCents: items.reduce((a, b) => a + b.target_cents, 0),
-        itemCount: items.length,
-        items,
-      };
+  async listOpen(dataVersion?: number): Promise<WishlistClassView[]> {
+    return this.listOpenCache.get('listOpen|all', dataVersion, async () => {
+      const rows = await this.db.getAllAsync<WishlistItemRow>(
+        `SELECT * FROM wishlist_items WHERE status = 'OPEN'
+          ORDER BY CASE classificacao WHEN 'PRIORIDADE' THEN 1 WHEN 'NECESSARIO' THEN 2 ELSE 3 END,
+                   created_at ASC`
+      );
+      return WISHLIST_CLASSES.map((cls) => {
+        const items = rows
+          .filter((r) => r.classificacao === cls)
+          .map((r) => toItemView(r));
+        return {
+          cls,
+          label: CLASS_LABELS[cls],
+          totalCents: items.reduce((a, b) => a + b.target_cents, 0),
+          itemCount: items.length,
+          items,
+        };
+      });
     });
+  }
+
+  /** v98: esquece o cache de `listOpen` (chamada após cadastro/alteração). */
+  invalidateListOpen(): void {
+    this.listOpenCache.invalidate('listOpen|all');
   }
 
   // ------------------------------------------------------------- reserva ----
@@ -435,6 +451,9 @@ export class WishlistService {
       budgetSummary?: BudgetMonthSummary | null;
       savingsOverview?: SavingsMonthOverview | null;
       saldoPrevistoAjustadoFimCents?: number;
+      // v98 — `dataVersion` opcional: quando a tela do Fluxo passa, o saldo
+      // por dia usa o cache (e fica cache-local para esta chamada mesmo).
+      dataVersion?: number;
     }
   ): Promise<WishlistMethodology> {
     // (1) sobra do mês — saldo previsto no último lançamento do mês.
@@ -442,7 +461,7 @@ export class WishlistService {
     try {
       const lastActivityDate = await this.balance!.getLastActivityDate(month);
       const targetDate = lastActivityDate ?? `${month}-${String(lastDayNumberOf(month)).padStart(2, '0')}`;
-      const dual = await this.balance!.getDailyBalancesDual(month);
+      const dual = await this.balance!.getDailyBalancesDual(month, opts?.dataVersion);
       saldoFim ??= dual.previsto[targetDate] ?? 0;
     } catch {
       saldoFim ??= 0;
@@ -467,7 +486,7 @@ export class WishlistService {
     //     a classificação que não cabe no mês passa para o mês seguinte
     //     (ex.: sobra 1.500, Prioridade 3.000 → 2 meses; Necessário e Desejo
     //     nem começam neste mês).
-    const views = await this.listOpen();
+    const views = await this.listOpen(opts?.dataVersion);
     let fimAcumulado = 0;
     const classes = views.map((c) => {
       const totalCents = c.totalCents;
@@ -552,6 +571,9 @@ export class WishlistService {
       /** v90: recebe o mês simulado e devolve o saldo + resumos daquele mês;
        *  se faltar para algum mês, o fallback é o cálculo direto via services. */
       fetcher?: WishlistProjectionFetcher;
+      // v98 — `dataVersion` opcional: passa para `listOpen` e para o
+      // `getDailyBalancesDual` do fallback (mesma versão = mesmo cache).
+      dataVersion?: number;
     }
   ): Promise<WishlistProjection> {
     const ordem: WishlistClass[] = ['PRIORIDADE', 'NECESSARIO', 'DESEJO'];
@@ -560,7 +582,7 @@ export class WishlistService {
     );
 
     // 1. falta inicial POR CLASSE (target − reserved).
-    const views = await this.listOpen();
+    const views = await this.listOpen(opts?.dataVersion);
     const faltaInicial: Record<string, number> = {};
     let totalFaltaInicial = 0;
     for (const c of views) {
@@ -587,7 +609,7 @@ export class WishlistService {
         // mês pode ser sobrescrito via `saldoPrevistoAjustadoFimCents`).
         let saldoPrevistoFimCents = 0;
         try {
-          const dual = await this.balance!.getDailyBalancesDual(m);
+          const dual = await this.balance!.getDailyBalancesDual(m, opts?.dataVersion);
           const last = await this.balance!.getLastActivityDate(m);
           const targetDate = last ?? `${m}-${String(lastDayNumberOf(m)).padStart(2, '0')}`;
           saldoPrevistoFimCents = dual.previsto[targetDate] ?? 0;

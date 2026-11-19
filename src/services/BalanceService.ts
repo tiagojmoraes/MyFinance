@@ -51,6 +51,14 @@ export class BalanceService {
   private dailyInFlight = new Map<string, Promise<DailyBalancesDual>>();
   private cloneDual(v: DailyBalancesDual): DailyBalancesDual { return { efetivado: { ...v.efetivado }, previsto: { ...v.previsto }, openingEfetivado: v.openingEfetivado, openingPrevisto: v.openingPrevisto }; }
 
+  /** v98: invalida o cache do salário por dia de UM mês (chamado por escritas internas
+   *  que mexem em financial_moves / installments sem bump — ex.: recalcClosing da
+   *  poupança que ajusta o valor da transferência do fechamento). */
+  invalidateDaily(month: string): void {
+    this.dailyCache.delete(month);
+    this.dailyInFlight.delete(month);
+  }
+
   /** Saldo de uma conta até a data (inclusive), no fuso America/Sao_Paulo.
    *  v20: respeita a data âncora do saldo inicial (ver cabeçalho da classe). */
   async getAccountBalance(accountId: string, asOf?: string): Promise<number> {
@@ -273,105 +281,108 @@ export class BalanceService {
       return { efetivado: outEfetivado, previsto: outPrevisto, openingEfetivado: 0, openingPrevisto: 0 };
     }
     const marks = contas.map(() => '?').join(',');
+    // v98 — DESEMPENHO DO FLUXO: as 5 consultas rodam EM PARALELO
+    // (antes: sequencial; expo-sqlite serializa internamente mas a economia
+    // é o tempo de JS entre as chamadas + latência da ponte JS↔nativo).
+    // O NOT EXISTS por linha foi trocado por LEFT JOIN — varrida uma vez só
+    // na tabela `installments` em vez de subconsulta por linha de `fm`.
+    const [
+      movesRows,
+      pendTxRows,
+      pendTransfRows,
+      pendInstRows,
+      pendInvRows,
+    ] = await Promise.all([
+      // 1) REALIZADO — movimentos CONFIRMED por dia (exceto parcela PENDING)
+      this.db.getAllAsync<{ d: string; net: number }>(
+        `SELECT fm.effective_date AS d,
+                SUM(CASE WHEN fm.direction = 'CREDIT' THEN fm.amount_cents ELSE -fm.amount_cents END) AS net
+           FROM financial_moves fm
+           LEFT JOIN accounts a_anchor ON a_anchor.id = fm.account_id
+           LEFT JOIN installments inst_excl
+                  ON inst_excl.id = fm.installment_id AND inst_excl.status = 'PENDING'
+          WHERE fm.account_id IN (${marks})
+            AND fm.status = 'CONFIRMED' AND fm.effective_date <= ?
+            ${ANCHOR_FILTER_FM}
+            AND inst_excl.id IS NULL
+          GROUP BY fm.effective_date`,
+        [...contas.map((c) => c.id), endDate] as never
+      ),
+      // 2a) Lançamentos PENDING em conta do escopo (cartão entra pela fatura).
+      //     v20: pendência anterior à âncora da conta já está dentro do saldo inicial.
+      this.db.getAllAsync<{ d: string; net: number }>(
+        `SELECT t.occurred_on AS d,
+                SUM(CASE WHEN t.type = 'INCOME' THEN t.amount_cents ELSE -t.amount_cents END) AS net
+           FROM transactions t
+           LEFT JOIN accounts a_anchor ON a_anchor.id = t.account_id
+          WHERE t.status = 'PENDING' AND t.card_id IS NULL AND t.type IN ('INCOME','EXPENSE')
+            AND t.account_id IN (${marks})
+            AND t.occurred_on <= ?
+            AND t.occurred_on >= COALESCE(a_anchor.initial_balance_date, '0000-01-01')
+          GROUP BY t.occurred_on`,
+        [...contas.map((c) => c.id), endDate] as never
+      ),
+      // 2a') v25 — TRANSFERÊNCIAS FUTURAS (PENDING) entram no previsto pelas DUAS
+      //      pernas (VOIDED): débito na origem e crédito no destino. O filtro
+      //      é pela CONTA DO MOVIMENTO (perna): a perna na conta do escopo
+      //      conta; a perna na conta de fora não.
+      this.db.getAllAsync<{ d: string; net: number }>(
+        `SELECT fm.effective_date AS d,
+                SUM(CASE WHEN fm.direction = 'CREDIT' THEN fm.amount_cents ELSE -fm.amount_cents END) AS net
+           FROM transactions t
+           JOIN financial_moves fm ON fm.transaction_id = t.id
+           LEFT JOIN accounts a_anchor ON a_anchor.id = fm.account_id
+          WHERE t.status = 'PENDING' AND t.type = 'TRANSFER'
+            AND fm.account_id IN (${marks})
+            AND fm.effective_date <= ?
+            AND fm.effective_date >= COALESCE(a_anchor.initial_balance_date, '0000-01-01')
+          GROUP BY fm.effective_date`,
+        [...contas.map((c) => c.id), endDate] as never
+      ),
 
-    // ---------- 1) REALIZADO: movimentos CONFIRMED por dia ----------
-    // Parcela com status PENDING é previsão — o movimento dela fica fora do
-    // efetivado (entra no previsto pela data de vencimento, item b).
-    // v20: movimento ANTERIOR à âncora da própria conta não soma (já está
-    // dentro do saldo inicial informado pelo usuário).
+      // 2b) Parcelas EM ABERTO de planos em CONTA do escopo (pelo vencimento).
+      //     O sinal vem da DIREÇÃO do movimento (receita parcelada soma no previsto).
+      //     v20: parcela anterior à âncora da conta já está dentro do saldo inicial.
+      this.db.getAllAsync<{ d: string; net: number }>(
+        `SELECT fm.effective_date AS d,
+                SUM(CASE WHEN fm.direction = 'CREDIT' THEN fm.amount_cents ELSE -fm.amount_cents END) AS net
+           FROM installments i
+           JOIN installment_plans p ON p.id = i.plan_id
+           JOIN financial_moves fm ON fm.installment_id = i.id
+           LEFT JOIN accounts a_anchor ON a_anchor.id = fm.account_id
+          WHERE p.account_id IN (${marks}) AND p.card_id IS NULL
+            AND i.status = 'PENDING' AND fm.status = 'CONFIRMED' AND fm.effective_date <= ?
+            ${ANCHOR_FILTER_FM}
+          GROUP BY fm.effective_date`,
+        [...contas.map((c) => c.id), endDate] as never
+      ),
+      // 2c) Faturas de cartão não quitadas (devido na data de vencimento)
+      // v87 (BUG MÉDIA): era MAX(0, ...) — no SQLite, max com DOIS argumentos é a
+      // função ESCALAR (não a agregada): com GROUP BY due_date o valor saía de uma
+      // linha ARBITRÁRIA do grupo. Duas faturas de cartões diferentes vencendo no
+      // MESMO dia (comum) faziam o previsto descontar só uma delas. Agora SOMA.
+      this.db.getAllAsync<{ d: string; due: number }>(
+        `SELECT due_date AS d,
+                SUM(MAX(0, total_cents - credit_from_prev_cents - paid_cents)) AS due
+           FROM invoices
+          WHERE due_date <= ? AND status != 'PAID'
+            AND MAX(0, total_cents - credit_from_prev_cents - paid_cents) > 0
+          GROUP BY due_date`,
+        [endDate]
+      ),
+    ]);
+
+    // ---------- 1) REALIZADO → mapa por dia ----------
     const netByDate = new Map<string, number>();
-    const movesRows = await this.db.getAllAsync<{ d: string; net: number }>(
-      `SELECT fm.effective_date AS d,
-              SUM(CASE WHEN fm.direction = 'CREDIT' THEN fm.amount_cents ELSE -fm.amount_cents END) AS net
-         FROM financial_moves fm
-         LEFT JOIN accounts a_anchor ON a_anchor.id = fm.account_id
-        WHERE fm.account_id IN (${marks})
-          AND fm.status = 'CONFIRMED' AND fm.effective_date <= ?
-          ${ANCHOR_FILTER_FM}
-          AND NOT EXISTS (
-            SELECT 1 FROM installments i
-             WHERE i.id = fm.installment_id AND i.status = 'PENDING'
-          )
-        GROUP BY fm.effective_date`,
-      [...contas.map((c) => c.id), endDate] as never
-    );
     for (const r of movesRows) netByDate.set(r.d, r.net);
 
-    // ---------- 2) PENDÊNCIAS (RPA) por data ----------
+    // ---------- 2) PENDÊNCIAS (RPA) → mapa por dia ----------
     const pend = new Map<string, number>();
     const addPend = (d: string, net: number) => pend.set(d, (pend.get(d) ?? 0) + net);
-
-    // a) Lançamentos PENDING em conta do escopo (cartão entra pela fatura).
-    //    v20: pendência anterior à âncora da conta já está dentro do saldo inicial.
-    const pendTx = await this.db.getAllAsync<{ d: string; net: number }>(
-      `SELECT t.occurred_on AS d,
-              SUM(CASE WHEN t.type = 'INCOME' THEN t.amount_cents ELSE -t.amount_cents END) AS net
-         FROM transactions t
-         LEFT JOIN accounts a_anchor ON a_anchor.id = t.account_id
-        WHERE t.status = 'PENDING' AND t.card_id IS NULL AND t.type IN ('INCOME','EXPENSE')
-          AND t.account_id IN (${marks})
-          AND t.occurred_on <= ?
-          AND t.occurred_on >= COALESCE(a_anchor.initial_balance_date, '0000-01-01')
-        GROUP BY t.occurred_on`,
-      [...contas.map((c) => c.id), endDate] as never
-    );
-    for (const r of pendTx) addPend(r.d, r.net);
-
-    // a2) v25 — TRANSFERÊNCIAS FUTURAS (PENDING) entram no previsto pelas DUAS
-    //     pernas (VOIDED): débito na origem e crédito no destino. Antes, o
-    //     previsto ignorava transferência agendada (type TRANSFER ficava fora
-    //     da query a) — "todo lançamento precisa ser calculado". O filtro é pela
-    //     CONTA DO MOVIMENTO (perna): a perna na conta do escopo conta; a perna
-    //     na conta de fora não. (Filtrar pela transação com OR traria as duas
-    //     pernas no JOIN e a soma zerava — net 0 — como os testes pegaram.)
-    const pendTransf = await this.db.getAllAsync<{ d: string; net: number }>(
-      `SELECT fm.effective_date AS d,
-              SUM(CASE WHEN fm.direction = 'CREDIT' THEN fm.amount_cents ELSE -fm.amount_cents END) AS net
-         FROM transactions t
-         JOIN financial_moves fm ON fm.transaction_id = t.id
-         LEFT JOIN accounts a_anchor ON a_anchor.id = fm.account_id
-        WHERE t.status = 'PENDING' AND t.type = 'TRANSFER'
-          AND fm.account_id IN (${marks})
-          AND fm.effective_date <= ?
-          AND fm.effective_date >= COALESCE(a_anchor.initial_balance_date, '0000-01-01')
-        GROUP BY fm.effective_date`,
-      [...contas.map((c) => c.id), endDate] as never
-    );
-    for (const r of pendTransf) addPend(r.d, r.net);
-
-    // b) Parcelas EM ABERTO de planos em CONTA do escopo (pelo vencimento).
-    //    O sinal vem da DIREÇÃO do movimento (receita parcelada soma no previsto).
-    //    v20: parcela anterior à âncora da conta já está dentro do saldo inicial.
-    const pendInst = await this.db.getAllAsync<{ d: string; net: number }>(
-      `SELECT fm.effective_date AS d,
-              SUM(CASE WHEN fm.direction = 'CREDIT' THEN fm.amount_cents ELSE -fm.amount_cents END) AS net
-         FROM installments i
-         JOIN installment_plans p ON p.id = i.plan_id
-         JOIN financial_moves fm ON fm.installment_id = i.id
-         LEFT JOIN accounts a_anchor ON a_anchor.id = fm.account_id
-        WHERE p.account_id IN (${marks}) AND p.card_id IS NULL
-          AND i.status = 'PENDING' AND fm.status = 'CONFIRMED' AND fm.effective_date <= ?
-          ${ANCHOR_FILTER_FM}
-        GROUP BY fm.effective_date`,
-      [...contas.map((c) => c.id), endDate] as never
-    );
-    for (const r of pendInst) addPend(r.d, r.net);
-
-    // c) Faturas de cartão não quitadas (devido na data de vencimento)
-    // v87 (BUG MÉDIA): era MAX(0, ...) — no SQLite, max com DOIS argumentos é a
-    // função ESCALAR (não a agregada): com GROUP BY due_date o valor saía de uma
-    // linha ARBITRÁRIA do grupo. Duas faturas de cartões diferentes vencendo no
-    // MESMO dia (comum) faziam o previsto descontar só uma delas. Agora SOMA.
-    const pendInv = await this.db.getAllAsync<{ d: string; due: number }>(
-      `SELECT due_date AS d,
-              SUM(MAX(0, total_cents - credit_from_prev_cents - paid_cents)) AS due
-         FROM invoices
-        WHERE due_date <= ? AND status != 'PAID'
-          AND MAX(0, total_cents - credit_from_prev_cents - paid_cents) > 0
-        GROUP BY due_date`,
-      [endDate]
-    );
-    for (const r of pendInv) addPend(r.d, -r.due);
+    for (const r of pendTxRows) addPend(r.d, r.net);
+    for (const r of pendTransfRows) addPend(r.d, r.net);
+    for (const r of pendInstRows) addPend(r.d, r.net);
+    for (const r of pendInvRows) addPend(r.d, -r.due);
 
     // ---------- 3) ACUMULA dia a dia ----------
     // Pendências anteriores ao mês entram como carry inicial (valem para o mês todo).

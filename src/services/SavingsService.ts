@@ -25,6 +25,7 @@ import { BudgetService } from './BudgetService';
 import { WishlistService } from './WishlistService';
 import { SettingsService, SETTING_KEYS } from './SettingsService';
 import { remainderAfterWishlistAtMonthEnd } from '../lib/monthEndBalance';
+import { VersionedCache } from '../lib/versionedCache';
 
 export type SavingsMode = 'MONTHLY' | 'CLOSING';
 
@@ -113,6 +114,11 @@ export class SavingsService {
   private budgets: BudgetService;
   private wishlist: WishlistService;
   private settings: SettingsService;
+  // v98 — DESEMPENHO DO FLUXO: memo por mês + `dataVersion` opcional.
+  private overviewCache = new VersionedCache<SavingsMonthOverview>();
+  private adjustCache = new VersionedCache<{ previsto: Record<string, number>; efetivado: Record<string, number> }>();
+  private remainderCache = new VersionedCache<number>();
+  private closingSuggestionCache = new VersionedCache<{ amountCents: number } | null>();
 
   constructor(
     private db: DbDriver,
@@ -286,7 +292,7 @@ export class SavingsService {
    * Roda DENTRO de getMonthOverview — qualquer alteração de data/valor/
    * lançamento/transferência dispara bump() → telas recarregam → recalcula.
    */
-  async recalcClosing(month: string): Promise<void> {
+  async recalcClosing(month: string, dataVersion?: number): Promise<void> {
     const plan = await this.db.getFirstAsync<{ id: string; source_account_id: string | null; target_account_id: string | null }>(
       `SELECT id, source_account_id, target_account_id FROM savings_plans
         WHERE mode = 'CLOSING' AND is_active = 1 ORDER BY created_at DESC LIMIT 1`
@@ -303,7 +309,7 @@ export class SavingsService {
     );
     if (!tx || tx.status !== 'PENDING') return; // executada/mês fechado = histórico
 
-    const estimativa = await this.monthEndRemainderBeforeClosing(month, entry.transaction_id);
+    const estimativa = await this.computeMonthEndRemainderBeforeClosing(month, entry.transaction_id, dataVersion);
     if (estimativa > 0) {
       if (estimativa === entry.amount_cents) return; // nada mudou
       // Atualiza o VALOR nos três lugares (transação, pernas do movimento e entrada)
@@ -326,6 +332,14 @@ export class SavingsService {
         await this.db.runAsync('DELETE FROM transactions WHERE id = ?', [entry.transaction_id!]);
       });
     }
+    // v98 — recalcClosing mexe em `financial_moves` sem `bump()`:
+    // invalida o cache do saldo por dia para que a próxima leitura (sem
+    // mudança de dataVersion) recalcule com os valores novos.
+    this.balance.invalidateDaily(month);
+    // Idem para os caches desta própria classe: o conjunto de entries mudou.
+    this.overviewCache.invalidate(`overview|${month}`);
+    this.closingSuggestionCache.invalidate(`closingSuggestion|${month}`);
+    this.adjustCache.invalidate(`adjust|${month}`);
   }
 
   /**
@@ -345,7 +359,15 @@ export class SavingsService {
    * Estimativa do FECHAMENTO: sobra após os níveis anteriores da hierarquia;
    * positiva e ainda sem estimativa confirmada no mês → sugerir.
    */
-  async getClosingSuggestion(month: string): Promise<{ amountCents: number } | null> {
+  async getClosingSuggestion(month: string, dataVersion?: number): Promise<{ amountCents: number } | null> {
+    return this.closingSuggestionCache.get(
+      `closingSuggestion|${month}`,
+      dataVersion,
+      async () => this.computeClosingSuggestion(month, dataVersion)
+    );
+  }
+
+  private async computeClosingSuggestion(month: string, dataVersion?: number): Promise<{ amountCents: number } | null> {
     const hasClosingPlan = await this.db.getFirstAsync<{ id: string }>(
       `SELECT id FROM savings_plans WHERE mode = 'CLOSING' AND is_active = 1 LIMIT 1`
     );
@@ -355,17 +377,34 @@ export class SavingsService {
       [month]
     );
     if (confirmed) return null;
-    const finalBalance = await this.monthEndRemainderBeforeClosing(month);
+    const finalBalance = await this.monthEndRemainderBeforeClosing(month, undefined, dataVersion);
     if (finalBalance <= 0) return null;
     return { amountCents: finalBalance };
   }
 
-  private async monthEndRemainderBeforeClosing(month: string, closingTransactionId?: string): Promise<number> {
+  // v98 — memo com `dataVersion` opcional; o resto da função é o cálculo real.
+  // Quando a versão não é passada, sempre recalcula (compat com testes).
+  private async monthEndRemainderBeforeClosing(
+    month: string,
+    closingTransactionId?: string,
+    dataVersion?: number
+  ): Promise<number> {
+    const cacheKey = `remainder|${month}|${closingTransactionId ?? ''}|${dataVersion ?? 'noversion'}`;
+    return this.remainderCache.get(cacheKey, dataVersion, async () =>
+      this.computeMonthEndRemainderBeforeClosing(month, closingTransactionId, dataVersion)
+    );
+  }
+
+  private async computeMonthEndRemainderBeforeClosing(
+    month: string,
+    closingTransactionId?: string,
+    dataVersion?: number
+  ): Promise<number> {
     const [budgetsOn, savingsOn, wishlistOn, dual] = await Promise.all([
       this.settings.getBool(SETTING_KEYS.budgetsAtivado, false),
       this.settings.getBool(SETTING_KEYS.poupancaAtivado, false),
       this.settings.getBool(SETTING_KEYS.wishlistNaHome, false),
-      this.balance.getDailyBalancesDual(month),
+      this.balance.getDailyBalancesDual(month, dataVersion),
     ]);
     const lastActivityDate = await this.balance.getLastActivityDate(month, closingTransactionId);
     const targetDate = lastActivityDate ?? `${month}-${String(lastDayNumberOf(month)).padStart(2, '0')}`;
@@ -374,9 +413,9 @@ export class SavingsService {
     );
     const scopeIds = scope.map((row) => row.id);
     const [budgetSummary, budgetAdjust, savingsAdjust, monthlySavings, wishlistClasses] = await Promise.all([
-      budgetsOn ? this.budgets.getMonthSummary(month) : Promise.resolve(null),
-      budgetsOn ? this.budgets.getMonthFluxAdjust(month, scopeIds) : Promise.resolve(null),
-      savingsOn ? this.getMonthFluxAdjust(month, scopeIds) : Promise.resolve(null),
+      budgetsOn ? this.budgets.getMonthSummary(month, dataVersion) : Promise.resolve(null),
+      budgetsOn ? this.budgets.getMonthFluxAdjust(month, scopeIds, dataVersion) : Promise.resolve(null),
+      savingsOn ? this.getMonthFluxAdjust(month, scopeIds, dataVersion) : Promise.resolve(null),
       savingsOn
         ? this.db.getFirstAsync<{ total: number }>(
             // v87: só entra a poupança de plano ATIVO (desligar o plano
@@ -389,7 +428,7 @@ export class SavingsService {
             [month]
           )
         : Promise.resolve(null),
-      wishlistOn ? this.wishlist.listOpen() : Promise.resolve([]),
+      wishlistOn ? this.wishlist.listOpen(dataVersion) : Promise.resolve([]),
     ]);
     let closingTransferRestore = 0;
     if (!savingsOn && closingTransactionId) {
@@ -501,14 +540,22 @@ export class SavingsService {
   // ------------------------------------------------------- resumo ----
 
   /** Resumo do mês para o card no Fluxo (previsão · falta · efetivadas). */
-  async getMonthOverview(month: string): Promise<SavingsMonthOverview> {
+  // v98 — memo por mês + `dataVersion`. O `recalcClosing` interno invalida o
+  // cache após escrever (a transferência do fechamento pode mudar de valor).
+  async getMonthOverview(month: string, dataVersion?: number): Promise<SavingsMonthOverview> {
+    return this.overviewCache.get(`overview|${month}`, dataVersion, async () =>
+      this.computeMonthOverview(month, dataVersion)
+    );
+  }
+
+  private async computeMonthOverview(month: string, dataVersion?: number): Promise<SavingsMonthOverview> {
     // v70 (BUG 1.2) — RECALCULO NA HORA do Fechamento Mensal: com plano CLOSING
     // ativo e estimativa já confirmada (transferência pendente), o valor é
     // refeito A CADA leitura — alterou data/valor/lançamento/transferência →
     // o número acompanha (nada de valor travado/antigo). Antes de ler qualquer
     // coisa: as leituras abaixo já saem atualizadas.
     try {
-      await this.recalcClosing(month);
+      await this.recalcClosing(month, dataVersion);
     } catch {
       // recálculo é best-effort — nunca derruba o resumo
     }
@@ -579,7 +626,7 @@ export class SavingsService {
       });
     let closingSuggestion: { amountCents: number } | null = null;
     try {
-      closingSuggestion = await this.getClosingSuggestion(month);
+      closingSuggestion = await this.getClosingSuggestion(month, dataVersion);
     } catch {
       closingSuggestion = null;
     }
@@ -648,7 +695,26 @@ export class SavingsService {
    * transferência tirou das contas do escopo (origem fora = 0; origem no
    * escopo e destino também = 0 — ficou dentro do escopo).
    */
-  async getMonthFluxAdjust(month: string, scopeAccountIds: string[]): Promise<{
+  async getMonthFluxAdjust(
+    month: string,
+    scopeAccountIds: string[],
+    dataVersion?: number
+  ): Promise<{
+    previsto: Record<string, number>;
+    efetivado: Record<string, number>;
+  }> {
+    const scopeKey = scopeAccountIds.slice().sort().join(',');
+    return this.adjustCache.get(
+      `adjust|${month}|${scopeKey}`,
+      dataVersion,
+      async () => this.computeMonthFluxAdjust(month, scopeAccountIds)
+    );
+  }
+
+  private async computeMonthFluxAdjust(
+    month: string,
+    scopeAccountIds: string[]
+  ): Promise<{
     previsto: Record<string, number>;
     efetivado: Record<string, number>;
   }> {

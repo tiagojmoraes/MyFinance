@@ -239,6 +239,8 @@ CREATE TABLE IF NOT EXISTS nfce_items (
   qty REAL,
   unit_original TEXT,
   total_cents INTEGER,
+  -- v98: valor unitário lido da nota (Vl. Unit. / Vl. Unitário); null = não veio na página
+  unit_price_cents INTEGER,
   product_id TEXT REFERENCES products_catalog(id),
   -- v62: log da decisão v37 já no schema novo
   match_type TEXT,
@@ -247,6 +249,21 @@ CREATE TABLE IF NOT EXISTS nfce_items (
   stock_applied INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_nfce_item_line ON nfce_items(access_key, line_number);
+
+-- v98: regra "nunca mais" para itens da NFC-e que o usuário optou por NÃO entrar
+-- (não vai para o catálogo, lembra a decisão por EAN / código da loja / descrição
+-- normalizada nesta loja).
+CREATE TABLE IF NOT EXISTS nfce_item_ignores (
+  id TEXT PRIMARY KEY NOT NULL,
+  cnpj TEXT,
+  ean TEXT,
+  store_product_code TEXT,
+  description_norm TEXT NOT NULL,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_nfce_ignores_cnpj_code ON nfce_item_ignores(cnpj, store_product_code);
+CREATE INDEX IF NOT EXISTS idx_nfce_ignores_cnpj_ean ON nfce_item_ignores(cnpj, ean);
+CREATE INDEX IF NOT EXISTS idx_nfce_ignores_cnpj_desc ON nfce_item_ignores(cnpj, description_norm);
 
 CREATE TABLE IF NOT EXISTS pantry_ledger (
   id TEXT PRIMARY KEY NOT NULL,

@@ -30,6 +30,7 @@
 import type { DbDriver } from '../db/types';
 import { genId } from '../lib/id';
 import { nowIso, lastDayNumberOf, monthRange } from '../lib/dates';
+import { VersionedCache } from '../lib/versionedCache';
 
 export interface BudgetRow {
   id: string;
@@ -85,7 +86,20 @@ export interface BudgetMonthSummary {
 }
 
 export class BudgetService {
+  // v98 — DESEMPENHO DO FLUXO: memo por mês + `dataVersion` (a tela do Fluxo
+  // passa a versão atual do app). Mesmo valor, mesma versão = mesmo cache;
+  // qualquer escrita tripudial `bump()` (versão++) → recalcula.
+  private summaryCache = new VersionedCache<BudgetMonthSummary>();
+  private adjustCache = new VersionedCache<{ previsto: Record<string, number>; efetivado: Record<string, number> }>();
+
   constructor(private db: DbDriver) {}
+
+  /** v98: chamada após uma escrita (save/setActive/remove). Limpa TUDO: a
+   *  lista de orçamentos mudou, e cada mês já cacheado precisa recalcular. */
+  invalidateAll(): void {
+    this.summaryCache.clear();
+    this.adjustCache.clear();
+  }
 
   /** Lista de orçamentos (ativos primeiro, depois por nome da categoria). */
   async list(): Promise<BudgetRow[]> {
@@ -107,6 +121,7 @@ export class BudgetService {
       [categoryId]
     );
     if (!cat) throw new Error('Categoria não encontrada');
+    this.invalidateAll();
     return this.db.transactionAsync(async () => {
       const existing = await this.db.getFirstAsync<{ id: string }>(
         'SELECT id FROM budgets WHERE category_id = ?',
@@ -131,10 +146,12 @@ export class BudgetService {
 
   async setActive(budgetId: string, active: boolean): Promise<void> {
     await this.db.runAsync('UPDATE budgets SET is_active = ? WHERE id = ?', [active ? 1 : 0, budgetId]);
+    this.invalidateAll();
   }
 
   async remove(budgetId: string): Promise<void> {
     await this.db.runAsync('DELETE FROM budgets WHERE id = ?', [budgetId]);
+    this.invalidateAll();
   }
 
   /**
@@ -166,6 +183,7 @@ export class BudgetService {
       const r0 = await this.db.runAsync('DELETE FROM budgets WHERE id = ?', [budgetId]);
       affected += r0?.changes ?? 0;
     });
+    this.invalidateAll();
     return affected;
   }
 
@@ -179,7 +197,15 @@ export class BudgetService {
    * sem orçamento entram); os subitens aparecem com a barrinha deles mas
    * ficam FORA dos totais (sem dupla contagem).
    */
-  async getMonthSummary(month: string): Promise<BudgetMonthSummary> {
+  // v98 — memo por mês + `dataVersion` opcional. Mesma versão = mesmo resumo.
+  async getMonthSummary(month: string, dataVersion?: number): Promise<BudgetMonthSummary> {
+    return this.summaryCache.get(`summary|${month}`, dataVersion, async () => {
+      const sum = await this.computeMonthSummary(month);
+      return sum;
+    });
+  }
+
+  private async computeMonthSummary(month: string): Promise<BudgetMonthSummary> {
     const budgets = (await this.list()).filter((b) => b.is_active === 1);
     if (budgets.length === 0) {
       return { items: [], budgetedCents: 0, spentCents: 0, previstoCents: 0, efetivadoCents: 0, remainingCents: 0 };
@@ -357,10 +383,29 @@ export class BudgetService {
    * Lançamentos em conta do escopo NÃO entram (o saldo base já os tem —
    * sem dupla contagem).
    */
-  async getMonthFluxAdjust(month: string, scopeAccountIds: string[]): Promise<{
+  // v98 — memo por mês + lista escopo + `dataVersion` opcional.
+  async getMonthFluxAdjust(
+    month: string,
+    scopeAccountIds: string[],
+    dataVersion?: number
+  ): Promise<{
     previsto: Record<string, number>;
     efetivado: Record<string, number>;
   }> {
+    // O ajuste depende também do escopo (conjunto de contas do Fluxo); entra
+    // na chave do cache para não devolver resultado de escopo errado.
+    const scopeKey = scopeAccountIds.slice().sort().join(',');
+    return this.adjustCache.get(
+      `adjust|${month}|${scopeKey}`,
+      dataVersion,
+      async () => this.computeMonthFluxAdjust(month, scopeAccountIds)
+    );
+  }
+
+  private async computeMonthFluxAdjust(
+    month: string,
+    scopeAccountIds: string[]
+  ): Promise<{ previsto: Record<string, number>; efetivado: Record<string, number> }> {
     const budgets = (await this.list()).filter((b) => b.is_active === 1);
     const out = { previsto: {} as Record<string, number>, efetivado: {} as Record<string, number> };
     if (budgets.length === 0) return out;
@@ -369,15 +414,21 @@ export class BudgetService {
     const lastDay = lastDayNumberOf(month);
     const endDate = `${month}-${String(lastDay).padStart(2, '0')}`;
 
-    // Lançamentos SIMPLES de categorias orçadas, com a fatura do cartão
-    // (quando houver) para saber a partir de quando o saldo base já sente.
+    // v98 — SEM SUBCONSULTA CORRELATA por linha: trocado por `LEFT JOIN` em
+    // `invoice_items + invoices`, agrupado por transaction_id e pegando a MAIOR
+    // `due_date` (a regra anterior pegava a da fatura mais recente). Com o
+    // índice `idx_inv_item_tx(transaction_id)` a junção resolve sem varredura
+    // — antes, cada linha abria um scan em `invoice_items` e somava ~20-50 ms
+    // cada, deixando `getMonthFluxAdjust` em ~2 s com histórico cheio.
     const rows = await this.db.getAllAsync<{
       d: string; type: string; status: string; card_id: string | null; account_id: string | null; amount: number; invoice_due: string | null;
     }>(
-      `SELECT t.occurred_on AS d, t.type, t.status, t.card_id, t.account_id, t.amount_cents AS amount,
-              (SELECT i.due_date FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id
-                WHERE ii.transaction_id = t.id ORDER BY i.due_date DESC LIMIT 1) AS invoice_due
+      `SELECT t.occurred_on AS d,
+              t.type, t.status, t.card_id, t.account_id, t.amount_cents AS amount,
+              MAX(i.due_date) AS invoice_due
          FROM transactions t
+         LEFT JOIN invoice_items ii ON ii.transaction_id = t.id
+         LEFT JOIN invoices i ON i.id = ii.invoice_id
         WHERE t.kind = 'SIMPLE' AND t.status != 'VOIDED'
           AND t.source_system != 'INSTALLMENT'
           AND t.category_id IN (${marks})
@@ -388,7 +439,8 @@ export class BudgetService {
           )
           AND NOT EXISTS (
             SELECT 1 FROM transactions ch WHERE ch.parent_transaction_id = t.id
-          )`,
+          )
+        GROUP BY t.id`,
       [...ids, endDate] as never
     );
 

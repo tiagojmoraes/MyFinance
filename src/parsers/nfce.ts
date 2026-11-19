@@ -35,6 +35,10 @@ export interface NfceRawItem {
   qty: number | null;
   unitOriginal: string | null;
   totalCents: number | null;
+  /** v98: valor unitário (R$) lido da nota — null quando a página não traz
+   *  "Vl. Unitário" / "Vl. Unit." (a tela da revisão já calcula qty × unit
+   *  como fallback). */
+  unitPriceCents: number | null;
 }
 
 const CHAVE_RE = /\d{44}/;
@@ -636,6 +640,7 @@ export function parseNfceItemsByClass(html: string): NfceRawItem[] {
       const u = parseMoneyToCents(unitPriceRaw);
       if (u != null) totalCents = Math.round(qty * u);
     }
+    const unitPriceCents = unitPriceRaw ? parseMoneyToCents(unitPriceRaw) : null;
     items.push({
       lineNumber: items.length + 1,
       description,
@@ -644,6 +649,7 @@ export function parseNfceItemsByClass(html: string): NfceRawItem[] {
       qty,
       unitOriginal: unit ? unit.toUpperCase() : null,
       totalCents,
+      unitPriceCents,
     });
   }
   return items;
@@ -722,6 +728,10 @@ export function parseNfceItemsAxure(html: string): NfceRawItem[] {
       if (u != null) totalCents = Math.round(qty * u);
     }
 
+    // v98: valor unitário (Vl. Unit.) — devolvido na própria NfceRawItem para
+    // a tela da revisão mostrar a coluna "Valor unitário" ao ler a nota.
+    const unitPriceCents = unitPriceRaw ? parseMoneyToCents(unitPriceRaw) : null;
+
     // Linha precisa parecer item: código OU quantidade OU total
     if (!codM && qty == null && totalCents == null) continue;
 
@@ -733,6 +743,7 @@ export function parseNfceItemsAxure(html: string): NfceRawItem[] {
       qty,
       unitOriginal: unit,
       totalCents,
+      unitPriceCents,
     });
   }
   return items;
@@ -837,6 +848,7 @@ export function parseNfceItems(html: string): NfceRawItem[] {
         qty: null,
         unitOriginal: null,
         totalCents: null,
+        unitPriceCents: null,
       };
     } else if (current) {
       // Detalhes enriquecem o item aberto — a descrição só é substituída pelo
@@ -852,9 +864,25 @@ export function parseNfceItems(html: string): NfceRawItem[] {
         qty: null,
         unitOriginal: null,
         totalCents: null,
+        unitPriceCents: null,
       };
     }
     if (!current) continue;
+
+    // v98: valor unitário — rótulo "Valor unitário:" / "Vl. Unit.:" (portal
+    // público) OU o "R$" do formato compacto já capturado acima.
+    if (current.unitPriceCents == null) {
+      const unitPriceLabel =
+        joined.match(/Valor\s+unit[áa]rio[^§:]{0,40}:?\s*§?\s*R\$\s*([\d.,]+)/i) ??
+        joined.match(/Vl\.?\s*Unit\.?\s*:?\s*([\d.,]+)/i);
+      if (unitPriceLabel) {
+        current.unitPriceCents = parseMoneyToCents(unitPriceLabel[1]);
+      } else if (!isDetailsRow) {
+        // formato compacto "2 UN × R$ 4,99" → 4,99 é o unitário
+        const compactUnit = joined.match(/[x×]\s*R\$\s*([\d.,]+)/i);
+        if (compactUnit) current.unitPriceCents = parseMoneyToCents(compactUnit[1]);
+      }
+    }
 
     // ---- Código do produto (GTIN/EAN com 8/12–14 dígitos OU código da loja)
     // v25: 6–14 aceitava código de loja de 6/7 dígitos como se fosse EAN.

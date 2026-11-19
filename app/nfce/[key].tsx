@@ -40,6 +40,7 @@ interface ItemRow {
   qty: number | null;
   unit_original: string | null;
   total_cents: number | null;
+  unit_price_cents?: number | null;
   product_id: string | null;
   product_name: string | null;
   product_base_unit?: 'G' | 'ML' | 'UN' | null;
@@ -105,6 +106,17 @@ export default function NfceReviewScreen() {
   const [linkPolicy, setLinkPolicy] = React.useState<'ALWAYS' | 'ASK' | 'NEVER'>('ASK');
   // v67 (MELHORIA 1): item com a pergunta "Incluir no estoque?" aberta (resposta NÃO)
   const [stockAskId, setStockAskId] = React.useState<string | null>(null);
+  // v98 — assistente de 3 perguntas por item (DESEMPENHO/QUESTÃO DO USUÁRIO):
+  // · WIZARD_STEP 'NONE' = item resolvido, sem pergunta aberta;
+  // · 'CATALOG'  = Q1 — vai para o catálogo?
+  // · 'STOCK'    = Q2 — controle de estoque?
+  // · 'CATCAT'   = Q1-sim + seleção da categoria do produto;
+  // · 'NOTEVER'  = Q3 — não entrar nunca mais / só nesta nota.
+  type WizardStep = 'NONE' | 'CATALOG' | 'STOCK' | 'CATCAT' | 'NOTEVER';
+  const [wizard, setWizard] = React.useState<{ itemId: string; step: WizardStep } | null>(null);
+  // contador de itens já decididos nesta sessão (UX: barra de progresso no topo)
+  const DECIDED_KEY = `nfce_decided_${key}`;
+  const [decidedCount, setDecidedCount] = React.useState(0);
 
   const load = React.useCallback(async () => {
     const detail = await services.nfce.getDocument(key);
@@ -294,6 +306,36 @@ export default function NfceReviewScreen() {
     // (sem aviso na tela) — o usuário ficava sem saber por que nada mudou.
     try {
       await services.nfce.ignoreItem(item.id);
+      setDecidedCount((c) => c + 1);
+      bump();
+      await load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), 'err');
+    }
+  };
+
+  /** v98 — abre o assistente (Q1: catálogo?) para um item ainda sem destino. */
+  const startWizard = (item: ItemRow) => {
+    setWizard({ itemId: item.id, step: 'CATALOG' });
+  };
+  /** v98 — executa a decisão do assistente e fecha. */
+  const applyWizard = async (decision: {
+    catalog: boolean;
+    stockControl?: boolean;
+    neverAgain?: boolean;
+  }) => {
+    if (!wizard) return;
+    try {
+      await services.nfce.decideImport(wizard.itemId, {
+        catalog: decision.catalog,
+        stockControl: !!decision.stockControl,
+        neverAgain: !!decision.neverAgain,
+        categoryId: newCatId,
+      });
+      setDecidedCount((c) => c + 1);
+      setWizard(null);
+      setCreatingId(null);
+      setNewCatId(null);
       bump();
       await load();
     } catch (err) {
@@ -354,9 +396,13 @@ export default function NfceReviewScreen() {
           <View className="flex-row justify-between items-start gap-2">
             <View className="flex-1">
               <Text className="font-semibold text-slate-900" numberOfLines={2}>{item.description ?? '(sem descrição)'}</Text>
-              {/* v18 (bug 6): qtde, unidade e código do produto sempre visíveis */}
+              {/* v98: linha de DETALHES do item — qtde, valor unitário, total.
+                A soma dos itens lidos continua aparecendo no rodapé da tela. */}
               <Text className="text-xs text-slate-500 mt-0.5">
-                Qtde: {item.qty ?? '—'} {item.unit_original ?? ''} · Un: {item.unit_original ?? '—'}
+                Qtde: {item.qty ?? '—'} {item.unit_original ?? ''}{' · '}Un: {item.unit_original ?? '—'}
+                {item.unit_price_cents != null
+                  ? `\u00b7 Vl. unit.: ${formatBRL(item.unit_price_cents)}`
+                  : ''}
               </Text>
               {/* v59: SEM EAN na tela — o usuário não sabe o que é EAN olhando a NF.
                   O EAN continua sendo aprendido sozinho por dentro (resolveOrRegister). */}
@@ -434,28 +480,117 @@ export default function NfceReviewScreen() {
             </View>
           ) : null}
 
+          {/* v98 — ASSISTENTE DE 3 PERGUNTAS POR ITEM (na hora da importação):
+            · Q1 (CATALOG): "Vai para o catálogo de produtos?" — sim avança
+              para Q2; não cai em Q3 (nota: nunca / só nesta).
+            · Q2 (STOCK): "Quer controle de estoque?" — sim grava policy ALWAYS
+              + aplica estoque; não grava policy NEVER.
+            · Q3 (NOTEVER): "Não entrar só nesta nota / sempre?" — sem/não
+              sai do item para esta nota; sempre grava em `nfce_item_ignores`
+              e as próximas notas desta loja pulam o item de cara. */}
+          {wizard?.itemId === item.id ? (
+            <View className="mt-2 gap-1.5 rounded-xl border border-sky-200 bg-sky-50 p-2.5">
+              {wizard.step === 'CATALOG' ? (
+                <>
+                  <Text className="text-xs font-semibold text-sky-900">
+                    Pergunta 1 de 2: "{item.description ?? 'item'}" vai para o catálogo de produtos?
+                  </Text>
+                  <View className="flex-row flex-wrap gap-1.5">
+                    <MiniAction
+                      label="Sim, vai pro catálogo"
+                      onPress={() => setWizard({ itemId: item.id, step: 'CATCAT' })}
+                      tone="primary"
+                    />
+                    <MiniAction
+                      label="Não vai"
+                      onPress={() => setWizard({ itemId: item.id, step: 'NOTEVER' })}
+                      tone="muted"
+                    />
+                    <MiniAction label="Voltar" onPress={() => setWizard(null)} tone="muted" />
+                  </View>
+                </>
+              ) : wizard.step === 'CATCAT' ? (
+                <>
+                  <Text className="text-xs font-semibold text-sky-900">
+                    Categoria de despesa (opcional) → depois pergunta 2
+                  </Text>
+                  <CategoriaSelect cats={cats} value={newCatId} onChange={setNewCatId} />
+                  <View className="flex-row flex-wrap gap-1.5">
+                    <MiniAction
+                      label="Próxima (controle de estoque)"
+                      onPress={() => setWizard({ itemId: item.id, step: 'STOCK' })}
+                      tone="primary"
+                    />
+                    <MiniAction
+                      label="Voltar"
+                      onPress={() => setWizard({ itemId: item.id, step: 'CATALOG' })}
+                      tone="muted"
+                    />
+                  </View>
+                </>
+              ) : wizard.step === 'STOCK' ? (
+                <>
+                  <Text className="text-xs font-semibold text-sky-900">
+                    Pergunta 2 de 2: quer controle de estoque por este item?
+                  </Text>
+                  <View className="flex-row flex-wrap gap-1.5">
+                    <MiniAction
+                      label="Sim, com controle de estoque"
+                      onPress={() => applyWizard({ catalog: true, stockControl: true })}
+                      tone="primary"
+                    />
+                    <MiniAction
+                      label="Não (só catálogo)"
+                      onPress={() => applyWizard({ catalog: true, stockControl: false })}
+                      tone="muted"
+                    />
+                    <MiniAction
+                      label="Voltar"
+                      onPress={() => setWizard({ itemId: item.id, step: 'CATCAT' })}
+                      tone="muted"
+                    />
+                  </View>
+                </>
+              ) : (
+                <>
+                  <Text className="text-xs font-semibold text-sky-900">
+                    Quer que este item não entre {item.product_id ? 'nesta nota' : 'nesta nota'} ou para sempre?
+                  </Text>
+                  <View className="flex-row flex-wrap gap-1.5">
+                    <MiniAction
+                      label="Só nesta nota"
+                      onPress={() => applyWizard({ catalog: false, neverAgain: false })}
+                      tone="muted"
+                    />
+                    <MiniAction
+                      label="Nunca (lembrar para sempre)"
+                      onPress={() => applyWizard({ catalog: false, neverAgain: true })}
+                      tone="primary"
+                    />
+                    <MiniAction
+                      label="Voltar"
+                      onPress={() => setWizard({ itemId: item.id, step: 'CATALOG' })}
+                      tone="muted"
+                    />
+                  </View>
+                </>
+              )}
+            </View>
+          ) : null}
+
           {/* v67 (MELHORIA 1) — AÇÕES GUIADAS do item, na ordem da tabela da verdade:
               fuzzy → "É esse / É outro / + Produto novo / Ignorar"; sem produto →
               "É outro (vincular) / + Produto novo / Ignorar"; com produto e sem
-              estoque → pergunta "Incluir no estoque?" */}
-          {item.status !== 'IGNORED' && linkingId !== item.id && creatingId !== item.id && stockAskId !== item.id ? (
+              estoque → pergunta "Incluir no estoque?".
+              v98: o botão PRINCIPAL virou "Decidir item (3 perguntas)" —
+              abre o assistente CATALOG/STOCK/NOTEVER por item. */}
+          {item.status !== 'IGNORED' && linkingId !== item.id && creatingId !== item.id && stockAskId !== item.id && !wizard ? (
             <View className="flex-row flex-wrap gap-1.5 mt-2">
-              {item.match_type === 'FUZZY' && item.product_id ? (
-                <>
-                  <MiniAction label={`É esse (${item.match_score != null ? Math.round(item.match_score * 100) : '?'}%)`} onPress={() => confirmFuzzy(item)} tone="primary" />
-                  <MiniAction label="É outro" onPress={() => openLinker(item)} />
-                  <MiniAction label="+ Produto novo" onPress={() => { setCreatingId(item.id); setNewCatId(null); }} />
-                  <MiniAction label="Ignorar" onPress={() => ignore(item)} tone="muted" />
-                </>
-              ) : !item.product_id ? (
-                <>
-                  <MiniAction label="É outro (vincular produto)" onPress={() => openLinker(item)} tone="primary" />
-                  <MiniAction label="+ Produto novo" onPress={() => { setCreatingId(item.id); setNewCatId(null); }} tone="primary" />
-                  <MiniAction label="Ignorar" onPress={() => ignore(item)} tone="muted" />
-                </>
-              ) : !item.stock_applied ? (
-                <MiniAction label="Incluir no estoque?" onPress={() => setStockAskId(item.id)} tone="primary" />
+              <MiniAction label="Decidir item (3 perguntas)" onPress={() => startWizard(item)} tone="primary" />
+              {item.product_id ? (
+                <MiniAction label="Vincular produto" onPress={() => openLinker(item)} tone="muted" />
               ) : null}
+              <MiniAction label="Ignorar" onPress={() => ignore(item)} tone="muted" />
             </View>
           ) : null}
         </Card>

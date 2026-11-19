@@ -47,6 +47,8 @@ interface ActiveJob {
   timer: ReturnType<typeof setTimeout>;
   challengeWaits: number;
   unknownWaits: number;
+  /** v98 — quantas recapturas já foram para esperar os itens renderizarem. */
+  itemsWaits: number;
   renderGone: number;
 }
 
@@ -91,18 +93,39 @@ export function NfceWebEngineView() {
       canalTimerRef.current = null;
     }
     const decision = decideCaptureAction(html);
+    // v98 — log amigável: se a página chegou inteira antes da hora, só
+    // mencionamos a ação do `wait-items` para o usuário entender o que
+    // estamos esperando (sem isso, o log "aguardar" pode confundir quando
+    // a SEFAZ-SP renderiza o cabeçalho antes dos itens).
     nfceLog(
       `motor: página capturada → ${nfceHtmlSummary(html)} · decisão=` +
         (decision.action === 'deliver' ? 'É A NOTA — entregar'
           : decision.action === 'hand-over' ? `rejeição do firewall (${decision.kind}) — passar ao canal seguinte`
+          : decision.action === 'wait-items' ? `página da nota SEM itens ainda — aguardar ${decision.delayMs / 1000}s e tentar de novo (${decision.triesLeft} restantes)`
           : `aguardar (${decision.kind})`)
     );
     if (decision.action === 'deliver') {
       nfceStep(NFCE_STEP.HTML, 'ok', 'página da NOTA reconhecida — entregando ao serviço');
     } else if (decision.action === 'hand-over') {
       nfceStep(NFCE_STEP.HTML, 'warn', `rejeição do firewall (${decision.kind}) — o serviço passa ao canal seguinte`);
+    } else if (decision.action === 'wait-items') {
+      nfceStep(NFCE_STEP.HTML, 'info', `página da NOTA chegou sem itens ainda — aguardando render (${decision.triesLeft} restantes)`);
     } else {
       nfceStep(NFCE_STEP.HTML, 'info', `aguardando (${decision.kind}) — recaptura em ${Math.round(decision.delayMs / 100) / 10}s`);
+    }
+    // v98 — renderização lenta: a página é a nota MAS os itens não chegaram
+    // ainda (alguns layouts do portal demoram para popular a tabela). Aguarda
+    // até `triesLeft` recapturas antes de devolver o que tiver.
+    if (decision.action === 'wait-items') {
+      if (decision.triesLeft <= 0) {
+        nfceLog(`motor: cabeçalho OK mas itens não renderizaram — entregando o que temos (a revisão pode pedir uma 2ª leitura)`);
+        finishJob({ html, url: job.url });
+        return;
+      }
+      scheduleCapture(decision.delayMs, `recaptura p/ pegar os itens (restam ${decision.triesLeft})`);
+      // atualiza o contador para a próxima rodada
+      job.itemsWaits = (job.itemsWaits ?? 0) + 1;
+      return;
     }
     if (decision.action === 'deliver' || decision.action === 'hand-over') {
       finishJob({ html, url: job.url });
@@ -151,7 +174,7 @@ export function NfceWebEngineView() {
           canalTimerRef.current = null;
           finishJob(null);
         }, timeoutMs);
-        jobRef.current = { url, resolve, timer, challengeWaits: 0, unknownWaits: 0, renderGone: 0 };
+        jobRef.current = { url, resolve, timer, challengeWaits: 0, unknownWaits: 0, itemsWaits: 0, renderGone: 0 };
         uaSentRef.current = false;
         bufferRef.current = { total: 0, parts: new Map() };
         setJobUrl(url);

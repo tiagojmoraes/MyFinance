@@ -27,7 +27,7 @@
  * devolve null e a cadeia segue para os degraus antigos.
  */
 
-import { isFirewallRejectionPage, looksLikeNfcePage } from '../parsers/nfce';
+import { isFirewallRejectionPage, looksLikeNfcePage, pageHasItems } from '../parsers/nfce';
 
 /** Resultado de um trabalho do motor: HTML renderizado + URL que o gerou. */
 export interface NfceWebEngineResult {
@@ -55,20 +55,34 @@ export const UNKNOWN_MAX_WAITS = 2;
 
 /**
  * v35 — Decisão PURA sobre o HTML capturado pelo motor (testável sem RN).
- *  · deliver    → é a nota: devolve ao serviço;
- *  · hand-over  → rejeição dura do firewall ("Request Rejected"): NÃO vai
- *                 resolver com espera — o serviço tenta o próximo canal;
- *  · wait       → desafio/intermediária: esperar o reload e capturar de novo.
+ *  · deliver      → é a nota COM itens: devolve ao serviço;
+ *  · hand-over    → rejeição dura do firewall ("Request Rejected"): NÃO vai
+ *                   resolver com espera — o serviço tenta o próximo canal;
+ *  · wait         → desafio/intermediária: esperar o reload e capturar de novo;
+ *  · wait-items   → v98: a página é da nota MAS os itens ainda não terminaram
+ *                   de carregar — espera N recapturas curtas antes de devolver
+ *                   o que tiver (a revisão ainda lê o que veio e pode pedir
+ *                   "Buscar página oficial de novo").
  * A página da nota vence SEMPRE (mesmo que carregue algum marcador de desafio
  * no meio do HTML — o critério de nota do parser já trata isso).
  */
 export type WebEngineCaptureDecision =
   | { action: 'deliver' }
   | { action: 'hand-over'; kind: 'rejection' }
-  | { action: 'wait'; kind: 'challenge' | 'unknown'; delayMs: number };
+  | { action: 'wait'; kind: 'challenge' | 'unknown'; delayMs: number }
+  | { action: 'wait-items'; triesLeft: number; delayMs: number };
+
+/** v98 — quanto esperar pelos itens renderizarem quando o cabeçalho já chegou. */
+export const ITEMS_WAIT_MAX_TRIES = 4;
+export const ITEMS_WAIT_DELAY_MS = 1500;
 
 export function decideCaptureAction(html: string): WebEngineCaptureDecision {
-  if (looksLikeNfcePage(html)) return { action: 'deliver' };
+  if (looksLikeNfcePage(html)) {
+    if (!pageHasItems(html)) {
+      return { action: 'wait-items', triesLeft: ITEMS_WAIT_MAX_TRIES, delayMs: ITEMS_WAIT_DELAY_MS };
+    }
+    return { action: 'deliver' };
+  }
   if (isFirewallRejectionPage(html)) return { action: 'hand-over', kind: 'rejection' };
   if (/TSPD|APM_DO_NOT_TOUCH/i.test(html)) {
     return { action: 'wait', kind: 'challenge', delayMs: 2500 };

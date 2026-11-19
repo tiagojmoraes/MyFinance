@@ -633,6 +633,59 @@ UPDATE accounts SET include_in_general_balance = 0
  WHERE type = 'SAVINGS' AND include_in_general_balance <> 0;
 `,
     },
+    // v98 — DESEMPENHO DO FLUXO: índices ausentes em bancos antigos (os que
+    // o v55 não criou) + coluna de valor unitário nos itens NFC-e + tabela
+    // de regras "nunca mais" para ignorar itens de NFC-e definitivamente.
+    // Sem esses índices a rotina do cartão de orçamento varria o histórico
+    // inteiro com subconsulta por linha (`getMonthFluxAdjust`).
+    {
+      version: 59,
+      name: 'v98_indices_perf_unidade_nfce',
+      sql: '',
+      fn: async (driver) => {
+        const idx: Array<[string, string]> = [
+          // transactions: orçamento/poupança/leitura por ESCOPO/MÊS/STATUS
+          ['idx_tx_account_date', 'transactions(account_id, occurred_on)'],
+          ['idx_tx_card_date', 'transactions(card_id, occurred_at)'],
+          ['idx_trans_acc_amt_date', 'transactions(account_id, amount_cents, occurred_on)'],
+          // orçamento: `WHERE t.category_id IN (...)` sem varredura de tabela
+          ['idx_tx_category', 'transactions(category_id)'],
+          // orçamento: `WHERE t.kind = ?` + `t.source_system != ?` (group headers)
+          ['idx_tx_kind_source', 'transactions(kind, source_system)'],
+          // saldo do dia: `fm.account_id IN (...) AND fm.status = ? AND fm.effective_date <= ?`
+          ['idx_move_account_date_status', 'financial_moves(account_id, effective_date, status)'],
+          // faturas: `WHERE inv.card_id = ? AND inv.reference_month = ?`
+          ['idx_inv_card_month', 'invoices(card_id, reference_month)'],
+          // items de fatura: `ii.transaction_id = ?` (subconsulta por linha em orçamento)
+          ['idx_inv_item_tx', 'invoice_items(transaction_id)'],
+          // items de fatura: `ii.invoice_id IN (...)` (lista de fatura do mês)
+          ['idx_inv_item_invoice', 'invoice_items(invoice_id)'],
+          // parcelas: `i.plan_id IN (...) AND i.status = ?` (orçamento/programação)
+          ['idx_inst_plan_status', 'installments(plan_id, status)'],
+        ];
+        for (const [name, target] of idx) {
+          await driver.execAsync(`CREATE INDEX IF NOT EXISTS ${name} ON ${target};`);
+        }
+        // valor unitário em cada item da NFC-e (recuperado do QR/portal)
+        await driver.execAsync(
+          'ALTER TABLE nfce_items ADD COLUMN unit_price_cents INTEGER'
+        );
+        // tabela para "não entrar nunca mais" (mesma loja/EAN/descrição)
+        await driver.execAsync(`
+CREATE TABLE IF NOT EXISTS nfce_item_ignores (
+  id TEXT PRIMARY KEY NOT NULL,
+  cnpj TEXT,
+  ean TEXT,
+  store_product_code TEXT,
+  description_norm TEXT NOT NULL,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_nfce_ignores_cnpj_code ON nfce_item_ignores(cnpj, store_product_code);
+CREATE INDEX IF NOT EXISTS idx_nfce_ignores_cnpj_ean ON nfce_item_ignores(cnpj, ean);
+CREATE INDEX IF NOT EXISTS idx_nfce_ignores_cnpj_desc ON nfce_item_ignores(cnpj, description_norm);
+        `);
+      },
+    },
 ];
 
 /** Aplica migrações pendentes de forma atômica. Idempotente. */
