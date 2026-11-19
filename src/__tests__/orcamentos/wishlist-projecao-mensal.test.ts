@@ -263,6 +263,46 @@ describe('v90/v95 — WishlistService.getProjection (mensal, cascata sem carryov
     expect(m2.classes.reduce((a, c) => a + c.faltaInicioCents, 0)).toBe(100_000);
   });
 
+  test('Ex3 — print do usuário: cabeçalho mostra só o que CABE no mês (não o total planejado)', async () => {
+    // Cenário do print: P 10.300 + N 700 = 11.000 planejados.
+    // Disponibilidades diferentes por mês: nov 8.900 · dez 2.000 · jan 5.000.
+    // Nov abate P inteiro até 8.900; dez abate o resto de P (1.400) e 600 de
+    // N; jan abate os 100 finais de N → plano zera. O total 11.000 NUNCA
+    // aparece como valor de um único mês.
+    await wish.addItem({ classificacao: 'PRIORIDADE', description: 'P', targetCents: 1_030_000 });
+    await wish.addItem({ classificacao: 'NECESSARIO', description: 'N', targetCents: 70_000 });
+    const startMonth = monthOf(todaySP());
+    const dezMonth = monthAdd(startMonth, 1);
+    const janMonth = monthAdd(startMonth, 2);
+    const fetcher: WishlistProjectionFetcher = async (m) => ({
+      saldoPrevistoFimCents: m === startMonth ? 890_000 : m === dezMonth ? 200_000 : 500_000,
+      budgetSummary: null,
+      savingsOverview: null,
+    });
+    const proj = await wish.getProjection(janMonth, { fetcher });
+
+    // nov: só o que cabe (8.900), embora o plano total seja 11.000.
+    const nov = projectionMonthPlan(proj, startMonth);
+    expect(nov.planoCents).toBe(890_000);
+    expect(findCls(proj.months.find((x) => x.month === startMonth)!, 'PRIORIDADE').abatidoCents).toBe(890_000);
+    expect(findCls(proj.months.find((x) => x.month === startMonth)!, 'NECESSARIO').abatidoCents).toBe(0);
+
+    // dez: o resto que entrou (2.100) é abatido até a disponibilidade de dez.
+    const dez = projectionMonthPlan(proj, dezMonth);
+    expect(dez.planoCents).toBe(200_000);
+    expect(dez.faltaInicioCents).toBe(210_000);
+    const dezResult = proj.months.find((x) => x.month === dezMonth)!;
+    expect(findCls(dezResult, 'PRIORIDADE').abatidoCents).toBe(140_000);
+    expect(findCls(dezResult, 'NECESSARIO').abatidoCents).toBe(60_000);
+
+    // jan: só os 100 finais de N — o plano zerou.
+    const jan = projectionMonthPlan(proj, janMonth);
+    expect(jan.planoCents).toBe(10_000);
+    expect(findCls(proj.months.find((x) => x.month === janMonth)!, 'NECESSARIO').abatidoCents).toBe(10_000);
+    expect(proj.done).toBe(true);
+    expect(proj.monthsUntilDone).toBe(3);
+  });
+
   test('plano quitado no mês atual: próxima projeção vem com contribución 0 mesmo sobrando saldo', async () => {
     // v95: NÃO se reflete automaticamente. Mês 1 quita tudo; mês 2 mesmo
     // com 100k de saldo nada é abatido (a previsão não vale para outros

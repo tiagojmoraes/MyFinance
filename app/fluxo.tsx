@@ -86,9 +86,13 @@
  *     · nos meses regidos pelo "Fechamento do mês", o saldo carregado dos
  *       meses anteriores foi RETIDO para a poupança; o previsto começa zerado
  *       no dia 1, e o fim do mês segue a hierarquia de abatimentos.
+ *  · v97 (Programação de Compra — CARD):
+ *     · as etiquetas roxas de Prioridade/Necessário/Desejo saíram do cabeçalho;
+ *     · cabeçalho = valor que CABE no mês visto (`projectionMonthPlan`), nunca
+ *       o total planejado;
+ *     · subcards expandidos mostram "Falta R$ …" (o que ainda falta pagar do
+ *       grupo) e "cabe R$ …" (quanto daquele grupo cabe naquele mês).
  *  · v95 (Programação de Compra — REGRAS DO USUÁRIO):
- *     · mesmo contraído, o card mostra a somatória do planejamento em 3 chips
- *       (Prioridade · Necessário · Desejo);
  *     · valor do cabeçalho = PLANO do mês visto (o que cabe/foi abatido na
  *       `projectionMonthPlan`), zerado em meses que não estão no plano —
  *       a previsão só vale para o mês planejado; no mês seguinte só baixa
@@ -1295,42 +1299,29 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
   // saiu de DENTRO do card de Orçamento. Ordem no Fluxo: Orçamentos →
   // Programação de Compra → Poupança.
   //
-  // v95 (regras do usuário):
-  //  · CONTRAÍDO também mostra a somatória do planejamento em 3 chips
-  //    (Prioridade · Necessário · Desejo) — sempre visível;
-  //  · valor do cabeçalho = `projectionMonthPlan.month.planoCents` (o que
+  // v95 (regras do usuário) → v97:
+  //  · CONTRAÍDO NÃO mostra mais chips de Prioridade/Necessário/Desejo — o
+  //    cabeçalho tem UM valor: o que CABE neste mês (`planoCents`);
+  //  · valor do cabeçalho = `projectionMonthPlan.planoCents` (o que
   //    cabe/foi abatido NESTE mês). Meses fora do plano ficam zerados —
   //    a previsão só vale para o mês planejado (não se reflete);
-  //  · cada linha de classificação EXPANDIDA mostra "neste mês R$ X" (o
-  //    plano daquela classificação no mês visto, na ordem P → N → D);
+  //  · cada linha de classificação EXPANDIDA mostra "Falta R$ …" (falta pagar
+  //    do grupo) e "cabe R$ …" (o plano daquela classificação no mês visto,
+  //    na ordem P → N → D);
   //  · o botão dentro do card virou "Cadastrar / alterar programação ›".
   const wishTotalItens = wishClasses.reduce((a, c) => a + c.itemCount, 0);
   const wishCardSubtitle =
     wishTotalItens === 0
       ? 'Nenhum item cadastrado'
       : wishMonthPlan.planoCents > 0
-        ? `${wishTotalItens} item(ns) · plano do mês`
+        ? `${wishTotalItens} item(ns) · cabe neste mês`
         : `${wishTotalItens} item(ns) na lista`;
-  const wishCardChips =
-    wishTotalItens === 0 ? null : (
-      <>
-        {wishClasses.map((c) => (
-          <Text
-            key={c.cls}
-            className="text-[10px] font-semibold text-violet-700 bg-violet-50 px-1.5 py-0.5 rounded"
-          >
-            {c.label} {formatBRL(c.totalCents)}
-          </Text>
-        ))}
-      </>
-    );
   const wishlistCard = wishlistOn ? (
     <LancamentoRow
       key="card-lista-desejos"
       arrow={{ open: wishOpen, onPress: () => setWishOpen((v) => !v), label: wishOpen ? 'Recolher programação de compra' : 'Expandir programação de compra' }}
       title={`${ICONS.listaDesejos} Programação de Compra`}
       subtitle={wishCardSubtitle}
-      chips={wishCardChips}
       amount={formatBRL(wishMonthPlan.planoCents)}
       amountClass={wishMonthPlan.planoCents > 0 ? 'text-violet-700' : 'text-emerald-700'}
       footer={
@@ -1339,13 +1330,12 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
               (o saldo din\u00e2mico do cabe\u00e7alho j\u00e1 mostra o resultado). */}
           {wishClasses.filter((c) => c.itemCount > 0).map((c) => {
             const clsOpen = !!wishClassOpen[c.cls];
-            // v95: classe filha mostra também "neste mês R$ …" (abatido
-            // desta classificação no mês visto) quando o mês tem plano.
+            // v97: o subcard mostra o que AINDA FALTA PAGAR no grupo e quanto
+            // CABE NESTE MÊS (`abatidoCents` da cascata) — o total planejado
+            // não aparece mais no cabeçalho nem como valor único do grupo.
+            const faltaGrupoCents = c.items.reduce((a, it) => a + it.faltaCents, 0);
             const clsPlan = wishMonthPlan.classes.find((x) => x.cls === c.cls);
-            const clsMesLabel =
-              clsPlan && clsPlan.abatidoCents > 0
-                ? ` · neste mês ${formatBRL(clsPlan.abatidoCents)}`
-                : '';
+            const cabeCents = clsPlan?.abatidoCents ?? 0;
             return (
               <View key={c.cls} className="gap-1">
                 <LancamentoRow
@@ -1356,9 +1346,9 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
                   }}
                   dashed
                   title={c.label}
-                  subtitle={`Total ${formatBRL(c.totalCents)} — ${c.itemCount} item(ns)${clsMesLabel}`}
-                  amount={formatBRL(c.totalCents)}
-                  amountClass="text-slate-900"
+                  subtitle={`Falta ${formatBRL(faltaGrupoCents)} — ${c.itemCount} item(ns)`}
+                  amount={`cabe ${formatBRL(cabeCents)}`}
+                  amountClass={cabeCents > 0 ? 'text-violet-700' : 'text-slate-400'}
                   footerOpen={clsOpen}
                   footer={
                     <View className="gap-1">
