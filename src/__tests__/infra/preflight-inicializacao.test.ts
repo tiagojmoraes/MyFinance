@@ -13,7 +13,7 @@ describe('v60 PRÉ-VOO — inicialização sem erro', () => {
     // v91: query-string saiu (expo-router 58 não depende mais dela, e Hermes
     // 0.88 já aceita o regex da v9 — a trava do SDK 53 virou desnecessária).
     expect(pkg.dependencies['query-string']).toBeUndefined();
-    expect(pkg.dependencies['expo']).toMatch(/^~58\./);
+    expect(pkg.dependencies['expo']).toMatch(/^(?:~)?58\./);
     expect(pkg.dependencies['expo-router']).toMatch(/^~58\./);
     expect(pkg.dependencies['react-native']).toMatch(/^0\.88\./);
     expect(pkg.dependencies['react']).toMatch(/^19\.3\./);

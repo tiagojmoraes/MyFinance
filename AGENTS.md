@@ -47,7 +47,7 @@ Fora do git: `.gitignore` (`node_modules/`, `.expo/`, `.jest-coverage/`, `dist/`
 - Jest cobre só serviços/regras: não afirme que tela funciona no aparelho sem teste.
 
 ## 5.1 Versões travadas
-`expo ~58.0.13` · `react-native 0.88.1` · `react 19.3.1` · `typescript ~5.9.3` · `jest ^29.7.0` (Jest 30 + TS 6 deu +4.196 erros TS em `test.each`; está em `expo.install.exclude`) · `react-native-gesture-handler ~3.3.0` (3.5 quebra) · `overrides` do `package.json` (reanimated/worklets/RN) sustentam o `npm install`. `query-string` foi removida: não reinstale.
+`expo 58.0.23` (pin exato: teto do Expo Go 58.0.5 / core `58.0.x`; `expo@58.0.24+` exige core `58.1.0` que só existe em build própria) · `react-native 0.88.1` · `react 19.3.1` · `typescript ~5.9.3` · `jest ^29.7.0` (Jest 30 + TS 6 deu +4.196 erros TS em `test.each`; está em `expo.install.exclude`) · `react-native-gesture-handler ~3.3.0` (3.5 quebra) · `overrides` do `package.json` (reanimated/worklets/RN) sustentam o `npm install`. `query-string` foi removida: não reinstale.
 
 ## 6. Comandos
 - Dia a dia, 2 terminais: `npm run dev:servidor` (deve mostrar `SERVIDOR NFC-e ... 3000`) e `npm run dev:expo8082`. NUNCA `npm run dev` junto com eles.
