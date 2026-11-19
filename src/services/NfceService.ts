@@ -153,35 +153,22 @@ export class NfceService {
   }
 
   /**
-   * v35/v72 — MOTOR DO APARELHO: WebView OCULTA de 1×1 px (NfceWebEngineView,
-   * montada no layout raiz) com identidade genuína — o ÚNICO caminho de
-   * leitura da v72. Percorre os canais candidatos (QR assinado → portal
-   * público) e devolve o resultado JÁ REGISTRADO com o HTML usado; null
-   * quando o motor não conseguiu (sem navegador visível, sem fetch — o
-   * fallback da v22–v36 foi REMOVIDO a pedido do usuário: quem lê é só o
-   * motor, invisível, e a tela mostra o resultado no rodapé). Sem componente
-   * montado (ex.: testes), devolve null em milissegundos.
+   * v99 — LEITURA PURA DO MOTOR: percorre os mesmos canais (QR assinado →
+   * portal público), com o mesmo timeout, e devolve só o HTML renderizado.
+   * Não grava nada no banco, não cria transação — usado pelas rotas de
+   * PREPARE (tela NFC-e + Novo Lançamento), que persistem por outras vias.
+   * Devolve null quando o motor não conseguiu (sem componente montado em
+   * teste, firewall rejeitando agora, página não reconhecida).
    */
-  async ingestViaWebEngine(input: string): Promise<({
-    accessKey: string;
-    created: boolean;
-    transactionId: string | null;
-    needsAmount?: boolean;
-    html: string;
-  }) | null> {
+  private async readHtmlViaEngine(input: string): Promise<{ accessKey: string; html: string; url: string } | null> {
     const accessKey = extractAccessKey(input);
     if (!accessKey) return null;
     if (!nfceWebEngine.hasDriver()) {
-      nfceLog('serviço: motor do aparelho NÃO montado (WebView ausente) — pulando degrau');
+      nfceLog('serviço: motor do aparelho NÃO montado (WebView ausente) — pulando leitura');
       return null;
     }
-    const registeredId = await this.findRegisteredTransactionId(accessKey);
-    if (registeredId) {
-      nfceLog('serviço: motor do aparelho — nota já registrada com transação real');
-      return { accessKey, created: false, transactionId: registeredId, html: '' };
-    }
     const candidates = listConsultUrls(input, accessKey);
-    nfceLog(`serviço: MOTOR DO APARELHO (identidade genuína do celular) — ${candidates.length} canal(is) na fila`);
+    nfceLog(`serviço: MOTOR DO APARELHO (leitura PURE) — ${candidates.length} canal(is) na fila`);
     for (let i = 0; i < candidates.length; i++) {
       const url = candidates[i];
       nfceLog(`serviço: motor do aparelho canal ${i + 1}/${candidates.length}: ${url}`);
@@ -199,11 +186,38 @@ export class NfceService {
         continue;
       }
       nfceLog(`serviço: motor do aparelho CONSEGUIU a página via ${res.url}`);
-      const out = await this.ingestFromHtml(accessKey, res.html, res.url);
-      return { ...out, html: res.html };
+      return { accessKey, html: res.html, url: res.url };
     }
-    nfceLog('serviço: motor do aparelho não conseguiu em nenhum canal — seguindo a cadeia');
+    nfceLog('serviço: motor do aparelho não conseguiu em nenhum canal — FIM da leitura');
     return null;
+  }
+
+  /**
+   * v35/v72 — MOTOR DO APARELHO + persistência automática (NFCE legacy):
+   * a mesma leitura do motor, mas em SEGUIDA grava header + cria transação
+   * CONSOLIDATED (CAMINHO ANTIGO das NFC-e lidas pela tela /nfce). Mantido
+   * para os testes e qualquer chamada externa que ainda dependa do
+   * ARQ-008 Header First automático. A v99 prefere `readHtmlViaEngine` →
+   * `prepareFromHtml` para que o usuário FINALIZE o lançamento no formulário.
+   */
+  async ingestViaWebEngine(input: string): Promise<({
+    accessKey: string;
+    created: boolean;
+    transactionId: string | null;
+    needsAmount?: boolean;
+    html: string;
+  }) | null> {
+    const accessKey = extractAccessKey(input);
+    if (!accessKey) return null;
+    const registeredId = await this.findRegisteredTransactionId(accessKey);
+    if (registeredId) {
+      nfceLog('serviço: motor do aparelho — nota já registrada com transação real');
+      return { accessKey, created: false, transactionId: registeredId, html: '' };
+    }
+    const read = await this.readHtmlViaEngine(input);
+    if (!read) return null;
+    const out = await this.ingestFromHtml(read.accessKey, read.html, read.url);
+    return { ...out, html: read.html };
   }
 
   /**
@@ -816,7 +830,22 @@ export class NfceService {
     if (!doc) throw new Error('Documento NFC-e não encontrado');
     await this.storeAndResolveItems(accessKey, html, doc, { autoStock: false, storeHtml: true });
     const rows = await this.items.getByDocument(accessKey);
-    const items: NfcePreparedItem[] = rows.map((r) => {
+    const items = this.toPreparedItems(rows);
+    nfceLog(
+      `serviço: v41 — itens prontos para o formulário: ${items.length} · ` +
+      `${items.filter((i) => i.canApplyStock && !i.needsReview).length} elegível(is) p/ estoque · ` +
+      `${items.filter((i) => i.needsReview).length} p/ revisão`
+    );
+    return { accessKey, header, items, alreadyRegistered: false };
+  }
+
+  /**
+   * v99 — MAPA NFC-e → formulário (DRY): reaproveitado por `prepareFromHtml`
+   * (escrita) e por `prepareFromDocument` (leitura do banco sem escrever).
+   * Mesma convenção de NfcePreparedItem (v41) + guarda de unidade (v37).
+   */
+  private toPreparedItems(rows: Awaited<ReturnType<NfceItemRepo['getByDocument']>>): NfcePreparedItem[] {
+    return rows.map((r) => {
       const conversion = r.qty != null ? convertToBaseUnit(r.qty, r.unit_original) : null;
       const unitOk =
         !r.product_base_unit || !conversion?.baseUnit || r.product_base_unit === conversion.baseUnit;
@@ -848,11 +877,54 @@ export class NfceService {
         unitClash: !!r.product_id && !!conversion?.baseUnit && !!r.product_base_unit && r.product_base_unit !== conversion.baseUnit,
       };
     });
-    nfceLog(
-      `serviço: v41 — itens prontos para o formulário: ${items.length} · ` +
-      `${items.filter((i) => i.canApplyStock && !i.needsReview).length} elegível(is) p/ estoque · ` +
-      `${items.filter((i) => i.needsReview).length} p/ revisão`
-    );
+  }
+
+  /**
+   * v99 — ROTINA NFC-e sem criar lançamento: o MOTOR DO APARELHO lê a página
+   * (mesmo canal e timeout da v72) e o serviço guarda o cabeçalho e os itens
+   * (prepareFromHtml grava o doc e resolve produtos/vitrine, sem transação).
+   * A transação só nasce quando o usuário confirmar a nota no formulário de
+   * "Novo Lançamento" (`attachToTransaction` no botão Salvar) — fim do
+   * "criou transação fantasma que o usuário nunca finalizou".
+   * Devolve null quando o motor não conseguiu (mesma semântica do v72).
+   */
+  async prepareByDirectFetch(
+    input: string
+  ): Promise<{ accessKey: string; header: NfceHeader; items: NfcePreparedItem[]; alreadyRegistered: boolean } | null> {
+    const read = await this.readHtmlViaEngine(input);
+    if (!read) return null;
+    return this.prepareFromHtml(read.accessKey, read.html, read.url);
+  }
+
+  /**
+   * v99 — RECUPERA a nota do BANCO para o formulário (`/lancamento?nfce=…`
+   * vindo da tela NFC-e, depois de o usuário revisar os itens e confirmar).
+   * Não grava nada; só lê header + itens já persistidos e devolve no mesmo
+   * contrato de `prepareFromHtml`. Se a chave já tem transação anexada,
+   * devolve `alreadyRegistered: true` para a tela abortar o prefill.
+   */
+  async prepareFromDocument(
+    accessKey: string
+  ): Promise<{ accessKey: string; header: NfceHeader; items: NfcePreparedItem[]; alreadyRegistered: boolean }> {
+    const doc = await this.documents.getById(accessKey);
+    if (!doc) throw new Error('Documento NFC-e não encontrado');
+    const header: NfceHeader = {
+      accessKey,
+      storeName: doc.store_name,
+      cnpj: doc.cnpj,
+      issuedAt: doc.issued_at,
+      grossTotalCents: doc.gross_total_cents,
+      amountPaidCents: doc.amount_paid_cents,
+      discountCents: doc.discount_cents,
+    };
+    const registered = await this.findRegisteredTransactionId(accessKey);
+    if (registered) {
+      nfceLog(`serviço: v99 — prepareFromDocument(${accessKey.slice(0, 8)}…) já registrada (${registered.slice(0, 8)}…) → nada a preparar`);
+      return { accessKey, header, items: [], alreadyRegistered: true };
+    }
+    const rows = await this.items.getByDocument(accessKey);
+    const items = this.toPreparedItems(rows);
+    nfceLog(`serviço: v99 — prepareFromDocument: ${items.length} item(ns) prontos para o formulário (sem rede)`);
     return { accessKey, header, items, alreadyRegistered: false };
   }
 

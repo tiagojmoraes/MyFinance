@@ -520,11 +520,17 @@ describe('v67 MELHORIA 1 — fluxo guiado: EAN → Alias → Fuzzy → novo → 
     expect(row.quantity_base).toBe(1500); // 1,5 kg = 1500 g
   });
 
-  test('tela: botões guiados "É esse / É outro / + Produto novo / Ignorar" e pergunta do estoque', () => {
+  test('tela: assistente v98 (3 perguntas por item) + fluxo da pergunta de estoque', () => {
+    // v98 substitui os 4 botões guiados da v67 pelo assistente de 3
+    // perguntas (Catalog/Stock/Never) com respostas claras no card do item.
+    // v99 mantém o texto-base da pergunta de estoque ("Incluir no
+    // estoque?") e a memória "Sempre NUNCA" para as próximas notas.
     const src = nfceSrc();
-    expect(src).toContain('É esse (');
-    expect(src).toContain('É outro');
-    expect(src).toContain('+ Produto novo');
+    expect(src).toContain('Decidir item (3 perguntas)');
+    expect(src).toContain('Pergunta 1 de 2:');
+    expect(src).toContain('Próxima (controle de estoque)');
+    expect(src).toContain('Sim, com controle de estoque');
+    expect(src).toContain('Nunca (lembrar para sempre)');
     expect(src).toContain('Incluir no estoque?');
     expect(src).toContain('Apenas agora (fica fora)');
     expect(src).toContain('Sempre (NUNCA perguntar)');

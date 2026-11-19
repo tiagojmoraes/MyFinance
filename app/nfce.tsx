@@ -86,30 +86,16 @@ export default function NfceScreen() {
 
   useDataEffect(load);
 
-  /** Depois do HTML da nota em mãos: processa itens e navega.
-   *  v40: itens AGUARDA aqui (HTML já em mãos = parse puro, sem rede) para o
-   *  VEREDICTO sair com a trilha completa; e falha aqui nunca mais some —
-   *  vira ETAPA 8 ✗ FALHA + VEREDICTO com causa raiz.
-   *  v72: a ingestão JÁ foi feita pelo serviço (ingestByDirectFetch) — aqui é
-   *  só itens + navegação para a revisão. */
-  const finalizeIngest = async (accessKey: string, html: string) => {
-    let itemsMsg: string;
-    try {
-      const proc = await services.nfce.processItems(accessKey, html);
-      itemsMsg = `${proc.items} item(ns) · ${proc.appliedToStock} ao estoque · ${proc.needsReview} p/ revisão`;
-      bump();
-    } catch (err) {
-      nfceStep(NFCE_STEP.ITENS, 'fail', `erro no processamento: ${err instanceof Error ? err.message : String(err)}`);
-      bump();
-      setErrorMessage('A nota foi lida, mas não consegui carregar os itens. Tente novamente.');
-      setBusy(false); busyRef.current = false;
-      return;
-    }
-    nfceVerdict(true, `NOTA REGISTRADA — ${itemsMsg}`);
-    router.push(`/nfce/${accessKey}`);
+  /** v99 — Depois do HTML em mãos, só PREPARE + abrir a revisão.
+   *  A rotina NFC-e não cria mais lançamento sozinha: o usuário FINALIZA no
+   *  formulário "Novo Lançamento" (botão "Confirmar e lançar" da revisão).
+   *  Isso mata a transação CONSOLIDATED fantasma que ficava solta. */
+  const finalizeIngest = async (key: string) => {
+    bump();
+    nfceVerdict(true, 'NOTA PREPARADA — abra a revisão e confirme em Novo Lançamento');
+    router.push(`/nfce/${key}`);
     setScanning(false);
     setBusy(false); busyRef.current = false;
-    bump();
   };
 
   /** v72 — LEITURA INVISÍVEL: valida a entrada, confirma a chave e entrega ao
@@ -162,10 +148,11 @@ export default function NfceScreen() {
         setBusy(false); busyRef.current = false;
         return;
       }
-      // v72 — leitura ÚNICA e INVISÍVEL pelo motor do aparelho: sem navegador
-      // visível, sem fetch — quem lê é a WebView oculta 1×1 (NfceWebEngineView).
+      // v99 — leitura ÚNICA e INVISÍVEL pelo motor do aparelho + PREPARE
+      // (grava header e itens, SEM criar transação). O lançamento nasce
+      // quando o usuário confirmar a nota em Novo Lançamento.
       nfceStep(NFCE_STEP.CANAIS, 'ok', 'leitura pelo MOTOR DO APARELHO (WebView oculta) — canônico .br primeiro');
-      const res = await services.nfce.ingestByDirectFetch(input);
+      const res = await services.nfce.prepareByDirectFetch(input);
       if (!res) {
         nfceVerdict(false, 'o motor do aparelho NÃO conseguiu ler a nota', [
           'firewall da SEFAZ-SP recusou o acesso agora (instável ou bloqueou este IP)',
@@ -175,8 +162,8 @@ export default function NfceScreen() {
         setBusy(false); busyRef.current = false;
         return;
       }
-      nfceLog('tela: HTML em mãos — processando itens e abrindo a revisão');
-      await finalizeIngest(res.accessKey, res.html);
+      nfceLog('tela: nota preparada — abrindo a revisão para confirmar');
+      await finalizeIngest(res.accessKey);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       nfceStep(NFCE_STEP.ENTRADA, 'fail', `erro inesperado na consulta: ${msg}`);

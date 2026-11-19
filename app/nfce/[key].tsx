@@ -1,26 +1,22 @@
 /** Revisão de NFC-e — resolução de produtos (TABELA DA VERDADE v37).
- *  v18 (bug 6): mostra o ESTABELECIMENTO e o CNPJ da nota e, em cada item,
- *  os dados obrigatórios da extração: NOME DO PRODUTO, QUANTIDADE (qtde),
- *  UNIDADE DE MEDIDA (un) e CÓDIGO DO PRODUTO.
- *  v37/v59: cada item mostra COMO foi resolvido (já conhecido, sugestão, sua decisão, novo)
- *  sem termos técnicos (sem EAN). — e o usuário classifica o que faltar:
- *  "Vincular produto" (com sugestões da tabela da verdade) e "Criar produto"
- *  já com categoria/subitem. A decisão é gravada: a próxima nota daquele
- *  CNPJ resolve sozinha — só pergunta dos novos.
- *  v67 (MELHORIA 1) — FLUXO GUIADO ITEM A ITEM:
- *   1. resolução na ordem EAN → Alias (código da loja) → sugestão fuzzy;
- *   2. sugestão fuzzy pergunta com botões claros: "É esse (X%)" · "É outro" ·
- *      "+ Produto novo" · "Ignorar";
- *   3. produto novo é CLASSIFICADO NA HORA aqui na revisão (categorias de
- *      DÉBITO/despesa) — sem sair da nota;
- *   4. produto resolvido e ainda fora do estoque pergunta "Incluir no
- *      estoque?" — não: "Apenas agora" (só nesta nota) ou "Sempre"
- *      (grava pantry_policy = NUNCA — as próximas notas nem perguntam). */
+ *  v98: confirmações e assistente de 3 perguntas por item, resumo do que
+ *  falta revisar e aplicação imediata do estoque nos itens confiáveis.
+ *  v99 — TELA DE REVISÃO enxuta (pedido do usuário):
+ *   · os 3 botões manuais de processo da revisão (itens / estoque /
+ *     recaptura invisível) foram REMOVIDOS — a lista vem sozinha assim que a
+ *     nota é lida na tela NFC-e (ou re-processada quando a página guardada
+ *     resolve);
+ *   · no fim da lista, um CARD DE CONFIRMAÇÃO com o total, a contagem de
+ *     itens e o botão "Confirmar e abrir Novo Lançamento" leva a tela
+ *     `/lancamento?nfce=…` já PREENCHIDA com os dados da nota;
+ *   · quando a nota já está vinculada a um lançamento, a tela mostra
+ *     "Esta nota já está lançada no Fluxo" e esconde o botão de confirmação.
+ */
 
 import React from 'react';
 import { View, Text } from 'react-native';
 import { showToast } from '../../lib/toast';
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { Screen, Card, Button, Badge, SectionTitle, EmptyState, KeyValue, TextField, Segmented } from '../../src/components/ui';
@@ -30,6 +26,7 @@ import { useDataEffect } from '../../src/components/useDataEffect';
 import { useAppStore } from '../../src/store/appStore';
 import { formatBRL } from '../../src/lib/money';
 import { ymdToBr, spDateOfIso } from '../../src/lib/dates';
+import { nfceLog } from '../../src/lib/nfcelog';
 
 interface ItemRow {
   id: string;
@@ -91,11 +88,10 @@ export default function NfceReviewScreen() {
   const { key } = useLocalSearchParams<{ key: string }>();
   const services = useDataEffect();
   const bump = useAppStore((s) => s.bump);
-  const [doc, setDoc] = React.useState<{ store_name: string | null; cnpj: string | null; amount_paid_cents: number | null; issued_at: string | null; parse_status: string; needs_review: number; source_url: string | null } | null>(null);
+  const [doc, setDoc] = React.useState<{ store_name: string | null; cnpj: string | null; amount_paid_cents: number | null; issued_at: string | null; parse_status: string; needs_review: number; source_url: string | null; transaction_id: string | null } | null>(null);
   const [items, setItems] = React.useState<ItemRow[]>([]);
   const [products, setProducts] = React.useState<Array<{ id: string; label: string }>>([]);
   const [cats, setCats] = React.useState<CatOption[]>([]);
-  const [busy, setBusy] = React.useState(false);
   // v37 — classificação na revisão: seletor de produto e categoria/subitem
   const [linkingId, setLinkingId] = React.useState<string | null>(null);
   const [suggestions, setSuggestions] = React.useState<Array<{ id: string; label: string; pct: number }>>([]);
@@ -115,8 +111,12 @@ export default function NfceReviewScreen() {
   type WizardStep = 'NONE' | 'CATALOG' | 'STOCK' | 'CATCAT' | 'NOTEVER';
   const [wizard, setWizard] = React.useState<{ itemId: string; step: WizardStep } | null>(null);
   // contador de itens já decididos nesta sessão (UX: barra de progresso no topo)
-  const DECIDED_KEY = `nfce_decided_${key}`;
   const [decidedCount, setDecidedCount] = React.useState(0);
+
+  /** v99: re-processamento AUTOMÁTICO (uma vez por tela) quando o documento
+   *  está sem itens. Sem botões — a lista aparece sozinha. */
+  const autoProcessedRef = React.useRef(false);
+  const [autoProcessing, setAutoProcessing] = React.useState(false);
 
   const load = React.useCallback(async () => {
     const detail = await services.nfce.getDocument(key);
@@ -129,6 +129,7 @@ export default function NfceReviewScreen() {
       parse_status: detail.document.parse_status,
       needs_review: detail.document.needs_review,
       source_url: (detail.document as unknown as { source_url?: string | null }).source_url ?? null,
+      transaction_id: detail.document.transaction_id ?? null,
     });
     setItems(detail.items as unknown as ItemRow[]);
     const prods = await services.products.listProducts();
@@ -154,55 +155,25 @@ export default function NfceReviewScreen() {
 
   useDataEffect(load, [key]);
 
-  const process = async () => {
-    setBusy(true);
-    try {
-      const res = await services.nfce.processItems(key);
-      showToast(`Itens processados: ${res.items} · ${res.appliedToStock} ao estoque · ${res.needsReview} para revisão`);
-      bump();
-      await load();
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), 'err');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // v19: re-tentativa pelo NAVEGADOR INTERNO (a página da SEFAZ exige navegador;
-  // v72: a recaptura roda INVISÍVEL no motor do aparelho (nada abre na tela).
-  // tela carrega a página oficial e devolve o HTML — que alimenta processItems.
-  // v72 — recaptura INVISÍVEL: só o motor do aparelho (WebView oculta 1×1)
-  // busca a página oficial de novo — nada abre na tela; o resultado sai em
-  // toast. Sem motor ou com o firewall recusando agora, o aviso explica.
-  const recapture = async () => {
-    setBusy(true);
-    try {
-      const res = await services.nfce.ingestByDirectFetch(key);
-      if (!res || !res.html) {
-        showToast('Não consegui buscar a página agora — tente de novo em alguns minutos', 'err');
-        return;
+  /** v99 — se ainda não há itens, tenta extrair da página capturada ou
+   *  reler do motor do aparelho uma única vez por tela (sem botões). */
+  React.useEffect(() => {
+    if (!doc || items.length > 0 || autoProcessedRef.current) return;
+    autoProcessedRef.current = true;
+    setAutoProcessing(true);
+    (async () => {
+      try {
+        const res = await services.nfce.processItems(key);
+        nfceLog(`tela: auto-process — ${res.items} item(ns) · ${res.appliedToStock} ao estoque · ${res.needsReview} p/ revisão`);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : String(err), 'err');
+      } finally {
+        setAutoProcessing(false);
+        bump();
+        await load();
       }
-      const r = await services.nfce.processItems(key, res.html);
-      showToast(`Itens processados: ${r.items} · ${r.appliedToStock} ao estoque · ${r.needsReview} para revisão`);
-      bump();
-      await load();
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), 'err');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const applyAll = async () => {
-    try {
-      const n = await services.pantry.applyNfceItems(key);
-      showToast(`${n} item(ns) aplicado(s) ao estoque`);
-      bump();
-      await load();
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), 'err');
-    }
-  };
+    })();
+  }, [doc, items.length, key, services, load, bump]);
 
   const confirmFuzzy = async (item: ItemRow) => {
     try {
@@ -290,7 +261,7 @@ export default function NfceReviewScreen() {
     try {
       const html = await services.nfce.getCapturedHtml(key);
       if (!html) {
-        showToast('Nenhuma página capturada ainda — use "Buscar página oficial de novo"', 'err');
+        showToast('Nenhuma página capturada — refaça a leitura da nota na tela NFC-e', 'err');
         return;
       }
       const path = `${FileSystem.cacheDirectory}nfce-${key.slice(-8)}.html`;
@@ -368,21 +339,68 @@ export default function NfceReviewScreen() {
         </Card>
       ) : null}
 
-      <>
-        <View className="flex-row gap-2">
-          <View className="flex-1"><Button label="Processar itens" variant="outline" onPress={process} loading={busy} /></View>
-          <View className="flex-1"><Button label="Aplicar ao estoque" variant="outline" onPress={applyAll} /></View>
-        </View>
-        <Button label="Buscar página oficial de novo (invisível)" variant="outline" onPress={recapture} loading={busy} />
-      </>
-
-      {items.length === 0 ? (
-        <Button label="Compartilhar página capturada (diagnóstico)" variant="outline" onPress={shareCaptured} />
-      ) : null}
-
       <SectionTitle>Itens ({items.length})</SectionTitle>
       {items.length === 0 ? (
-        <EmptyState icon="🧾" title="Nenhum item processado" hint="Toque em Processar itens para buscar na página da SEFAZ." />
+        autoProcessing ? (
+          <Card><Text className="text-sm text-slate-500">Buscando itens na página capturada…</Text></Card>
+        ) : (
+          <View className="gap-2">
+            <EmptyState
+              icon="🧾"
+              title="Nenhum item encontrado"
+              hint="A página guardada não tem itens — confira se a nota foi lida com a chave certa ou use Compartilhar página capturada (diagnóstico) para reportar."
+            />
+            {/* v26: diagnóstico — compartilhar o HTML para o mantenedor. */}
+            <Button label="Compartilhar página capturada (diagnóstico)" variant="outline" onPress={shareCaptured} />
+          </View>
+        )
+      ) : null}
+
+      {/* v99 — CARD DE CONFIRMAÇÃO (no fluxo pedido pelo usuário): a tela da
+        revisão NÃO cria lançamento; aqui o usuário CONFIRMA e abre o
+        formulário "Novo Lançamento" com a nota já preenchida. Itens sem
+        revisão podem ser finalizados (a NIC-e também anexa o estoque dos
+        itens marcados ao salvar). */}
+      {doc ? (
+        <Card className="gap-2">
+          <Text className="font-semibold text-slate-900">Conferir e lançar</Text>
+          <Text className="text-xs text-slate-500">
+            {doc.store_name ?? 'Loja não identificada'} ·{' '}
+            {doc.amount_paid_cents != null ? formatBRL(doc.amount_paid_cents) : 'valor não lido'} ·{' '}
+            {items.length} item(ns)
+          </Text>
+          {doc.transaction_id ? (
+            <View className="gap-1.5">
+              <Text className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-2">
+                Esta nota já está vinculada a um lançamento — Confira no Fluxo.
+              </Text>
+              <Button
+                label="Abrir o lançamento no Fluxo"
+                variant="outline"
+                onPress={() => router.push('/fluxo')}
+              />
+            </View>
+          ) : (
+            <>
+              <Text className="text-[11px] text-slate-500">
+                Ao continuar, a nota abre no formulário Novo Lançamento com valor total, data, descrição e os itens da nota. Você define categoria, pagamento e o que entra no estoque, depois SALVA.
+              </Text>
+              <Button
+                label="Confirmar e abrir Novo Lançamento"
+                onPress={() => {
+                  nfceLog(`tela: CONFIRMAÇÃO — indo para Novo Lançamento com a nota ${key.slice(0, 8)}…`);
+                  router.push(`/lancamento?nfce=${key}`);
+                }}
+                disabled={items.length === 0}
+              />
+              {doc.needs_review || items.some((it) => it.match_type === 'FUZZY' || it.match_type === 'NEW' || !it.product_id) ? (
+                <Text className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-2">
+                  Há itens pendentes de revisão — finalize as decisões em CADA item acima antes de confirmar, ou continue e conclua tudo no formulário de Novo Lançamento depois.
+                </Text>
+              ) : null}
+            </>
+          )}
+        </Card>
       ) : null}
 
       {items.map((item) => {

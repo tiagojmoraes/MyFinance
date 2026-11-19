@@ -43,9 +43,9 @@ import { NfceScannerModal } from '../src/components/NfceScannerModal';
 import { MoneyInput } from '../src/components/MoneyInput';
 import { useDataEffect } from '../src/components/useDataEffect';
 import { useAppStore } from '../src/store/appStore';
-import { extractAccessKey as extractAccessKeyNfce } from '../src/parsers/nfce';
+import { extractAccessKey as extractAccessKeyNfce, type NfceHeader } from '../src/parsers/nfce';
 import type { NfcePreparedItem } from '../src/services/NfceService';
-import { nfceLog } from '../src/lib/nfcelog';
+import { nfceLog, nfceHtmlSummary } from '../src/lib/nfcelog';
 import { kindTheme, theme, type TxKind } from '../src/theme';
 import { ICONS } from '../src/theme/icons';
 import { todaySP, spDateOfIso, monthOf, monthAdd, monthLabel, lastDayOfMonth } from '../src/lib/dates';
@@ -211,7 +211,7 @@ function suggestInvoiceMonth(closingDay: number, dateYmd: string): string {
 }
 
 export default function LancamentoScreen() {
-  const params = useLocalSearchParams<{ card?: string; dup?: string; edit?: string; msg?: string }>();
+  const params = useLocalSearchParams<{ card?: string; dup?: string; edit?: string; msg?: string; nfce?: string }>();
   const services = useDataEffect();
   const bump = useAppStore((s) => s.bump);
 
@@ -279,6 +279,44 @@ export default function LancamentoScreen() {
     totalCents: number | null;
     items: Array<NfcePreparedItem & { include: boolean }>;
   } | null>(null);
+
+  /**
+   * v99 — Preenche o "Novo Lançamento" com a nota já LIDA (QR da rotina NFC-e
+   * ou reabertura via `?nfce=<chave>`). Devolve true quando o formulário foi
+   * preenchido; false quando a nota já está registrada (a tela decide o
+   * caminho — toast + abertura da revisão ou só o toast).
+   */
+  const applyPreparedNote = React.useCallback(
+    (prepared: { accessKey: string; header: NfceHeader; items: NfcePreparedItem[]; alreadyRegistered: boolean }) => {
+      if (prepared.alreadyRegistered) {
+        nfceLog('tela: fim — nota já registrada → abrindo a revisão');
+        showToast('Esta nota já está lançada — Confira no Fluxo', 'err');
+        return false;
+      }
+      const total = prepared.header.amountPaidCents ?? prepared.header.grossTotalCents ?? null;
+      // v98: default "incluir no estoque" = produto confiável + unidade compatível;
+      // itens NEW/FUZZY/sem produto NO COMEÇO ficam fora — o usuário liga na revisão.
+      setNfceNote({
+        accessKey: prepared.accessKey,
+        storeName: prepared.header.storeName,
+        totalCents: total,
+        items: prepared.items.map((it) => ({ ...it, include: it.canApplyStock && !it.needsReview })),
+      });
+      setCents(total ?? 0);
+      const loja = prepared.header.storeName ? `NFC-e ${prepared.header.storeName}` : '';
+      setDescription((cur) => (cur.trim() === '' || cur.startsWith('NFC-e') ? loja || cur : cur));
+      if (prepared.header.issuedAt) setDate(spDateOfIso(prepared.header.issuedAt));
+      setKind('EXPENSE');
+      setModality('AVISTA');
+      const elegiveis = prepared.items.filter((i) => i.canApplyStock && !i.needsReview).length;
+      nfceLog(
+        `tela: NOTA NO FORMULÁRIO — total ${total != null ? formatBRL(total) : 'não lido'} · ` +
+        `${prepared.items.length} item(ns) · ${elegiveis} no estoque por padrão · escolha categoria, pagamento e o estoque, depois SALVE`
+      );
+      return true;
+    },
+    []
+  );
 
   useDataEffect(async (svc) => {
     const [cats, accs, cds] = await Promise.all([
@@ -548,16 +586,39 @@ export default function LancamentoScreen() {
           }
         }
       }
+      return;
+    }
+
+    // v99 — NOTA CONFIRMADA NA ROTINA NFC-e: a tela /nfce/[key] já guardou o
+    // cabeçalho e os itens da nota; aqui só RECUPERAMOS do banco (sem rede e
+    // sem criar transação) e PREENCHEMOS este formulário. Ao SALVAR, o
+    // attachToTransaction cria a transação e Anexa o estoque dos itens
+    // marcados — fim do "lançamento não é finalizado".
+    if (params.nfce) {
+      const key = String(params.nfce);
+      try {
+        const prepared = await svc.nfce.prepareFromDocument(key);
+        if (!applyPreparedNote(prepared)) {
+          // Já registrada — apenas o toast (não muda de tela, o usuário fica
+          // no formulário e decide; normalmente quer salvar outra coisa).
+        } else {
+          setScannerOpen(false);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        nfceLog(`tela: v99 — falha ao preparar nota ${key.slice(0, 8)}… a partir do banco: ${msg}`);
+        showToast(`Não consegui carregar a nota: ${msg}`, 'err');
+      }
     }
   });
 
-  /** Ingestão NFC-e direto do lançamento (ARQ-008 Header First).
-   *  v72 (LEITURA INVISÍVEL — pedido do usuário): a leitura vai SOMENTE pelo
-   *  MOTOR DO APARELHO (WebView oculta 1×1 no layout raiz) — nada abre na
-   *  tela, sem navegador visível e sem fetch; a cadeia de fallback foi
-   *  removida. Falha = toast claro para tentar de novo mais tarde.
-   *  v41: o HTML capturado NÃO cria lançamento — vai para prepareFromHtml()
-   *  e preenche ESTE formulário (total da nota + itens com estoque por item). */
+  /** Ingestão NFC-e direto do lançamento (QR Code do "Novo Lançamento").
+   *  v72 (LEITURA INVISÍVEL): o aparelho lê pelo MOTOR (WebView oculta 1×1).
+   *  v99 — SEM TRANSACTION AUTOMÁTICA: `prepareByDirectFetch` grava só o
+   *  cabeçalho + itens; a transação nasce no botão SALVAR deste formulário.
+   *  Antes (v41), isso já era o comportamento do `finalizeNfceHtml`; a v99
+   *  remove o caminho `ingestByDirectFetch` daqui para não criar a
+   *  transação CONSOLEDAD fantasma que nunca aparecia no fluxo do usuário. */
   const ingestNfce = async (input: string) => {
     if (scanning) return;
     setScanning(true);
@@ -582,61 +643,23 @@ export default function LancamentoScreen() {
         router.push(`/nfce/${accessKey}`);
         return;
       }
-      // v72 — leitura ÚNICA e INVISÍVEL pelo motor do aparelho: sem navegador
-      // visível, sem fetch — quem lê é a WebView oculta 1×1 (NfceWebEngineView).
-      nfceLog('entrada: leitura pelo MOTOR DO APARELHO (WebView oculta, invisível)');
-      const res = await services.nfce.ingestByDirectFetch(input);
-      if (!res) {
+      // v99 — leitura ÚNICA e INVISÍVEL pelo motor do aparelho + só PREPARE
+      // (cabeçalho + itens, SEM criar lançamento — `attachToTransaction` faz
+      // isso no botão Salvar).
+      nfceLog(`entrada: leitura pelo MOTOR DO APARELHO (WebView oculta, invisível) — preparando ${nfceHtmlSummary('')}`);
+      const prepared = await services.nfce.prepareByDirectFetch(input);
+      if (!prepared) {
         nfceLog('tela: motor não conseguiu a página (novo lançamento) — FIM, sem fallback');
         setScannerError('Não consegui ler a nota agora. Tente novamente em alguns minutos.');
         return;
       }
-      await finalizeNfceHtml(accessKey, res.html);
+      bump();
+      applyPreparedNote(prepared);
+      setScannerOpen(false);
     } catch (err) {
       setScannerError(`Não consegui consultar a nota: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setScanning(false);
-    }
-  };
-
-  /** v21 (bug 6): HTML renderizado do navegador interno → header + itens.
-   *  v41 (pedido do usuário): a nota NÃO cria lançamento sozinha — ela PREENCHE
-   *  este formulário. O valor vai para o campo Valor (TOTAL da nota), descrição
-   *  e data vêm do cabeçalho, e o card "Itens da nota fiscal" mostra CADA item
-   *  com o botão ESTOQUE (sim/não). Categoria, pagamento e todas as demais
-   *  opções seguem normais; o lançamento nasce no botão Salvar. */
-  const finalizeNfceHtml = async (accessKey: string, html: string) => {
-    try {
-      const res = await services.nfce.prepareFromHtml(accessKey, html, null);
-      bump();
-      if (res.alreadyRegistered) {
-        nfceLog('tela: fim (novo lançamento) — nota já registrada → abrindo a revisão');
-        setScannerOpen(false);
-        router.push(`/nfce/${accessKey}`);
-        return;
-      }
-      // Cabeçalho da nota preenche o formulário (tudo continua editável)
-      const total = res.header.amountPaidCents ?? res.header.grossTotalCents ?? null;
-      setNfceNote({
-        accessKey,
-        storeName: res.header.storeName,
-        totalCents: total,
-        items: res.items.map((it) => ({ ...it, include: it.canApplyStock && !it.needsReview })),
-      });
-      setCents(total ?? 0);
-      const loja = res.header.storeName ? `NFC-e ${res.header.storeName}` : '';
-      setDescription((cur) => (cur.trim() === '' || cur.startsWith('NFC-e') ? loja || cur : cur));
-      if (res.header.issuedAt) setDate(spDateOfIso(res.header.issuedAt));
-      setKind('EXPENSE');
-      setModality('AVISTA');
-      const elegiveis = res.items.filter((i) => i.canApplyStock && !i.needsReview).length;
-      nfceLog(
-        `tela: fim (novo lançamento) — NOTA NO FORMULÁRIO: total ${total != null ? formatBRL(total) : 'não lido'} · ` +
-        `${res.items.length} item(ns) · ${elegiveis} no estoque por padrão · escolha categoria, pagamento e o estoque, depois SALVE`
-      );
-      setScannerOpen(false);
-    } catch (err) {
-      setScannerError(`Não consegui carregar os dados da nota: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 

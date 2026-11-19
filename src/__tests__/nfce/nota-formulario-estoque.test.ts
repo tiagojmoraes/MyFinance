@@ -304,3 +304,111 @@ describe('Scanner NFC-e — contrato visual', () => {
     expect(modalSource).toContain('text-rose-300 text-sm text-center');
   });
 });
+
+// ───────────────────────── 4. v99 — FINALIZAR PELA ROTINA NFC-e (sem duplicar) ─────────────────────────
+
+describe('v99 — finalizar o lançamento pela rotina NFC-e (sem duplicar transação)', () => {
+  /** v99: o motor do aparelho GATEIA a página (`looksLikeNfcePage` exige
+   *  marcadores NFC-?e + Nome Empresarial/Valor Total). A fixture `NOTA`
+   *  é só para o parser — para a cadeia via `prepareByDirectFetch`, usamos
+   *  o mesmo HTML com a marca "NFC-e" no topo (o portal sempre traz). */
+  const NOTA_VIA_MOTOR = NOTA.replace('<html><body>', '<html><head><title>NFC-e</title></head><body>');
+
+  /** Driver falso no MESMO MOLDE do `identidade-webview.test.ts`. */
+  function fakeDriver(html: string) {
+    return {
+      read: jest.fn(async (_url: string, _timeoutMs: number) => ({ html, url: 'https://nfce.fazenda.sp.gov.br/qr' })),
+    };
+  }
+
+  test('prepareByDirectFetch NÃO cria transação: motor do aparelho lendo a nota', async () => {
+    const { services, db } = ctx!;
+    const { nfceWebEngine, WEBENGINE_TIMEOUT_MS } = require('../../services/NfceWebEngine');
+    const driver = fakeDriver(NOTA_VIA_MOTOR);
+    nfceWebEngine.attach(driver);
+    try {
+      const res = await services.nfce.prepareByDirectFetch(KEY);
+      expect(res).not.toBeNull();
+      expect(res).not.toBeNull();
+      expect(res!.alreadyRegistered).toBe(false);
+      expect(res!.items.length).toBe(3);
+      // ZERO transações — o lançamento nasce quando o usuário confirmar
+      // em /lancamento?nfce=… e apertar Salvar.
+      expect(await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM transactions')).toEqual({ n: 0 });
+      // Cabeçalho já gravado: pessoa pode abrir a revisão, conferir e
+      // CONFIRMAR para o formulário (não tinha antes — a v98 fazia isso
+      // criando uma CONSOLIDATED que ninguém modificava).
+      const doc = await db.getFirstAsync<{ parse_status: string; transaction_id: string | null }>(
+        'SELECT parse_status, transaction_id FROM nfce_documents WHERE access_key = ?',
+        [KEY]
+      );
+      expect(doc?.transaction_id).toBeNull();
+      expect(doc?.parse_status).toBe('COMPLETE');
+      // Motor foi chamado UMA vez (com o canal QR oficial) e o timeout oficial.
+      expect(driver.read).toHaveBeenCalledTimes(1);
+      expect(driver.read.mock.calls[0][0]).toContain('ConsultaQRCode.aspx?p=');
+      expect(driver.read.mock.calls[0][1]).toBe(WEBENGINE_TIMEOUT_MS);
+    } finally {
+      nfceWebEngine.detach();
+    }
+  });
+
+  test('salvar em /lancamento?nfce=… (attachToTransaction) é o caminho oficial de finalizar', async () => {
+    const { services, db } = ctx!;
+    const acc = await seedAccount(db);
+    // 1) usuário leu a nota na rotina NFC-e → motor + prepare (sem transação)
+    const { nfceWebEngine } = require('../../services/NfceWebEngine');
+    nfceWebEngine.attach(fakeDriver(NOTA_VIA_MOTOR));
+    try {
+      const prepared = await services.nfce.prepareByDirectFetch(KEY);
+      expect(prepared).not.toBeNull();
+      // 2) confirmou → tela abre `/lancamento?nfce=${KEY}` → formulário vai
+      // buscar prepareFromDocument no banco e PREENCHE (sem rede, sem transação).
+      const recovered = await services.nfce.prepareFromDocument(KEY);
+      expect(recovered.alreadyRegistered).toBe(false);
+      expect(recovered.header.amountPaidCents).toBe(7399);
+      expect(recovered.items).toHaveLength(3);
+      // 3) usuário editou categoria/conta/pagamento (no-op aqui) e SALVOU.
+      // createAccountExpense → attachToTransaction são EXATAMENTE os dois passos
+      // que o botão Salvar de /lancamento executa.
+      const leite = recovered.items.find((i) => i.description?.startsWith('LEITE'))!;
+      const tx = await services.transactions.createAccountExpense({
+        description: `NFC-e ${recovered.header.storeName ?? ''}`.trim(),
+        amountCents: recovered.header.amountPaidCents!,
+        date: '2026-10-31',
+        categoryId: null,
+        accountId: acc,
+      });
+      const out = await services.nfce.attachToTransaction(KEY, tx.id, [leite.id]);
+      expect(out.applied).toBe(1);
+      // Documento agora APONTANDO para o lançamento (readonly na revisão).
+      const doc = await db.getFirstAsync<{ transaction_id: string | null }>(
+        'SELECT transaction_id FROM nfce_documents WHERE access_key = ?',
+        [KEY]
+      );
+      expect(doc?.transaction_id).toBe(tx.id);
+      // 4) ao reabrir, prepareFromDocument vê a transação anexada.
+      const again = await services.nfce.prepareFromDocument(KEY);
+      expect(again.alreadyRegistered).toBe(true);
+      expect(again.items).toHaveLength(0);
+      const counts = await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM transactions');
+      expect(counts?.n).toBe(1);
+    } finally {
+      nfceWebEngine.detach();
+    }
+  });
+
+  test('revisão sem os botões antigos e com botão de confirmação para Novo Lançamento', () => {
+    const screen = () => fs.readFileSync(path.join(projectRoot, 'app', 'nfce', '[key].tsx'), 'utf8');
+    const listScreen = () => fs.readFileSync(path.join(projectRoot, 'app', 'nfce.tsx'), 'utf8');
+    const src = screen();
+    expect(src).not.toContain('Processar itens');
+    expect(src).not.toContain('Aplicar ao estoque');
+    expect(src).not.toContain('Buscar página oficial de novo');
+    expect(src).toContain('Confirmar e abrir Novo Lançamento');
+    expect(src).toContain('router.push(`/lancamento?nfce=${key}`)');
+    // A lista da rotina NFC-e também passou a PREPARE (não ingere mais).
+    expect(listScreen()).toContain('prepareByDirectFetch');
+    expect(listScreen()).not.toContain('ingestByDirectFetch');
+  });
+});
