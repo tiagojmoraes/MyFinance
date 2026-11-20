@@ -168,28 +168,23 @@ export class NfceService {
       return null;
     }
     const candidates = listConsultUrls(input, accessKey);
-    nfceLog(`serviço: MOTOR DO APARELHO (leitura PURE) — ${candidates.length} canal(is) na fila`);
-    for (let i = 0; i < candidates.length; i++) {
-      const url = candidates[i];
-      nfceLog(`serviço: motor do aparelho canal ${i + 1}/${candidates.length}: ${url}`);
-      const res = await nfceWebEngine.read(url, WEBENGINE_TIMEOUT_MS);
-      if (!res) {
-        nfceLog(`serviço: motor do aparelho canal ${i + 1} → sem página (erro/tempo)`);
-        continue;
-      }
-      if (isFirewallRejectionPage(res.html)) {
-        nfceLog(`serviço: motor do aparelho canal ${i + 1} → REJEIÇÃO do firewall (${nfceHtmlSummary(res.html)})`);
-        continue;
-      }
-      if (!looksLikeNfcePage(res.html)) {
-        nfceLog(`serviço: motor do aparelho canal ${i + 1} → página não reconhecida (${nfceHtmlSummary(res.html)})`);
-        continue;
-      }
-      nfceLog(`serviço: motor do aparelho CONSEGUIU a página via ${res.url}`);
-      return { accessKey, html: res.html, url: res.url };
+    const url = candidates[0];
+    nfceLog(`serviço: MOTOR DO APARELHO (leitura PURE) — 1 canal: ${url}`);
+    const res = await nfceWebEngine.read(url, WEBENGINE_TIMEOUT_MS);
+    if (!res) {
+      nfceLog('serviço: motor do aparelho → sem página (erro/tempo) — FIM da leitura');
+      return null;
     }
-    nfceLog('serviço: motor do aparelho não conseguiu em nenhum canal — FIM da leitura');
-    return null;
+    if (isFirewallRejectionPage(res.html)) {
+      nfceLog(`serviço: motor do aparelho → REJEIÇÃO do firewall (${nfceHtmlSummary(res.html)}) — FIM da leitura`);
+      return null;
+    }
+    if (!looksLikeNfcePage(res.html)) {
+      nfceLog(`serviço: motor do aparelho → página não reconhecida (${nfceHtmlSummary(res.html)}) — FIM da leitura`);
+      return null;
+    }
+    nfceLog(`serviço: motor do aparelho CONSEGUIU a página via ${res.url}`);
+    return { accessKey, html: res.html, url: res.url };
   }
 
   /**

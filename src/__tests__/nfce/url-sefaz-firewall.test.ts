@@ -35,27 +35,25 @@ describe('v23 isFirewallRejectionPage', () => {
   });
 });
 
-describe('v23/v39.1 listConsultUrls com fallback', () => {
-  test('1º candidato é o canônico .br; URL escaneada de reserva; portal público no fim', () => {
+describe('v23/v39.1 listConsultUrls — apenas o link oficial do QR', () => {
+  test('fila de 1 canal: ConsultaQRCode.aspx?p=chave|3|1', () => {
     const raw = 'https://www.nfce.fazenda.sp.gov.br/qrcode?p=35261107216883000121650010000636851006368500|2|1|1|SIG';
     const key = extractAccessKey(raw)!;
     expect(key).toBe('35261107216883000121650010000636851006368500');
     const urls = listConsultUrls(raw, key);
-    // v39.1: o canal que FUNCIONA é sempre o canônico ConsultaQRCode.aspx?p=chave|3|1
-    expect(urls[0]).toContain('NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=35261107216883000121650010000636851006368500');
-    expect(urls.every((u) => !u.includes('|'))).toBe(true); // nada de | cru
-    expect(urls.length).toBeGreaterThanOrEqual(2);
-    // a URL escaneada (sanitizada) fica de reserva
-    expect(urls.slice(1)).toContain('https://www.nfce.fazenda.sp.gov.br/qrcode?p=35261107216883000121650010000636851006368500%7C2%7C1%7C1%7CSIG');
-    // portal público é o último canal
-    expect(urls[urls.length - 1]).toContain('chaveAcesso=35261107216883000121650010000636851006368500');
+    expect(urls).toEqual([
+      'https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=35261107216883000121650010000636851006368500%7C3%7C1',
+    ]);
+    expect(urls.length).toBe(1);
+    expect(urls[0]).not.toContain('|');
+    expect(urls[0]).not.toContain('chaveAcesso=');
   });
 
-  test('v39.1: QR de domínio curto (nfce.fazenda.sp.gov — nem resolve) nunca vai 1º', () => {
-    // cupom real Fonseca 31/10/2026 — QR imprimido com domínio curto
+  test('QR de domínio curto não altera a fila — ainda o canônico .br', () => {
     const raw = 'https://www.nfce.fazenda.sp.gov/qrcode?p=35261057032427001160651100000311141318831362|3|1';
     const key = extractAccessKey(raw)!;
     const urls = listConsultUrls(raw, key);
+    expect(urls).toHaveLength(1);
     expect(urls[0]).toContain('www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx');
     expect(urls[0]).not.toContain('sp.gov/qrcode');
   });

@@ -336,21 +336,9 @@ export function buildLegacyConsultUrl(accessKey: string): string {
  * CERTIFICADO no celular — só atrasava 2–5 s e confundia o diagnóstico).
  */
 export function listConsultUrls(input: string, accessKey: string): string[] {
-  const urls: string[] = [];
-  // v39.1 (experiência comprovada no chat com cupom real — Fonseca 31/10/2026):
-  // o QR impresso no cupom pode trazer domínio CURTO (nfce.fazenda.sp.gov/qrcode
-  // — que nem resolve no DNS!) ou variantes antigas do link. O canal que
-  // FUNCIONA é sempre o canônico .br (ConsultaQRCode.aspx?p=chave|3|1): ele vai
-  // PRIMEIRO; a URL crua escaneada fica de reserva; ConsultaPublica por último.
-  urls.push(buildSpQrUrl(accessKey));
-  const trimmed = input.trim();
-  if (/^https?:\/\//i.test(trimmed)) {
-    const sanitized = sanitizeSefazUrl(trimmed);
-    if (!urls.some((u) => u === sanitized)) urls.push(sanitized);
-  }
-  const pub = buildSpConsultUrl(accessKey);
-  if (!urls.some((u) => u === pub)) urls.push(pub);
-  return urls;
+  // Apenas o link oficial do QR (p=chave|3|1) — sem portal público com captcha,
+  // sem variantes que o firewall já recusou.
+  return [buildSpQrUrl(accessKey)];
 }
 
 function decodeEntities(text: string): string {

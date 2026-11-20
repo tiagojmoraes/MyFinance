@@ -38,9 +38,6 @@ const INJECT_UA_SNAPSHOT = `(function(){
   true;
 })();`;
 
-// APK FINAL: Chrome real sem ; wv - SEFAZ-SP bloqueia WebView do Expo Go
-const CHROME_UA = 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
-
 interface ActiveJob {
   url: string;
   resolve: (result: NfceWebEngineResult | null) => void;
@@ -211,9 +208,6 @@ export function NfceWebEngineView() {
           ref={webRef}
           source={{ uri: jobUrl }}
           style={{ width: 1, height: 1 }}
-          // APK FINAL: identidade Chrome Mobile real sem ; wv - SEFAZ-SP exige isso
-          userAgent={CHROME_UA}
-          applicationNameForUserAgent=""
           javaScriptEnabled
           domStorageEnabled
           thirdPartyCookiesEnabled
