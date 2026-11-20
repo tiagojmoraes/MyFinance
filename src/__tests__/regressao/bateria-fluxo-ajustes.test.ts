@@ -530,9 +530,12 @@ describe('v68 LANÇAMENTO — QR "Colar e consultar" branco; categoria some com 
     expect(manual).toContain("outlineTextClass={dark ? 'text-white' : undefined}");
   });
 
-  test('com nota lida (QR) o campo "Categoria (opcional)" do lançamento some', () => {
+  test('com nota lida (QR) o campo "Categoria (opcional)" do lançamento SEGUE visível — split por item + categoria do CNPJ', () => {
     const src = lancSrc();
-    expect(src).toMatch(/\{!isTransfer && !isConsolidated && !nfceNote \? \(\s*<CategorySelect/);
+    // v100: a categoria do lançamento aparece COM NF — a categoria do CNPJ é
+    // lembrada (memória) e o split por item desconta da subcategoria quando
+    // ela tem orçamento próprio.
+    expect(src).toMatch(/\{!isTransfer && !isConsolidated \? \(\s*<CategorySelect/);
     // e a nota segue com o card de itens (o resto da tela fica igual)
     expect(src).toContain('Itens da nota fiscal (NFC-e)');
   });

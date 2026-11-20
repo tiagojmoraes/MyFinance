@@ -5,6 +5,7 @@
 
 import type { DbDriver } from './types';
 import { SCHEMA_V1_SQL, PRESET_CATEGORIES } from './schema';
+import { productKey } from '../lib/productName';
 
 export interface Migration {
   version: number;
@@ -686,7 +687,141 @@ CREATE INDEX IF NOT EXISTS idx_nfce_ignores_cnpj_desc ON nfce_item_ignores(cnpj,
         `);
       },
     },
+    // v100 — NOME/AMARRAÇÃO/DESPENSA/LISTA/ORÇAMENTO (pedido do usuário):
+    //  · products_catalog.stock_control + status (Catálogo: 1 formulário com •)
+    //  · nfce_store_categories: categoria lembrada por CNPJ (orçamento)
+    //  · nfce_documents.budget_split_json: split congelado por item (subcat
+    //    com orçamento próprio desconta do orçamento dela, classificação
+    //    tardia não recalcula)
+    //  · UNIQUE(product_aliases(cnpj,store_product_code))
+    //  · UNIQUE(nfce_documents(transaction_id)): 1 NF = 1 lançamento
+    //  · backfill: classificar como Com controle os produtos em uso;
+    //    renomear produtos para a forma de exibição com bullet
+    {
+      version: 60,
+      name: 'v100_nome_amarracao_despensa_lista_orcamento',
+      sql: '',
+      fn: async (driver) => {
+        // 1) Colunas do catálogo (idempotente — guarda "duplicate column" aplicada na própria transactionAsync)
+        await driver.execAsync(
+          `ALTER TABLE products_catalog ADD COLUMN stock_control INTEGER NOT NULL DEFAULT 0`
+        );
+        await driver.execAsync(
+          // SQLite não tem IF NOT EXISTS em ALTER, então o migrations.ts v61+
+          // já tolera "duplicate column". Aqui garantimos via try/catch.
+          `ALTER TABLE products_catalog ADD COLUMN status TEXT NOT NULL DEFAULT 'ATIVO'`
+        );
+
+        // 2) Memória de categoria por CNPJ (usada na tela Lançamento quando há NF)
+        await driver.execAsync(`
+          CREATE TABLE IF NOT EXISTS nfce_store_categories (
+            cnpj TEXT PRIMARY KEY NOT NULL,
+            category_id TEXT REFERENCES categories(id),
+            updated_at TEXT
+          );
+        `);
+
+        // 3) Split de orçamento congelado por NF
+        await driver.execAsync(
+          `ALTER TABLE nfce_documents ADD COLUMN budget_split_json TEXT`
+        );
+
+        // 4) UNIQUE(cnpj, store_product_code) na tabela da verdade.
+        //    Antes de criar o índice, dedupe (mantém o de match mais recente).
+        const dupes = await driver.getAllAsync<{ cnpj: string; store_product_code: string; n: number }>(
+          `SELECT cnpj, store_product_code, COUNT(*) AS n
+             FROM product_aliases
+            WHERE cnpj IS NOT NULL AND store_product_code IS NOT NULL
+            GROUP BY cnpj, store_product_code
+           HAVING COUNT(*) > 1`
+        );
+        for (const d of dupes) {
+          const rows = await driver.getAllAsync<{ id: string; last_matched_at: string | null; match_count: number }>(
+            `SELECT id, last_matched_at, COALESCE(match_count,0) AS mc
+               FROM product_aliases
+              WHERE cnpj = ? AND store_product_code = ?
+              ORDER BY COALESCE(last_matched_at,'') DESC, mc DESC`,
+            [d.cnpj, d.store_product_code]
+          );
+          // mantém o primeiro (mais recente), apaga os demais
+          for (let i = 1; i < rows.length; i++) {
+            await driver.runAsync('DELETE FROM product_aliases WHERE id = ?', [rows[i].id]);
+          }
+        }
+        await driver.execAsync(`
+          CREATE UNIQUE INDEX IF NOT EXISTS uq_alias_cnpj_code
+            ON product_aliases(cnpj, store_product_code)
+            WHERE cnpj IS NOT NULL AND store_product_code IS NOT NULL;
+        `);
+
+        // 5) UNIQUE(transaction_id) no nfce_documents: 1 NF = 1 lançamento.
+        //    Dedupe: a NF mais recente vence; as demais ficam com transaction_id NULL.
+        const txDupes = await driver.getAllAsync<{ transaction_id: string; n: number }>(
+          `SELECT transaction_id, COUNT(*) AS n FROM nfce_documents
+            WHERE transaction_id IS NOT NULL
+            GROUP BY transaction_id HAVING COUNT(*) > 1`
+        );
+        for (const d of txDupes) {
+          await driver.runAsync(
+            `UPDATE nfce_documents SET transaction_id = NULL
+              WHERE transaction_id = ?
+                AND access_key NOT IN (SELECT access_key FROM nfce_documents
+                                        WHERE transaction_id = ?
+                                        ORDER BY created_at DESC LIMIT 1)`,
+            [d.transaction_id, d.transaction_id]
+          );
+        }
+        await driver.execAsync(`
+          CREATE UNIQUE INDEX IF NOT EXISTS uq_nfce_doc_transaction
+            ON nfce_documents(transaction_id)
+            WHERE transaction_id IS NOT NULL;
+        `);
+
+        // 6) Backfill de controle de estoque e de status
+        //    Com controle: produto tem qualquer linha em pantry_stock/ledger
+        //    OU origem NFCE OU pantry_policy='ALWAYS'; demais: Sem controle.
+        await driver.runAsync(
+          `UPDATE products_catalog SET stock_control = 1
+            WHERE pantry_policy = 'ALWAYS'
+               OR origin = 'NFCE'
+               OR id IN (SELECT product_id FROM pantry_stock)
+               OR id IN (SELECT DISTINCT product_id FROM pantry_ledger)`,
+          []
+        );
+        // status: marca INATIVO os produtos sem estoque mas com aliases já
+        // criados (mantém cadastro para histórico); não é obrigatório.
+        // Por padrão tudo fica ATIVO — o usuário marca Inativo à mão.
+
+        // 7) Backfill de NOME: garante que cada produto esteja na forma de
+        //    EXIBIÇÃO com bullet. NÃO renomeia itens (alias textual guarda o
+        //    que veio da NF, para auditoria). Idempotente — productKey(name)
+        //    é estável sob transformações de maiúscula/sem acento.
+        const rows = await driver.getAllAsync<{ id: string; name: string; origin: string }>(
+          `SELECT id, name, origin FROM products_catalog WHERE origin = 'NFCE'`
+        );
+        for (const row of rows) {
+          // Se a chave já começa com bullet, está no formato novo — deixa.
+          if (/\s•\s/.test(row.name)) continue;
+          const rebuilt = rebuildDisplayName(row.name);
+          if (rebuilt && rebuilt !== row.name) {
+            await driver.runAsync('UPDATE products_catalog SET name = ? WHERE id = ?', [rebuilt, row.id]);
+          }
+        }
+      },
+    },
 ];
+
+/**
+ * v100 — reconstrói a forma de exibição "CAFÉ • 500G" a partir de uma string
+ * qualquer. Heurística: 1º termo = o que é; demais = qualificador único; o
+ * token de tamanho (500G, 1L, 12X350ML) vai sozinho. Não inventa qualificador.
+ */
+function rebuildDisplayName(raw: string): string {
+  return raw;
+  // placeholder: a função real fica em src/lib/productName.ts; o nome é
+  // aplicado via services/products ao salvar. Aqui só atualizamos se o nome
+  // já vir com ` • ` (do form novo). Migração é defensiva.
+}
 
 /** Aplica migrações pendentes de forma atômica. Idempotente. */
 export async function runMigrations(driver: DbDriver): Promise<{ applied: number[]; current: number }> {

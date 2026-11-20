@@ -2,6 +2,8 @@
  * PantryService — despensa com CACHE ATÔMICO (spec v7):
  * pantry_ledger é append-only (fonte da verdade); pantry_stock é cache
  * atualizado NA MESMA TRANSAÇÃO do ledger (nunca diverge).
+ *
+ * v100 — Despensa mostra SÓ classificados + Com controle + Ativos.
  */
 
 import type { DbDriver } from '../db/types';
@@ -22,10 +24,7 @@ export class PantryService {
     this.ledger = new PantryLedgerRepo(db);
   }
 
-  /**
-   * Movimento manual (CONSUMPTION/WASTE/CORRECTION/PURCHASE_MANUAL).
-   * Atômico: valida estoque >= 0, grava ledger e atualiza cache juntos.
-   */
+  /** Movimento manual (CONSUMPTION/WASTE/CORRECTION/PURCHASE_MANUAL). */
   async registerManualMovement(input: {
     productId: string;
     deltaBase: number;
@@ -53,18 +52,19 @@ export class PantryService {
     });
   }
 
-  /** Aplica itens de NFC-e ao estoque (lista específica ou todos os elegíveis). Idempotente. */
-  async applyNfceItems(accessKey: string, itemIds?: string[]): Promise<number> {
+  /** Aplica itens de NFC-e ao estoque (lista específica ou todos os elegíveis).
+   *  v100: filtra também por products_catalog.stock_control = 1. */
+  async applyNfceItems(accessKey: string, itemIds?: string[] | null): Promise<number> {
     return this.db.transactionAsync(async () => {
-      // v37: JOIN com a unidade-base do produto — GUARDA DE DIMENSÃO: item em
-      // KG só entra em produto cuja base é G (nunca mistura g com UN/ML).
       const eligible = await this.db.getAllAsync<{
         id: string; product_id: string; qty: number | null; unit_original: string | null; base_unit: 'G' | 'ML' | 'UN' | null;
       }>(
         `SELECT ni.id, ni.product_id, ni.qty, ni.unit_original, pc.base_unit
            FROM nfce_items ni
            JOIN products_catalog pc ON pc.id = ni.product_id
-          WHERE ni.access_key = ? AND ni.status = 'PARSED' AND ni.stock_applied = 0 AND ni.product_id IS NOT NULL`,
+          WHERE ni.access_key = ? AND ni.status = 'PARSED' AND ni.stock_applied = 0
+            AND ni.product_id IS NOT NULL
+            AND COALESCE(pc.stock_control, 0) = 1`,
         [accessKey]
       );
       const toApply = itemIds ? eligible.filter((i) => itemIds.includes(i.id)) : eligible;
@@ -72,8 +72,6 @@ export class PantryService {
       for (const item of toApply) {
         const conv = convertToBaseUnit(item.qty ?? 0, item.unit_original);
         if (item.qty == null || !conv) continue;
-        // v37: dimensão do item ≠ unidade-base do produto → NÃO aplica
-        // (contabilização por unidade fica no histórico da nota, sem poluir estoque)
         if (item.base_unit && conv.baseUnit !== item.base_unit) continue;
         const delta = conv.deltaBase;
         const already = await this.ledger.existsByNfceItem(item.id);
@@ -98,7 +96,7 @@ export class PantryService {
     });
   }
 
-  /** Aplica um único item (confirmação de fuzzy/review). Idempotente. */
+  /** Aplica um único item (confirmação tardia do Catálogo). Idempotente. */
   async applySingleNfceItem(_accessKey: string, itemId: string, productId: string, deltaBase: number): Promise<void> {
     await this.db.transactionAsync(async () => {
       const already = await this.ledger.existsByNfceItem(itemId);
@@ -119,7 +117,7 @@ export class PantryService {
     });
   }
 
-  /** Reparo do cache a partir do ledger (útil após migrations/restores). */
+  /** Reparo do cache a partir do ledger. */
   async recomputeProduct(productId: string): Promise<number> {
     return this.stock.recomputeFromLedger(productId, nowIso());
   }
@@ -129,45 +127,36 @@ export class PantryService {
     await this.stock.upsert(productId, current?.quantity_base ?? 0, thresholdBase, nowIso());
   }
 
-  /** Lista da despensa com flag de estoque baixo. */
+  /** Lista da despensa (cache + produto; v100: filtra Com controle + Ativo). */
   async listPantry() {
     const rows = await this.stock.listWithProduct();
     return rows.map((row) => ({
       ...row,
-      isLow: row.low_threshold_base != null && row.quantity_base <= (row.low_threshold_base ?? 0),
+      quantity_base: row.quantity_base ?? 0,
+      isLow: row.low_threshold_base != null && (row.quantity_base ?? 0) <= (row.low_threshold_base ?? 0),
     }));
   }
 
   // ------------------------------------------------------ lista de compra ----
 
-  /**
-   * v72 — LISTA DE COMPRA (pedido do usuário): para cada produto da lista,
-   * de ONDE comprar mais barato, com base no HISTÓRICO das notas lidas —
-   * sem tabela nova: tudo nasce de nfce_items × nfce_documents.
-   *
-   * Regras (confirmadas pelo usuário):
-   *  · preço unitário = valor do item ÷ quantidade (na nota);
-   *  · POR LOJA, POR PRODUTO: vale a COMPRA MAIS RECENTE (issued_at da nota);
-   *  · GUARDA DE DIMENSÃO (KG ≠ UN): só comparam entre si entradas da MESMA
-   *    dimensão da unidade-base do produto (g↔kg e ml↔L são convertidos para
-   *    a base; UN nunca mistura com peso/volume);
-   *  · preço devolvido POR UNIDADE-BASE (centavos/g, centavos/ml, centavos/un)
-   *    — a tela formata por kg/L/unidade.
-   */
+  /** v100 — LISTA DE COMPRA: nasce de produtos controláveis, com oferta
+   *  (última + média), atual e mínimo. Visões Por CNPJ / Por Categoria. */
   async getListaCompraData(productIds: string[]): Promise<ListaCompraProduct[]> {
     if (productIds.length === 0) return [];
     const marks = productIds.map(() => '?').join(',');
-
-    // cadastro de TODOS os produtos pedidos (mesmo os sem nota — seguem na lista)
     const prods = await this.db.getAllAsync<{
       id: string; name: string; base_unit: 'G' | 'ML' | 'UN' | null; category_id: string | null;
       category_name: string | null; parent_name: string | null;
+      quantity_base: number | null; low_threshold_base: number | null;
     }>(
       `SELECT pc.id, pc.name, pc.base_unit, pc.category_id,
-              c.name AS category_name, p.name AS parent_name
+              c.name AS category_name, p.name AS parent_name,
+              ps.quantity_base AS quantity_base,
+              ps.low_threshold_base AS low_threshold_base
          FROM products_catalog pc
          LEFT JOIN categories c ON c.id = pc.category_id
          LEFT JOIN categories p ON p.id = c.parent_id
+         LEFT JOIN pantry_stock ps ON ps.product_id = pc.id
         WHERE pc.id IN (${marks})`,
       [...productIds] as never
     );
@@ -183,16 +172,19 @@ export class PantryService {
         parentCategoryName: cat?.parent_name ?? null,
         dim: null,
         offers: [],
+        currentBase: cat?.quantity_base ?? 0,
+        minBase: cat?.low_threshold_base ?? null,
+        aggregate: null,
       });
     }
 
-    // compras (uma linha por item de nota) — mais recente primeiro
     const rows = await this.db.getAllAsync<{
       product_id: string; qty: number | null; unit_original: string | null; total_cents: number | null;
       store_name: string | null; issued_at: string | null; access_key: string;
+      doc_cnpj: string | null;
     }>(
       `SELECT ni.product_id, ni.qty, ni.unit_original, ni.total_cents,
-              d.store_name, d.issued_at, d.access_key
+              d.store_name, d.issued_at, d.access_key, d.cnpj AS doc_cnpj
          FROM nfce_items ni
          JOIN nfce_documents d ON d.access_key = ni.access_key
         WHERE ni.product_id IN (${marks})
@@ -202,33 +194,42 @@ export class PantryService {
       [...productIds] as never
     );
 
-    // POR PRODUTO: primeira entrada VÁLIDA define a dimensão (base do produto
-    // ou a da compra mais recente); por loja vale a compra mais recente válida.
-    const seenStore = new Map<string, Set<string>>(); // productId -> lojas já tomadas
+    const seenStore = new Map<string, Set<string>>();
     for (const r of rows) {
       const entry = byProduct.get(r.product_id);
       if (!entry) continue;
       const conv = convertToBaseUnit(r.qty ?? 0, r.unit_original);
       if (!conv || conv.deltaBase <= 0) continue;
-      // guarda de dimensão: a referência do produto é a base declarada ou,
-      // sem base, a dimensão da compra mais recente válida
       const dim = entry.baseUnit ?? entry.dim;
-      if (dim && conv.baseUnit !== dim) continue; // KG ≠ UN — nunca mistura
+      if (dim && conv.baseUnit !== dim) continue;
       if (!entry.dim) entry.dim = conv.baseUnit;
-      const lojas = seenStore.get(r.product_id) ?? new Set<string>();
       const loja = r.store_name ?? 'Loja não identificada';
-      if (lojas.has(loja)) continue; // já vale a mais recente desta loja
-      lojas.add(loja);
+      const storeKey = `${r.doc_cnpj ?? '_'}::${loja}`;
+      const lojas = seenStore.get(r.product_id) ?? new Set<string>();
+      if (lojas.has(storeKey)) continue;
+      lojas.add(storeKey);
       seenStore.set(r.product_id, lojas);
       entry.offers.push({
         storeName: loja,
+        cnpj: r.doc_cnpj,
         date: (r.issued_at ?? '').slice(0, 10),
         accessKey: r.access_key,
         unitPriceBaseCents: Math.round((r.total_cents ?? 0) / conv.deltaBase * 1000) / 1000,
         dim: conv.baseUnit,
       });
     }
-    // produtos pedidos que nunca apareceram em nota seguem na lista, sem oferta
+    for (const entry of byProduct.values()) {
+      if (entry.offers.length === 0) continue;
+      const prices = entry.offers.map((o) => o.unitPriceBaseCents);
+      const minB = Math.min(...prices);
+      const maxB = Math.max(...prices);
+      const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
+      const last = entry.offers.slice().sort((a, b) => (a.date < b.date ? 1 : -1))[0];
+      entry.aggregate = {
+        last, averageBaseCents: avg, minBaseCents: minB, maxBaseCents: maxB,
+        storeCount: new Set(entry.offers.map((o) => o.cnpj ?? o.storeName)).size,
+      };
+    }
     return productIds.map((pid) => byProduct.get(pid)!);
   }
 
@@ -239,14 +240,20 @@ export class PantryService {
 }
 
 export interface ListaCompraOffer {
-  /** Loja da compra (store_name da nota; null vira "Loja não identificada"). */
   storeName: string;
-  /** Data da compra (YYYY-MM-DD da emissão da nota) — a MAIS RECENTE da loja. */
+  cnpj: string | null;
   date: string;
   accessKey: string;
-  /** Preço por unidade-base (ex.: centavos por grama). Multiplicado por 1000 = preço por kg/L. */
   unitPriceBaseCents: number;
   dim: 'G' | 'ML' | 'UN';
+}
+
+export interface OfferAggregate {
+  last: ListaCompraOffer;
+  averageBaseCents: number;
+  minBaseCents: number;
+  maxBaseCents: number;
+  storeCount: number;
 }
 
 export interface ListaCompraProduct {
@@ -256,8 +263,9 @@ export interface ListaCompraProduct {
   categoryId: string | null;
   categoryName: string | null;
   parentCategoryName: string | null;
-  /** Dimensão efetiva das comparações (base do produto ou da 1ª compra válida). */
   dim: 'G' | 'ML' | 'UN' | null;
-  /** Uma oferta POR LOJA — sempre a compra mais recente de cada uma. */
+  currentBase: number;
+  minBase: number | null;
+  aggregate: OfferAggregate | null;
   offers: ListaCompraOffer[];
 }

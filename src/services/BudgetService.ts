@@ -270,6 +270,44 @@ export class BudgetService {
       efetByCat.set(r.cid, (efetByCat.get(r.cid) ?? 0) + r.confirmed);
     }
 
+    // v100 — SPLIT CONGELADO DE ORÇAMENTO POR NF: quando a NF tem
+    // `budget_split_json` (gravado no attachToTransaction), os valores alocados
+    // às subcategorias próprias SOMAM no orçamento delas; o que ficou na
+    // categoria do lançamento SUBTRAI do que simple/instRows somaram lá (para
+    // não contar em dobro). Classificação tardia não muda o snapshot.
+    const splitRows = await this.db.getAllAsync<{
+      tx_id: string; cid: string | null; pending: number; confirmed: number; split_json: string | null;
+    }>(
+      `SELECT t.id AS tx_id, t.category_id AS cid,
+              CASE WHEN t.status = 'PENDING' THEN t.amount_cents ELSE 0 END AS pending,
+              CASE WHEN t.status != 'PENDING' THEN t.amount_cents ELSE 0 END AS confirmed,
+              d.budget_split_json AS split_json
+         FROM transactions t
+         JOIN nfce_documents d ON d.transaction_id = t.id
+        WHERE t.type = 'EXPENSE' AND t.status != 'VOIDED'
+          AND t.occurred_on >= ? AND t.occurred_on < ?`,
+      [spentRange.start, spentRange.end] as never
+    );
+    for (const r of splitRows) {
+      const parts = parseSplitJson(r.split_json);
+      if (!parts.length) continue;
+      // remove o que simple teceu da categoria do lançamento
+      spentByCat.set(r.cid ?? '', Math.max(0, (spentByCat.get(r.cid ?? '') ?? 0) - (r.pending + r.confirmed)));
+      prevByCat.set(r.cid ?? '', Math.max(0, (prevByCat.get(r.cid ?? '') ?? 0) - r.pending));
+      efetByCat.set(r.cid ?? '', Math.max(0, (efetByCat.get(r.cid ?? '') ?? 0) - r.confirmed));
+      // aplica o split proporcionalmente pelas status disponíveis
+      const totalCents = r.pending + r.confirmed;
+      if (totalCents <= 0) continue;
+      for (const part of parts) {
+        const share = part.cents / totalCents;
+        const p = Math.round(r.pending * share);
+        const c = Math.round(r.confirmed * share);
+        spentByCat.set(part.categoryId, (spentByCat.get(part.categoryId) ?? 0) + p + c);
+        prevByCat.set(part.categoryId, (prevByCat.get(part.categoryId) ?? 0) + p);
+        efetByCat.set(part.categoryId, (efetByCat.get(part.categoryId) ?? 0) + c);
+      }
+    }
+
     // v67 (BUG 4): mapa categoria-pai → orçamentos ativos dos SUBITENS
     // v72: mapa pai → filhos e SUBÁRVORE de cada categoria (todos os
     // descendentes, com ou sem orçamento — o pai cobre tudo o que está nele).
@@ -478,5 +516,19 @@ export class BudgetService {
       out.efetivado[ymd] = at(efetIv, ymd);
     }
     return out;
+  }
+}
+
+/** v100 — parse tolerante do split congelado guardado pela NF. */
+function parseSplitJson(json: string | null): Array<{ categoryId: string; cents: number }> {
+  if (!json) return [];
+  try {
+    const arr = JSON.parse(json);
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((x) => x && typeof x.categoryId === 'string' && Number.isFinite(x.cents))
+      .map((x) => ({ categoryId: x.categoryId, cents: Math.max(0, Math.round(x.cents)) }));
+  } catch {
+    return [];
   }
 }
