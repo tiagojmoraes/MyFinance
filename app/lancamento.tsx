@@ -277,7 +277,7 @@ export default function LancamentoScreen() {
     accessKey: string;
     storeName: string | null;
     totalCents: number | null;
-    items: Array<NfcePreparedItem & { include: boolean }>;
+    items: Array<NfcePreparedItem & { include?: boolean }>;
   } | null>(null);
 
   /**
@@ -294,14 +294,23 @@ export default function LancamentoScreen() {
         return false;
       }
       const total = prepared.header.amountPaidCents ?? prepared.header.grossTotalCents ?? null;
-      // v98: default "incluir no estoque" = produto confiável + unidade compatível;
-      // itens NEW/FUZZY/sem produto NO COMEÇO ficam fora — o usuário liga na revisão.
+      // v100 — sem toggle por item (prompt §3.2/§9.4): inclui é decidido no Catálogo
       setNfceNote({
         accessKey: prepared.accessKey,
         storeName: prepared.header.storeName,
         totalCents: total,
-        items: prepared.items.map((it) => ({ ...it, include: it.canApplyStock && !it.needsReview })),
+        items: prepared.items,
       });
+      // v100 — categoria por CNPJ (lembrada pelo Banco): SE não houver escolha,
+      // já abre com a categoria que o usuário usou na última nota deste CNPJ.
+      if (prepared.header.cnpj) {
+        services.db.getFirstAsync<{ category_id: string | null }>(
+          'SELECT category_id FROM nfce_store_categories WHERE cnpj = ?',
+          [prepared.header.cnpj]
+        ).then((row) => {
+          if (row?.category_id) setCategoryId(row.category_id);
+        });
+      }
       setCents(total ?? 0);
       const loja = prepared.header.storeName ? `NFC-e ${prepared.header.storeName}` : '';
       setDescription((cur) => (cur.trim() === '' || cur.startsWith('NFC-e') ? loja || cur : cur));
@@ -663,21 +672,22 @@ export default function LancamentoScreen() {
     }
   };
 
-  /** v41: liga/desliga a inclusão no estoque de um item da nota lida. */
-  const toggleItemEstoque = (itemId: string) => {
-    setNfceNote((cur) =>
-      cur ? { ...cur, items: cur.items.map((i) => (i.id === itemId ? { ...i, include: !i.include } : i)) } : cur
-    );
-  };
+  /** v100 — REMOVIDO o toggle "incluir no estoque" por item (prompt §3.2 + §9.4):
+   *  o controle de estoque é decidido no Catálogo (Com/Sem controle). A NF
+   *  só exibe a lista de itens como CONSULTIVEIS — a confirmação fica no
+   *  Catálogo quando há "Novos da NF" pendentes. */
 
-  /** v41: anexa a nota lida ao lançamento criado e aplica o estoque dos itens
-   *  marcados. Falha de estoque NUNCA derruba o lançamento já criado. */
+  /** v100 — anexa a nota lida ao lançamento criado. Aplica estoque dos itens
+   *  Com controle + dimensão ok, congela o split de orçamento e lembra a
+   *  categoria do CNPJ para futuras notas. */
   const attachNfceNote = async (txId: string) => {
     if (!nfceNote) return;
     try {
-      const includeIds = nfceNote.items.filter((i) => i.include).map((i) => i.id);
-      const res = await services.nfce.attachToTransaction(nfceNote.accessKey, txId, includeIds);
-      nfceLog(`tela: nota anexada ao lançamento — ${res.applied} item(ns) ao estoque (de ${includeIds.length} marcados)`);
+      const res = await services.nfce.attachToTransaction(nfceNote.accessKey, txId, {
+        storeCategoryId: categoryId,
+        includeItemIds: null,
+      });
+      nfceLog(`tela: v100 — nota anexada — ${res.applied} item(ns) ao estoque · ${res.split.length} fatia(s) de orçamento`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       nfceLog(`tela: FALHA ao anexar a nota ao lançamento: ${msg} — o lançamento segue; revise na tela NFC-e`);
@@ -1458,9 +1468,10 @@ export default function LancamentoScreen() {
           <DateField label="Data" value={date} onChange={setDate} />
           {/* v10: no CONSOLIDADO o campo "Categoria (opcional)" foi REMOVIDO de vez —
               fica apenas para despesa/receita (a transferência nunca teve).
-              v68: com NOTA lida (QR) o campo some — a categoria segue a de cada
-              item (catálogo de produto), não a do lançamento. */}
-          {!isTransfer && !isConsolidated && !nfceNote ? (
+              v100: com NF o campo aparece — a categoria do lançamento é a do
+              CNPJ (lembrada depois da 1ª nota) e o split por item cuida das
+              subcategorias. */}
+          {!isTransfer && !isConsolidated ? (
             <CategorySelect
               label={
                 // v94 — o filtro já vinha por direção (v67); o rótulo passa a
@@ -1497,8 +1508,10 @@ export default function LancamentoScreen() {
         </Card>
 
 
-        {/* ---------- v41: ITENS DA NOTA LIDA (QR) — botão ESTOQUE sim/não por item.
-            O valor lançado segue sendo o TOTAL da nota (campo Valor). ---------- */}
+        {/* v100 — ITENS DA NOTA LIDA (QR) — somente CONSULTA. Sem toggle por item
+            (prompt §3.2/§9.4): o controle de estoque é decidido no Catálogo
+            (Com/Sem controle). Itens pendentes vão para "Novos da NF (N)" no
+            Catálogo — 1 toque lá resolve. */}
         {nfceNote && kind === 'EXPENSE' && !isEdit ? (
           <Card className="gap-2 mt-3">
             <View className="flex-row justify-between items-center">
@@ -1506,7 +1519,7 @@ export default function LancamentoScreen() {
               <Text className="text-xs text-slate-500">{nfceNote.items.length} item(ns)</Text>
             </View>
             <Text className="text-[11px] text-slate-500">
-              {nfceNote.storeName ? `${nfceNote.storeName} · ` : ''}O lançamento usa o VALOR TOTAL da nota ({formatBRL(nfceNote.totalCents ?? 0)}) — confira no campo Valor acima.
+              {nfceNote.storeName ? `${nfceNote.storeName} · ` : ''}O lançamento usa o VALOR TOTAL da nota ({formatBRL(nfceNote.totalCents ?? 0)}). Itens pendentes de classificar aparecem em "Novos da NF" no Catálogo.
             </Text>
             {nfceNote.items.map((it) => (
               <View key={it.id} className="rounded-xl border border-slate-200 p-2.5 gap-1">
@@ -1531,31 +1544,20 @@ export default function LancamentoScreen() {
                     <Text className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-semibold">
                       já no estoque
                     </Text>
+                  ) : it.productId ? (
+                    <Text className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-semibold">
+                      classificado (estoque via Catálogo)
+                    </Text>
                   ) : (
-                    <Pressable
-                      onPress={() => toggleItemEstoque(it.id)}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Incluir ${it.description ?? 'item'} no estoque`}
-                      className={`rounded-lg px-3 py-1.5 ${it.include ? 'bg-emerald-600' : 'bg-slate-200'}`}
-                    >
-                      <Text className={`text-xs font-bold ${it.include ? 'text-white' : 'text-slate-600'}`}>
-                        Estoque: {it.include ? 'SIM' : 'NÃO'}
-                      </Text>
-                    </Pressable>
+                    <Text className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded font-semibold">
+                      classificar no Catálogo
+                    </Text>
                   )}
                 </View>
-                {it.include && !it.canApplyStock ? (
-                  <Text className="text-[10px] text-amber-700 bg-amber-50 rounded px-2 py-1">
-                    Sem produto vinculado (ou unidade incompatível) — ao salvar, classifique na revisão da nota para completar o estoque.
-                  </Text>
-                ) : null}
-                {!it.include && it.canApplyStock ? (
-                  <Text className="text-[10px] text-slate-400">Este item NÃO entra no estoque quando você salvar.</Text>
-                ) : null}
               </View>
             ))}
             <Text className="text-[11px] text-slate-500">
-              Soma dos itens lidos: {formatBRL(nfceNote.items.reduce((a, b) => a + (b.totalCents ?? 0), 0))} · marcados para o estoque: {nfceNote.items.filter((i) => i.include).length}/{nfceNote.items.length}. Vincular/criar produto e revisão completa ficam na tela NFC-e.
+              Soma dos itens lidos: {formatBRL(nfceNote.items.reduce((a, b) => a + (b.totalCents ?? 0), 0))}. Decisão de estoque vai pelo Catálogo (Com/Sem controle).
             </Text>
             {modality !== 'AVISTA' ? (
               <Text className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-2">

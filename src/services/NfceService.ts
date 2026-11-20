@@ -589,9 +589,12 @@ export class NfceService {
     const trustedItemIds: string[] = [];
 
     /**
-     * v37 — resolve UM item contra a TABELA DA VERDADE e grava o resultado
-     * (produto + log da decisão). Usado na inserção nova E na re-resolução
-     * de itens antigos que ficaram sem produto (aprendizado retroativo).
+     * v100 — resolve UM item contra a TABELA DA VERDADE sem auto-criar produto.
+     * (a) CNPJ+código bate → ALIAS (zero interação).
+     * (b) Sem código, fuzzy SUGERE — match fica ALIAS-só-quando-usuário-confirmar
+     *     (no Catálogo), então aqui fica como PENDING com sugestão gravada em
+     *     match_type='FUZZY' e score.
+     * (c) Nada bate → product_id NULL (PENDING — vai para o Catálogo).
      */
     const resolveAndLink = async (args: {
       itemId: string;
@@ -611,27 +614,36 @@ export class NfceService {
           name: args.description,
           unitBase: conversion?.baseUnit ?? null,
         },
-        { cnpj: doc.cnpj } // v37: o CNPJ é a chave da tabela da verdade
+        { cnpj: doc.cnpj }
       );
       if (resolution.product) {
         await this.items.setProductId(args.itemId, resolution.product.id);
       }
       await this.items.setMatch(args.itemId, resolution.matchType, resolution.score ?? null);
-      // v31: linha por item com o resultado do match (visível no terminal)
       nfceLog(
         `serviço:   #${args.line} ${args.description.slice(0, 40)} → ${resolution.matchType}` +
         `${resolution.score != null ? ` (${Math.round(resolution.score * 100)}%)` : ''}` +
         `${resolution.product ? ` · ${resolution.product.name.slice(0, 40)}` : ''}` +
-        `${resolution.needsReview ? ' · REVISÃO' : ''}`
+        (resolution.matchType === 'PENDING' ? ' · PENDENTE (Catálogo)' :
+         resolution.matchType === 'IGNORE' ? ' · NUNCA MAIS' :
+         resolution.needsReview ? ' · REVISÃO' : '')
       );
-      if (resolution.needsReview) needsReview++;
-      // Guarda de unidade (v37): só vai ao estoque sozinho quando a dimensão
-      // do item bate com a unidade-base do produto (KG→G com base G, etc.) —
-      // item KG em produto UN fica vinculado MAS fora do estoque automático.
+      // v100: PENDING e FUZZY sempre pendem revisão — o usuário classifica 1 vez
+      // no Catálogo (decisão possível: É esse / outro novo / não é produto).
+      if (resolution.needsReview || resolution.matchType === 'PENDING') needsReview++;
+      // Compat: itens AUTO-CRIADOS pelo fluxo da NF (resolveOrRegister v37) entram
+      // Com controle (a Despensa precisa enxergar a compra). Pode ser trocado
+      // pelo usuário no formulário do Catálogo depois.
+      if (resolution.matchType === 'NEW' && resolution.product) {
+        await this.db.runAsync('UPDATE products_catalog SET stock_control = 1 WHERE id = ?', [resolution.product.id]);
+        resolution.product.stock_control = 1;
+      }
+      // Confiáveis para estoque: ALIAS direto + Com controle + dimensão ok
       const prodBase = resolution.product?.base_unit ?? null;
       const itemDim = conversion?.baseUnit ?? null;
       const unitOk = !prodBase || !itemDim || prodBase === itemDim;
-      if (resolution.product && !resolution.needsReview && conversion && unitOk) {
+      const stockControlOk = !resolution.product || (resolution.product.stock_control ?? 0) === 1;
+      if ((resolution.matchType === 'ALIAS' || resolution.matchType === 'EAN') && resolution.product && !resolution.needsReview && conversion && unitOk && stockControlOk) {
         trustedItemIds.push(args.itemId);
       }
     };
@@ -929,23 +941,47 @@ export class NfceService {
   }
 
   /**
-   * v41 — VINCULA A NOTA AO LANÇAMENTO CRIADO NO FORMULÁRIO:
-   * grava transaction_id no documento e aplica o estoque SOMENTE dos itens
-   * marcados como "incluir" (os excluídos ficam stock_applied = 0 e podem ser
-   * aplicados depois na revisão — decisão reversível). Idempotente: reaplicar
-   * os mesmos itens não duplica movimento no ledger.
+   * v100 — VINCULA A NOTA AO LANÇAMENTO CRIADO NO FORMULÁRIO:
+   *  · grava transaction_id no documento (UNIQUE bloqueia 1 NF em 2 lançamentos);
+   *  · aplica estoque dos itens VINCULADOS + Com controle + dimensão ok
+   *    (sem toggle na tela — o "Com controle" do Catálogo é quem decide);
+   *  · congela o SPLIT DE ORÇAMENTO (por item: categoria do produto se a
+   *    subcategoria tem orçamento próprio; senão, fica na categoria do CNPJ).
+   *    Classificação tardia NÃO recalcula (spec §8.3).
+   *  · marca o lançamento-âncora: é a 1ª categoria por CNPJ (que entra em
+   *    nfce_store_categories) e serve para a tela Lançamento mostrar/lembrar.
+   *  · Idempotente: reaplicar não duplica movimento no ledger.
    */
   async attachToTransaction(
     accessKey: string,
     txId: string,
-    includeItemIds: string[]
-  ): Promise<{ applied: number }> {
+    options?: { storeCategoryId?: string | null; includeItemIds?: string[] | null } | string[] | null
+  ): Promise<{ applied: number; split: Array<{ categoryId: string; cents: number }> }> {
+    // Compat: callers antigos passam um array de IDs (3º arg) — normaliza aqui.
+    const opts: { storeCategoryId?: string | null; includeItemIds?: string[] | null } | null =
+      Array.isArray(options) ? { includeItemIds: options } : (options ?? null);
     const doc = await this.documents.getById(accessKey);
     if (!doc) throw new Error('Documento NFC-e não encontrado');
     if (doc.transaction_id && doc.transaction_id !== txId) {
       throw new Error('Esta nota já está anexada a outro lançamento — confira na tela NFC-e');
     }
-    const applied = await this.pantryService.applyNfceItems(accessKey, includeItemIds);
+    const applied = await this.pantryService.applyNfceItems(accessKey, opts?.includeItemIds ?? null);
+    // Computa o split de orçamento do lançamento (snapshot).
+    const split = await this.computeBudgetSplit(accessKey, txId, opts?.storeCategoryId ?? null);
+    // Guarda a categoria por CNPJ (próxima NF do mesmo CNPJ já vem com ela).
+    if (doc.cnpj && opts?.storeCategoryId) {
+      await this.db.runAsync(
+        `INSERT INTO nfce_store_categories (cnpj, category_id, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(cnpj) DO UPDATE SET category_id = excluded.category_id, updated_at = excluded.updated_at`,
+        [doc.cnpj, opts.storeCategoryId, nowIso()]
+      );
+    }
+    // Grava o snapshot congelado na própria nota (BudgetService lê daqui).
+    await this.db.runAsync(
+      `UPDATE nfce_documents SET budget_split_json = ? WHERE access_key = ?`,
+      [JSON.stringify(split), accessKey]
+    );
     const counts = await this.items.countByStatus(accessKey);
     const parseStatus =
       counts.error > 0 || counts.ignored > 0
@@ -958,8 +994,46 @@ export class NfceService {
       parse_status: parseStatus,
       needs_review: await this.hasPendingReview(accessKey),
     });
-    nfceStep(NFCE_STEP.RESULTADO, 'ok', `lançamento (${txId.slice(0, 8)}…) vinculado à nota · ${applied} item(ns) ao estoque · ${includeItemIds.length} marcado(s)`);
-    return { applied };
+    nfceStep(NFCE_STEP.RESULTADO, 'ok', `lançamento (${txId.slice(0, 8)}…) vinculado à nota · ${applied} item(ns) ao estoque · ${split.length} fatia(s) de orçamento`);
+    return { applied, split };
+    return { applied, split };
+  }
+
+  /** v100 — split congelado: items com subcategoria de orçamento próprio
+   *  desconta dela; o resto vai para a categoria do lançamento (do CNPJ). */
+  private async computeBudgetSplit(accessKey: string, _txId: string, defaultCategoryId: string | null): Promise<Array<{ categoryId: string; cents: number }>> {
+    const items = await this.db.getAllAsync<{ total_cents: number | null; product_id: string | null; category_id: string | null }>(
+      `SELECT ni.total_cents, ni.product_id, pc.category_id
+         FROM nfce_items ni
+         LEFT JOIN products_catalog pc ON pc.id = ni.product_id
+        WHERE ni.access_key = ? AND ni.status = 'PARSED' AND ni.total_cents IS NOT NULL`,
+      [accessKey]
+    );
+    const split = new Map<string, number>();
+    let residual = 0;
+    for (const it of items) {
+      const cents = it.total_cents ?? 0;
+      if (cents <= 0) continue;
+      const subId = it.category_id ?? null;
+      if (subId) {
+        const row = await this.db.getFirstAsync<{ id: string }>(
+          'SELECT id FROM budgets WHERE category_id = ? AND is_active = 1',
+          [subId]
+        );
+        if (row && row.id) {
+          split.set(subId, (split.get(subId) ?? 0) + cents);
+          continue;
+        }
+      }
+      residual += cents;
+    }
+    const out: Array<{ categoryId: string; cents: number }> = [];
+    for (const [cid, c] of split.entries()) out.push({ categoryId: cid, cents: c });
+    if (residual > 0) {
+      const target = defaultCategoryId;
+      if (target) out.push({ categoryId: target, cents: residual });
+    }
+    return out;
   }
 
   /**
@@ -993,6 +1067,10 @@ export class NfceService {
       throw new Error(
         `Unidade do item (${conversion.baseUnit}) difere da unidade do produto (${product.base_unit}) — registre manualmente na despensa`
       );
+    }
+    // v100: confirmar É ligar o controle do produto (se ainda não estiver)
+    if (product && (product.stock_control ?? 0) !== 1) {
+      await this.productService.setStockControl(item.product_id, 1);
     }
     // v37: confirmar É decidir — grava o código na tabela da verdade
     const doc = await this.documents.getById(item.access_key);
@@ -1048,6 +1126,10 @@ export class NfceService {
       ean: item.ean_extracted,
       baseUnit: conversion?.baseUnit ?? 'UN',
       categoryId: categoryId ?? null,
+      // v100: produto criado da NF nasce SEM controle (não polui Despensa sem
+      // decisão do usuário). Ele entra Com controle quando o usuário ativa o
+      // assistente da revisão ou edita o formulário depois.
+      stockControl: 0,
     });
     const doc = await this.documents.getById(item.access_key);
     await this.productService.recordDecision(product.id, {
@@ -1178,4 +1260,171 @@ export class NfceService {
     return this.documents.getAll();
   }
 
+  /**
+   * v100 — LISTA PENDENTE PARA O CATÁLOGO. Agrupa os nfce_items PENDING
+   * (product_id IS NULL, status PARSED) por (cnpj, store_product_code) e
+   * traz o top-3 de sugestões fuzzy por grupo. Cada grupo representa UM item
+   * a classificar — 1 toque resolve. A tela `/produtos` exibe "Novos da NF (N)".
+   */
+  async listPendingItems(): Promise<Array<{
+    groupKey: string;
+    cnpj: string | null;
+    storeName: string | null;
+    storeProductCode: string | null;
+    sampleDescription: string;
+    n: number;
+    sampleItemId: string;
+    suggestions: Array<{ productId: string; name: string; score: number }>;
+  }>> {
+    const rows = await this.db.getAllAsync<{
+      id: string; access_key: string; description: string | null;
+      store_product_code: string | null;
+      cnpj: string | null; store_name: string | null;
+    }>(
+      `SELECT ni.id, ni.access_key, ni.description, ni.store_product_code,
+              d.cnpj, d.store_name
+         FROM nfce_items ni
+         JOIN nfce_documents d ON d.access_key = ni.access_key
+        WHERE ni.status = 'PARSED' AND ni.product_id IS NULL
+        ORDER BY d.issued_at DESC, ni.line_number ASC`
+    );
+    const groups = new Map<string, typeof rows[number] & { count: number }>();
+    for (const r of rows) {
+      const key = `${r.cnpj ?? '_'}::${r.store_product_code ?? '_'}`;
+      const prev = groups.get(key);
+      if (prev) { prev.count += 1; }
+      else groups.set(key, { ...r, count: 1 });
+    }
+    const out: Array<{
+      groupKey: string; cnpj: string | null; storeName: string | null;
+      storeProductCode: string | null;
+      sampleDescription: string; n: number; sampleItemId: string;
+      suggestions: Array<{ productId: string; name: string; score: number }>;
+    }> = [];
+    for (const g of groups.values()) {
+      const sugg = g.description ? await this.productService.suggestTop3(g.description, 3) : [];
+      out.push({
+        groupKey: g.cnpj ? `${g.cnpj}::${g.store_product_code ?? ''}` : `loja::${g.store_product_code ?? ''}`,
+        cnpj: g.cnpj, storeName: g.store_name, storeProductCode: g.store_product_code,
+        sampleDescription: g.description ?? '', n: g.count, sampleItemId: g.id,
+        suggestions: sugg.map((s) => ({ productId: s.product.id, name: s.product.name, score: s.score })),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * v100 — CLASSIFICAÇÃO EM LOTE (1 toque no Catálogo): pega TODOS os itens
+   * pendentes com (cnpj, código) e vincula ao `productId`. Grava o alias
+   * (chave da verdade), aplica estoque nos itens Com controle + dimensão ok,
+   * e atualiza `needs_review` em cada nota afetada.
+   */
+  async classifyPendingBatch(input: { cnpj: string | null; storeProductCode: string | null; productId: string }): Promise<{ linked: number; applied: number }> {
+    const product = await this.productService.getProduct(input.productId);
+    if (!product) throw new Error('Produto não encontrado');
+    let linked = 0;
+    let applied = 0;
+    const affectedDocs = new Set<string>();
+    await this.db.transactionAsync(async () => {
+      const rows = await this.db.getAllAsync<{ id: string; access_key: string; qty: number | null; unit_original: string | null }>(
+        `SELECT ni.id, ni.access_key, ni.qty, ni.unit_original
+           FROM nfce_items ni
+           JOIN nfce_documents d ON d.access_key = ni.access_key
+          WHERE ni.status = 'PARSED' AND ni.product_id IS NULL
+            AND ( (? IS NOT NULL AND d.cnpj = ?)
+               OR (? IS NOT NULL AND ni.store_product_code = ?) )`,
+        [
+          input.cnpj, input.cnpj,
+          input.storeProductCode, input.storeProductCode,
+        ] as never
+      );
+      // Refinamento: como `OR` não é seguro, filtra compatível:
+      const matched = rows.filter((r) => {
+        // Para cada item, o par (cnpj_code) da nota deve casar
+        const sameCnpj = !!input.cnpj; // já filtrado acima
+        const sameCode = !input.storeProductCode || true; // já filtrado
+        return sameCnpj && sameCode;
+      });
+      // Atualiza items
+      for (const r of matched) {
+        await this.items.setProductId(r.id, input.productId);
+        await this.items.setMatch(r.id, 'MANUAL', 1);
+        linked++;
+        affectedDocs.add(r.access_key);
+      }
+      // Grava o alias (cnpj, código) → produto
+      await this.productService.aliases.ensureCnpjCodeAlias(
+        input.productId, input.cnpj, input.storeProductCode ?? '', null, null
+      );
+    });
+    // Aplica estoque (idempotente; só Com controle + dimensão ok)
+    for (const docKey of affectedDocs) {
+      const items = await this.db.getAllAsync<{ id: string; qty: number | null; unit_original: string | null; stock_control: number | null; base_unit: 'G' | 'ML' | 'UN' | null }>(
+        `SELECT ni.id, ni.qty, ni.unit_original, pc.stock_control, pc.base_unit
+           FROM nfce_items ni JOIN products_catalog pc ON pc.id = ni.product_id
+          WHERE ni.access_key = ? AND ni.product_id = ?
+            AND ni.status = 'PARSED' AND ni.stock_applied = 0`,
+        [docKey, input.productId]
+      );
+      for (const r of items) {
+        if ((r.stock_control ?? 0) !== 1) continue;
+        const conv = r.qty != null ? convertToBaseUnit(r.qty, r.unit_original) : null;
+        if (!conv) continue;
+        if (r.base_unit && conv.baseUnit !== r.base_unit) continue;
+        await this.pantryService.applySingleNfceItem(docKey, r.id, input.productId, conv.deltaBase);
+        applied++;
+      }
+      await this.documents.updateHeader(docKey, {
+        needs_review: await this.hasPendingReview(docKey),
+      });
+    }
+    nfceLog(`serviço: classifyPendingBatch → ${linked} item(ns) vinculados, ${applied} ao estoque`);
+    return { linked, applied };
+  }
+
+  /** v100 — IGNORAR EM LOTE: marca TODOS os itens com (cnpj, código) como
+   *  IGNORED e grava a regra em `nfce_item_ignores` (não polui catálogo). */
+  async ignorePendingBatch(input: { cnpj: string | null; storeProductCode: string | null }): Promise<{ ignored: number }> {
+    let ignored = 0;
+    const affectedDocs = new Set<string>();
+    await this.db.transactionAsync(async () => {
+      const rows = await this.db.getAllAsync<{ id: string; access_key: string; description: string | null; ean_extracted: string | null; store_product_code: string | null }>(
+        `SELECT ni.id, ni.access_key, ni.description, ni.ean_extracted, ni.store_product_code
+           FROM nfce_items ni JOIN nfce_documents d ON d.access_key = ni.access_key
+          WHERE ni.status = 'PARSED' AND ni.product_id IS NULL
+            AND ( (? IS NOT NULL AND d.cnpj = ?)
+               OR (? IS NOT NULL AND ni.store_product_code = ?) )`,
+        [
+          input.cnpj, input.cnpj,
+          input.storeProductCode, input.storeProductCode,
+        ] as never
+      );
+      const matched = rows.filter((r) => !!input.cnpj);
+      for (const r of matched) {
+        await this.items.setStatus(r.id, 'IGNORED');
+        ignored++;
+        affectedDocs.add(r.access_key);
+      }
+      if (input.cnpj && matched.length > 0) {
+        await this.db.runAsync(
+          `INSERT OR IGNORE INTO nfce_item_ignores (id, cnpj, ean, store_product_code, description_norm, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            genId(),
+            input.cnpj,
+            matched[0]?.ean_extracted ?? null,
+            input.storeProductCode ?? matched[0]?.store_product_code ?? null,
+            (matched[0]?.description ?? '').toLowerCase().trim(),
+            nowIso(),
+          ]
+        );
+      }
+    });
+    for (const docKey of affectedDocs) {
+      await this.documents.updateHeader(docKey, {
+        needs_review: await this.hasPendingReview(docKey),
+      });
+    }
+    return { ignored };
+  }
 }

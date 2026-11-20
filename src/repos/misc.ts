@@ -117,10 +117,14 @@ export class PantryStockRepo {
     last_movement_at: string | null;
   }[]> {
     return this.db.getAllAsync(
-      `SELECT ps.product_id, pc.name AS name, pc.ean AS ean, pc.base_unit AS base_unit,
-              ps.quantity_base, ps.low_threshold_base, ps.last_movement_at
+      `SELECT pc.id AS product_id, pc.name AS name, pc.ean AS ean, pc.base_unit AS base_unit,
+              COALESCE(ps.quantity_base, 0) AS quantity_base,
+              ps.low_threshold_base AS low_threshold_base,
+              ps.last_movement_at AS last_movement_at
          FROM products_catalog pc
-         JOIN pantry_stock ps ON ps.product_id = pc.id
+         LEFT JOIN pantry_stock ps ON ps.product_id = pc.id
+        WHERE COALESCE(pc.stock_control, 0) = 1
+          AND COALESCE(pc.status, 'ATIVO') = 'ATIVO'
         ORDER BY pc.name`
     );
   }
@@ -304,8 +308,9 @@ export class NfceItemRepo {
     return this.db.runAsync('UPDATE nfce_items SET product_id = ? WHERE id = ?', [productId, id]);
   }
 
-  /** v37: registra COMO o item foi ligado (log da decisão — aprendizado). */
-  setMatch(id: string, matchType: NonNullable<NfceItemRow['match_type']>, score: number | null): Promise<unknown> {
+  /** v37: registra COMO o item foi ligado (log da decisão — aprendizado).
+ *  v100: aceita 'PENDING' (item sem produto ainda — vai para o Catálogo). */
+  setMatch(id: string, matchType: 'EAN' | 'ALIAS' | 'FUZZY' | 'MANUAL' | 'NEW' | 'PENDING' | 'IGNORE', score: number | null): Promise<unknown> {
     return this.db.runAsync('UPDATE nfce_items SET match_type = ?, match_score = ? WHERE id = ?', [
       matchType, score, id,
     ]);

@@ -14,6 +14,8 @@ export function normalizeText(input: string | null | undefined): string {
     .trim();
 }
 
+import { qualifierSimilarity } from './productName';
+
 /** Distância de Levenshtein (DP clássico, duas linhas). */
 export function levenshtein(a: string, b: string): number {
   if (a === b) return 0;
@@ -148,8 +150,23 @@ export function productTokens(input: string | null | undefined): string[] {
     .filter((t) => t.length > 1);
 }
 
-/** Score de igualdade de PRODUTO em [0,1] (v37 — tokens + sequência). */
+/** Score de igualdade de PRODUTO em [0,1] (v37 — tokens + sequência;
+ *  v100 — se ambos os nomes têm bullet, compara por qualificador na MESMA
+ *  posição: 1º = o que é, 2º = tipo, 3º = tamanho).  */
 export function productSimilarity(a: string | null | undefined, b: string | null | undefined): number {
+  // v100: nomes com ` • ` comparam POR QUALIFICADOR (prompt §6.4)
+  if (a && b && a.includes('\u2022') && b.includes('\u2022')) {
+    const qa = qualifierSimilarity(a, b);
+    // pondera também os tokens (caso o user edite a forma) — usa o maior
+    const ta = productTokens(a);
+    const tb = productTokens(b);
+    if (!ta.length || !tb.length) return qa;
+    const ja = ta.join(' ');
+    const jb = tb.join(' ');
+    const tok = 0.65 * Math.max(levenshteinSimilarity(ja, jb), jaroWinkler(ja, jb))
+              + 0.35 * jaccard(ta, tb);
+    return Math.max(qa, tok);
+  }
   const ta = productTokens(a);
   const tb = productTokens(b);
   if (!ta.length || !tb.length) {
@@ -162,13 +179,17 @@ export function productSimilarity(a: string | null | undefined, b: string | null
   const ja = ta.join(' ');
   const jb = tb.join(' ');
   const seq = Math.max(levenshteinSimilarity(ja, jb), jaroWinkler(ja, jb));
-  const setA = new Set(ta);
-  const setB = new Set(tb);
+  const jac = jaccard(ta, tb);
+  return 0.65 * seq + 0.35 * jac;
+}
+
+function jaccard(a: string[], b: string[]): number {
+  const setA = new Set(a);
+  const setB = new Set(b);
   let inter = 0;
   for (const t of setA) if (setB.has(t)) inter++;
   const union = new Set([...setA, ...setB]).size;
-  const jac = union ? inter / union : 0;
-  return 0.65 * seq + 0.35 * jac;
+  return union ? inter / union : 0;
 }
 
 /** v37: >= isto UNIFICA sozinho (mesmo produto em lojas diferentes). */

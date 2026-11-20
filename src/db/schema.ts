@@ -188,8 +188,11 @@ CREATE TABLE IF NOT EXISTS products_catalog (
   category_id TEXT REFERENCES categories(id),
   base_unit TEXT CHECK (base_unit IN ('G','ML','UN')),
   origin TEXT NOT NULL DEFAULT 'USER' CHECK (origin IN ('USER','NFCE')),
-  -- v62: banco novo já nasce com pantry_policy (v57) — antes só existia via migração que nunca existiu
-  pantry_policy TEXT NOT NULL DEFAULT 'ASK' CHECK (pantry_policy IN ('ALWAYS','ASK','NEVER'))
+  pantry_policy TEXT NOT NULL DEFAULT 'ASK' CHECK (pantry_policy IN ('ALWAYS','ASK','NEVER')),
+  -- v100: Com controle / Sem controle (Despensa e Lista de Compra)
+  stock_control INTEGER NOT NULL DEFAULT 0,
+  -- v100: ATIVO / INATIVO (aposentadoria no Catálogo — não remove da Despensa por saldo)
+  status TEXT NOT NULL DEFAULT 'ATIVO' CHECK (status IN ('ATIVO','INATIVO'))
 );
 
 CREATE TABLE IF NOT EXISTS product_aliases (
@@ -198,13 +201,15 @@ CREATE TABLE IF NOT EXISTS product_aliases (
   alias_text TEXT,
   store_name TEXT,
   store_product_code TEXT,
-  -- v62: colunas v37 já no schema novo
   cnpj TEXT,
   match_count INTEGER NOT NULL DEFAULT 0,
   last_matched_at TEXT
 );
+-- v100: TABELA DA VERDADE — chave (CNPJ, código). Loja+código é só reserva.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_alias_store_code
   ON product_aliases(store_name, store_product_code) WHERE store_product_code IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_alias_cnpj_code
+  ON product_aliases(cnpj, store_product_code) WHERE cnpj IS NOT NULL AND store_product_code IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS pantry_stock (
   product_id TEXT PRIMARY KEY REFERENCES products_catalog(id),
@@ -223,10 +228,20 @@ CREATE TABLE IF NOT EXISTS nfce_documents (
   parse_status TEXT NOT NULL DEFAULT 'PENDING' CHECK (parse_status IN ('PENDING','HEADER_ONLY','PARTIAL','COMPLETE','FAILED')),
   needs_review INTEGER NOT NULL DEFAULT 0,
   transaction_id TEXT REFERENCES transactions(id),
-  -- v62: cnpj/source_url (v18) + created_at (v48) já no schema novo
   cnpj TEXT,
   source_url TEXT,
-  created_at TEXT
+  created_at TEXT,
+  -- v100: split congelado de orçamento da NF (classificação tardia não recalcula)
+  budget_split_json TEXT
+);
+-- v100: 1 NF = 1 lançamento (DB trava o duplo anexo)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_nfce_doc_transaction
+  ON nfce_documents(transaction_id) WHERE transaction_id IS NOT NULL;
+-- v100: categoria lembrada por CNPJ — o Lançamento com NF já abre com ela
+CREATE TABLE IF NOT EXISTS nfce_store_categories (
+  cnpj TEXT PRIMARY KEY NOT NULL,
+  category_id TEXT REFERENCES categories(id),
+  updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS nfce_items (
