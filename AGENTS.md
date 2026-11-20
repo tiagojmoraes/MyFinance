@@ -14,7 +14,7 @@ Qualquer alteração exige autorização expressa. Antes, entregue o plano assim
 1. Bump `X.0.0` em `package.json`, `package-lock.json` (`version` na linha 3 e em `packages[""]`) e `app.json` (`expo.version`). Não mexer em `AutoBackupService.ts` (`version: 46` é o formato do backup).
 2. `npm run typecheck && npm test` — falhou, corrija antes.
 3. `git add -A && git commit -m "vXX - <síntese: o que alterou, ajustou, arrumou>"` (XX = major; bug relevante entra em corpo curto).
-4. `git tag vN && git push origin master vN` (N = número major da versão, ex.: `v93`; nunca o texto literal `vXX`). Sem `git remote`: pare e peça a URL.
+4. `git tag vN && git push origin main vN` (N = número major da versão, ex.: `v93`; nunca o texto literal `vXX`). Sem `git remote`: pare e peça a URL.
 5. Resposta final: só a mensagem do commit + hash.
 
 Fora do git: `.gitignore` (`node_modules/`, `.expo/`, `.jest-coverage/`, `dist/`, `*.apk`, `*.aab`, `.env*`).
@@ -51,7 +51,7 @@ Fora do git: `.gitignore` (`node_modules/`, `.expo/`, `.jest-coverage/`, `dist/`
 
 ## 6. Comandos
 - Dia a dia, 2 terminais: `npm run dev:servidor` (deve mostrar `SERVIDOR NFC-e ... 3000`) e `npm run dev:expo8082`. NUNCA `npm run dev` junto com eles.
-- Projeto fora do OneDrive (ele corta o `npm install`). Antes: `npm run check`, depois `npm install` se mandar.
+- Projeto fora do OneDrive, em `C:\dev\myfinance` (OneDrive corta o `npm install`). Antes: `npm run check`, depois `npm install` se mandar.
 - Expo Go só navega telas/regras; Development Build (`npx expo run:android`, depois `npx expo start --dev-client`) é necessária para notificações do banco. Build nativa só refaz quando entra módulo/dependência nova.
 
 ## 7. Erros conhecidos

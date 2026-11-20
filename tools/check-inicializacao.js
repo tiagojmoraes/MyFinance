@@ -19,10 +19,10 @@ const temApp = fs.existsSync(path.join(aqui, 'app')) && fs.existsSync(path.join(
 const temPackage = fs.existsSync(path.join(aqui, 'package.json'));
 const pastaDobrada = aqui.endsWith('myfinance\\myfinance') || aqui.endsWith('myfinance/myfinance');
 if ((temApp && temPackage) || pastaDobrada) ok('Pasta certa (tem app/ + src/ + package.json)');
-else err(`Você está na pasta de fora: ${aqui}\n     → Entre na pasta que TEM app/ e src/ (cd myfinance\\myfinance)`);
+else err(`Você está na pasta de fora: ${aqui}\n     → Entre na pasta que TEM app/ e src/ (cd C:\\dev\\myfinance)`);
 
 // 2. OneDrive?
-if (aqui.includes('OneDrive')) warn('Projeto dentro do OneDrive — o OneDrive já quebrou o projeto 3x (arquivo cortado no meio + cópias de conflito _1/_2).\n     → Ideal: mover para C:\\myfinance. Se ficar no OneDrive, pause a sincronização antes do npm install e ao editar arquivos.');
+if (aqui.includes('OneDrive')) warn('Projeto dentro do OneDrive — o OneDrive já quebrou o projeto 3x (arquivo cortado no meio + cópias de conflito _1/_2).\n     → Ideal: mover para C:\\dev\\myfinance. Se ficar no OneDrive, pause a sincronização antes do npm install e ao editar arquivos.');
 else ok('Fora do OneDrive');
 
 // 3. query-string? (v91 — REMOVIDA: expo-router 58 não depende mais e o Hermes
