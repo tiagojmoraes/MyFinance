@@ -157,7 +157,7 @@ export default function NfceScreen() {
         nfceVerdict(false, 'o motor do aparelho NÃO conseguiu ler a nota', [
           'firewall da SEFAZ-SP recusou o acesso agora (instável ou bloqueou este IP)',
           'portal fora do ar no momento',
-        ], 'aguarde alguns minutos e escaneie de novo (o histórico abaixo repete sem digitar); ou registre a despesa em Novo Lançamento');
+        ], 'a SEFAZ recusou a leitura — tente escanear de novo (a tentativa já abre sessão limpa); recusou de novo? aguarde 1 minuto ou registre a despesa em Novo Lançamento');
         setErrorMessage('Não consegui ler a nota agora. Tente novamente em alguns minutos.');
         setBusy(false); busyRef.current = false;
         return;

@@ -181,7 +181,10 @@ describe('v40 — regressão: fila de canais (canônico .br primeiro)', () => {
     expect(urls.length).toBe(2); // chave pura: canônico + portal público
     const qr = 'https://nfce.fazenda.sp/qrcode?p=35261057032427001160651100000311141318831362|3|1';
     const urls2 = listConsultUrls(qr, FONSECA);
-    expect(urls2[0]).toContain('ConsultaQRCode.aspx');
-    expect(urls2.length).toBe(3); // canônico + QR sanitizado + portal público
+    // v100: QR assinada entra PRIMEIRO (sanitizada); canônico no meio
+    expect(urls2[0]).toContain('qrcode');
+    expect(urls2[0]).toContain('%7C');
+    expect(urls2).toContain(`https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=${FONSECA}%7C3%7C1`);
+    expect(urls2.length).toBe(3); // QR assinada + canônico .br + portal público
   });
 });

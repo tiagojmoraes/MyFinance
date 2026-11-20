@@ -212,6 +212,11 @@ export function NfceWebEngineView() {
           domStorageEnabled
           thirdPartyCookiesEnabled
           sharedCookiesEnabled
+          // v100 — sessão zero-cookie por consulta: o contador de consultas do
+          // firewall F5 é por SESSÃO (cookies TS* persistem entre montagens e a
+          // 2ª leitura cruzava o limite). Com incognito, cada trabalho nasce
+          // limpo — sessão nova lê de novo imediatamente (comprovado 20/11/2026).
+          incognito
           originWhitelist={['*']}
           setSupportMultipleWindows={false}
           injectedJavaScript={INJECT_CHUNKED_CAPTURE}

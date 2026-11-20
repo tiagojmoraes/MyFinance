@@ -434,17 +434,15 @@ describe('Bug 6 — NFC-e: URL do QR Code e extração obrigatória', () => {
     expect(isSefazUrl(qr)).toBe(true);
   });
 
-  test('candidatos de URL: v39.1 — canônico .br PRIMEIRO, QR escaneado de reserva, portal público no fim', () => {
+  test('candidatos de URL: v100 — QR assinada sanitizada PRIMEIRO, canônico .br no meio, portal público por último', () => {
     const qr = `https://www.nfce.fazenda.sp.gov.br/qrcode?p=${CHAVE}|2|1|1|AB12`;
     const urls = listConsultUrls(qr, CHAVE);
-    // v39.1 (cupom Fonseca): o canal que FUNCIONA é o canônico — vai primeiro;
-    // a URL do QR entra SANITIZADA (| → %7C) como reserva — o firewall rejeita
-    // URL com caractere ilegal cru ("The requested URL was rejected")
-    expect(urls[0]).toBe('https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=' + CHAVE + '%7C3%7C1');
-    expect(urls[1]).toBe('https://www.nfce.fazenda.sp.gov.br/qrcode?p=' + CHAVE + '%7C2%7C1%7C1%7CAB12');
+    // v100: a URL escaneada (cam OFICIAL do consumidor) entra PRIMEIRO,
+    // já sanitizada (| → %7C); o canônico .br fica de reserva; portal com
+    // chaveAcesso fecha a fila — sem legado (consultacompleta descontinuado).
+    expect(urls[0]).toBe('https://www.nfce.fazenda.sp.gov.br/qrcode?p=' + CHAVE + '%7C2%7C1%7C1%7CAB12');
+    expect(urls[1]).toBe('https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=' + CHAVE + '%7C3%7C1');
     expect(urls[2]).toBe(buildSpConsultUrl(CHAVE));
-    // v32: o legado consultacompleta.aspx SAIU da fila (descontinuado — sem
-    // resposta no PC e erro de certificado no celular)
     expect(urls.length).toBe(3);
     // chave manual: canônico primeiro, portal público depois
     const urlsManual = listConsultUrls(CHAVE, CHAVE);

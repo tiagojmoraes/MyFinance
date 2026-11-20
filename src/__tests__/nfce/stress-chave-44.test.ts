@@ -239,14 +239,14 @@ describe('NFC-e — convertToBaseUnit', () => {
 });
 
 // ─────────────────────────── 7. URLs de consulta (12 casos) ───────────────────────────
-describe('NFC-e — listConsultUrls (candidatos em ordem, v39.1: canônico 1º)', () => {
-  test('canônico .br primeiro; QR escaneado sanitizado de reserva (v32: sem legado na fila)', () => {
+describe('NFC-e — listConsultUrls (v100: QR assinada 1º, canônico .br no meio,portal por último; v32: sem legado)', () => {
+  test('QR escaneada assinada sanitizada PRIMEIRO; canônico .br no meio; portal público por último; sem legado', () => {
     const raw = `https://www.nfce.fazenda.sp.gov.br/qrcode?p=${KEY}|2|1|1|SIG`;
     const urls = listConsultUrls(raw, KEY);
-    expect(urls[0]).toBe(
-      `https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=${KEY}%7C3%7C1`
+    expect(urls[0]).toBe(`https://www.nfce.fazenda.sp.gov.br/qrcode?p=${KEY}%7C2%7C1%7C1%7CSIG`);
+    expect(urls[1]).toBe(
+      `https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=${KEY}%7C3%7C1`,
     );
-    expect(urls[1]).toBe(`https://www.nfce.fazenda.sp.gov.br/qrcode?p=${KEY}%7C2%7C1%7C1%7CSIG`);
     expect(urls[2]).toBe(buildSpConsultUrl(KEY));
     // v32: legado descontinuado SAIU da fila (sem resposta no PC, certificado
     // inválido no celular — só atrasava e confundia o diagnóstico)
@@ -256,13 +256,15 @@ describe('NFC-e — listConsultUrls (candidatos em ordem, v39.1: canônico 1º)'
   test.each(HOSTS)('canais para host %s', (h) => {
     const urls = listConsultUrls(`${h}?p=${KEY}`, KEY);
     expect(urls.length).toBeGreaterThanOrEqual(2);
-    // v39.1: canônico .br sempre primeiro, portal público sempre por último
-    expect(urls[0]).toBe(
-      `https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=${KEY}%7C3%7C1`
-    );
+    // v100: a URL escaneada (sanitizada) entra primeiro quando SEFAZ — sempre
+    // termina na ConsultaPublica; o canônico .br aparece no meio quando há URL.
     expect(urls[urls.length - 1]).toBe(buildSpConsultUrl(KEY));
+    // sempre tem o canônico .br em algum lugar da fila
+    expect(urls).toContain(
+      `https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=${KEY}%7C3%7C1`,
+    );
   });
-  test('URL da chave manual: canônico p=chave|3|1 primeiro', () => {
+  test('URL da chave manual: canônico p=chave|3|1 primeiro,portal por último', () => {
     const urls = listConsultUrls(KEY, KEY);
     expect(urls[0]).toBe(
       `https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=${KEY}%7C3%7C1`

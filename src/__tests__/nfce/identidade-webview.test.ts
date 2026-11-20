@@ -28,6 +28,7 @@ import {
   isGenuineWebViewUa,
   type NfceWebEngineDriver,
 } from '../../services/NfceWebEngine';
+import { nfcePortao } from '../../services/NfcePortao';
 
 const KEY = '35260514214169000187650010000012341234567890';
 
@@ -133,6 +134,7 @@ describe('v35 — motor do aparelho na cadeia de leitura', () => {
   beforeEach(() => {
     fetchMock = jest.fn();
     global.fetch = fetchMock as unknown as typeof fetch;
+    nfcePortao.resetForTests();
   });
 
   afterEach(() => {

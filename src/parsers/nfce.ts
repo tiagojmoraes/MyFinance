@@ -326,19 +326,21 @@ export function buildLegacyConsultUrl(accessKey: string): string {
 }
 
 /**
- * v18: CANDIDATOS de URL em ordem de tentativa.
- *  1. A URL escaneada do QR Code (contém a assinatura do QR — caminho oficial),
- *     SANITIZADA (v23 — sem caracteres ilegais que o firewall rejeita);
- *     só a chave colada? monta o link do QR completo p=chave|3|1 (v32);
- *  2. Portal público atual com a chave.
- * v32: o legado consultacompleta.aspx SAIU da fila — descontinuado pela
- * SEFAZ-SP e provado sem resposta ("Impossível conectar-se" no PC e erro de
- * CERTIFICADO no celular — só atrasava 2–5 s e confundia o diagnóstico).
+ * v100 — CANDIDATOS de URL em ordem de tentativa (fila de 3 canais):
+ *  1. A URL escaneada do QR Code (assinatura oficial — caminho do consumidor),
+ *     SANITIZADA (v23: o "|" cru derruba a conexão — RemoteDisconnected);
+ *     só a chave colada? nada aqui — monta o link do QR completo (v32);
+ *  2. QR canônico montado da chave p=chave|3|1;
+ *  3. Consulta pública por chave (sem assinatura).
+ * Dedupe preserva a ordem (QRs que já vêm no formato canônico não se repetem).
  */
 export function listConsultUrls(input: string, accessKey: string): string[] {
-  // Apenas o link oficial do QR (p=chave|3|1) — sem portal público com captcha,
-  // sem variantes que o firewall já recusou.
-  return [buildSpQrUrl(accessKey)];
+  const fila: string[] = [];
+  if (isSefazUrl(input)) fila.push(sanitizeSefazUrl(input));
+  fila.push(buildSpQrUrl(accessKey));
+  fila.push(buildSpConsultUrl(accessKey));
+  const vistas = new Set<string>();
+  return fila.filter((u) => (vistas.has(u) ? false : (vistas.add(u), true)));
 }
 
 function decodeEntities(text: string): string {

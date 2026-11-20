@@ -35,27 +35,40 @@ describe('v23 isFirewallRejectionPage', () => {
   });
 });
 
-describe('v23/v39.1 listConsultUrls — apenas o link oficial do QR', () => {
-  test('fila de 1 canal: ConsultaQRCode.aspx?p=chave|3|1', () => {
-    const raw = 'https://www.nfce.fazenda.sp.gov.br/qrcode?p=35261107216883000121650010000636851006368500|2|1|1|SIG';
+describe('v100 listConsultUrls — fila de 3 canais', () => {
+  const KEY = '35261107216883000121650010000636851006368500';
+
+  test('URL escaneada assinada primeiro (sanitizada), depois QR canônico e consulta pública', () => {
+    const raw = `https://www.nfce.fazenda.sp.gov.br/qrcode?p=${KEY}|2|1|1|SIG`;
     const key = extractAccessKey(raw)!;
-    expect(key).toBe('35261107216883000121650010000636851006368500');
+    expect(key).toBe(KEY);
     const urls = listConsultUrls(raw, key);
     expect(urls).toEqual([
-      'https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=35261107216883000121650010000636851006368500%7C3%7C1',
+      `https://www.nfce.fazenda.sp.gov.br/qrcode?p=${KEY}%7C2%7C1%7C1%7CSIG`,
+      `https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=${KEY}%7C3%7C1`,
+      `https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaPublica.aspx?chaveAcesso=${KEY}`,
     ]);
-    expect(urls.length).toBe(1);
-    expect(urls[0]).not.toContain('|');
-    expect(urls[0]).not.toContain('chaveAcesso=');
+    urls.forEach((u) => expect(u).not.toContain('|')); // v23: | cru derruba a conexão
   });
 
-  test('QR de domínio curto não altera a fila — ainda o canônico .br', () => {
-    const raw = 'https://www.nfce.fazenda.sp.gov/qrcode?p=35261057032427001160651100000311141318831362|3|1';
+  test('QR de domínio curto entra sanitizado na frente, seguido dos canônicos .br', () => {
+    const raw = `https://www.nfce.fazenda.sp.gov/qrcode?p=${KEY}|3|1`;
     const key = extractAccessKey(raw)!;
     const urls = listConsultUrls(raw, key);
-    expect(urls).toHaveLength(1);
-    expect(urls[0]).toContain('www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx');
-    expect(urls[0]).not.toContain('sp.gov/qrcode');
+    expect(urls[0]).toContain('https://www.nfce.fazenda.sp.gov/qrcode?p=');
+    expect(urls[0]).toContain('%7C3%7C1');
+    expect(urls.slice(1)).toEqual([
+      `https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=${KEY}%7C3%7C1`,
+      `https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaPublica.aspx?chaveAcesso=${KEY}`,
+    ]);
+  });
+
+  test('só a chave colada → fila de 2 canais (QR canônico, consulta pública)', () => {
+    const urls = listConsultUrls(KEY, KEY);
+    expect(urls).toEqual([
+      `https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=${KEY}%7C3%7C1`,
+      `https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaPublica.aspx?chaveAcesso=${KEY}`,
+    ]);
   });
 });
 

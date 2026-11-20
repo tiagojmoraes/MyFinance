@@ -104,6 +104,7 @@ import {
   type NfceHeader,
 } from '../parsers/nfce';
 import { nfceWebEngine, WEBENGINE_TIMEOUT_MS } from './NfceWebEngine';
+import { nfcePortao } from './NfcePortao';
 import { NfceDocumentRepo, NfceItemRepo } from '../repos/misc';
 import type { NfceDocumentRow, NfceItemRow } from '../repos/misc';
 import { TransactionRepo } from '../repos/finance';
@@ -160,6 +161,12 @@ export class NfceService {
    * Devolve null quando o motor não conseguiu (sem componente montado em
    * teste, firewall rejeitando agora, página não reconhecida).
    */
+  /**
+   * v100 — LEITURA PURA DO MOTOR, agora com fila completa + portão anti-ban.
+   * Cada canal roda numa sessão nova (incognito): rejeição de um canal não
+   * contamina o seguinte. A rejeição repetida entra no backoff do portão
+   * (camada de IP), não a isolada (camada de sessão — resolve sozinha).
+   */
   private async readHtmlViaEngine(input: string): Promise<{ accessKey: string; html: string; url: string } | null> {
     const accessKey = extractAccessKey(input);
     if (!accessKey) return null;
@@ -167,24 +174,42 @@ export class NfceService {
       nfceLog('serviço: motor do aparelho NÃO montado (WebView ausente) — pulando leitura');
       return null;
     }
-    const candidates = listConsultUrls(input, accessKey);
-    const url = candidates[0];
-    nfceLog(`serviço: MOTOR DO APARELHO (leitura PURE) — 1 canal: ${url}`);
-    const res = await nfceWebEngine.read(url, WEBENGINE_TIMEOUT_MS);
-    if (!res) {
-      nfceLog('serviço: motor do aparelho → sem página (erro/tempo) — FIM da leitura');
-      return null;
+
+    const restante = nfcePortao.waitRemaining();
+    if (restante > 0) {
+      nfceLog(`serviço: portão anti-ban — ${nfcePortao.blockedReason()}`);
+      await new Promise((r) => setTimeout(r, restante));
     }
-    if (isFirewallRejectionPage(res.html)) {
-      nfceLog(`serviço: motor do aparelho → REJEIÇÃO do firewall (${nfceHtmlSummary(res.html)}) — FIM da leitura`);
-      return null;
+    nfcePortao.registerStart();
+
+    const canais = listConsultUrls(input, accessKey);
+    for (let i = 0; i < canais.length; i++) {
+      const url = canais[i];
+      nfceLog(`serviço: MOTOR DO APARELHO (leitura PURE) — canal ${i + 1}/${canais.length}: ${url}`);
+      const res = await nfceWebEngine.read(url, WEBENGINE_TIMEOUT_MS);
+      if (!res) {
+        nfceLog('serviço: canal sem página (erro/tempo) — próximo canal');
+        continue;
+      }
+      if (isFirewallRejectionPage(res.html)) {
+        const cooldown = nfcePortao.registerRejection();
+        nfceLog(
+          `serviço: canal ${i + 1} → REJEIÇÃO do firewall (${nfceHtmlSummary(res.html)})` +
+            (cooldown > 0 ? ` — rejeição repetida: backoff de ${cooldown / 1000}s` : ' — próximo canal em sessão nova'),
+        );
+        if (i < canais.length - 1) await new Promise((r) => setTimeout(r, 1_500));
+        continue;
+      }
+      if (!looksLikeNfcePage(res.html)) {
+        nfceLog(`serviço: canal ${i + 1} → página não reconhecida (${nfceHtmlSummary(res.html)}) — próximo canal`);
+        continue;
+      }
+      nfcePortao.registerSuccess();
+      nfceLog(`serviço: motor do aparelho CONSEGUIU a página via ${res.url}`);
+      return { accessKey, html: res.html, url: res.url };
     }
-    if (!looksLikeNfcePage(res.html)) {
-      nfceLog(`serviço: motor do aparelho → página não reconhecida (${nfceHtmlSummary(res.html)}) — FIM da leitura`);
-      return null;
-    }
-    nfceLog(`serviço: motor do aparelho CONSEGUIU a página via ${res.url}`);
-    return { accessKey, html: res.html, url: res.url };
+    nfceLog('serviço: todos os canais falharam — FIM da leitura');
+    return null;
   }
 
   /**
