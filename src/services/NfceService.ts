@@ -651,19 +651,19 @@ export class NfceService {
       // v100: PENDING e FUZZY sempre pendem revisão — o usuário classifica 1 vez
       // no Catálogo (decisão possível: É esse / outro novo / não é produto).
       if (resolution.needsReview || resolution.matchType === 'PENDING') needsReview++;
-      // Compat: itens AUTO-CRIADOS pelo fluxo da NF (resolveOrRegister v37) entram
-      // Com controle (a Despensa precisa enxergar a compra). Pode ser trocado
-      // pelo usuário no formulário do Catálogo depois.
-      if (resolution.matchType === 'NEW' && resolution.product) {
-        await this.db.runAsync('UPDATE products_catalog SET stock_control = 1 WHERE id = ?', [resolution.product.id]);
-        resolution.product.stock_control = 1;
-      }
-      // Confiáveis para estoque: ALIAS direto + Com controle + dimensão ok
+      // v101 — AUTO-CRIADO pela NF não entra automaticamente na Despensa/Lista:
+      // fica com stock_control=0 e origin='NFCE' até o usuário CLASSIFICAR no
+      // Catálogo (ou na Revisão pelo decideImport/classifyPendingBatch). A
+      // decisão do usuário vira origin='USER' na hora do classificar (1 toque
+      // ou "Decidir item"). Sem isso, o sistema atropela a regra de "só
+      // seguir as regras após a definição do Catálogo".
+      // Confiáveis para estoque: ALIAS direto + Com controle + origem USER + dimensão ok
       const prodBase = resolution.product?.base_unit ?? null;
       const itemDim = conversion?.baseUnit ?? null;
       const unitOk = !prodBase || !itemDim || prodBase === itemDim;
+      const userOriginOk = !resolution.product || (resolution.product.origin ?? 'NFCE') === 'USER';
       const stockControlOk = !resolution.product || (resolution.product.stock_control ?? 0) === 1;
-      if ((resolution.matchType === 'ALIAS' || resolution.matchType === 'EAN') && resolution.product && !resolution.needsReview && conversion && unitOk && stockControlOk) {
+      if ((resolution.matchType === 'ALIAS' || resolution.matchType === 'EAN') && resolution.product && !resolution.needsReview && conversion && unitOk && stockControlOk && userOriginOk) {
         trustedItemIds.push(args.itemId);
       }
     };
@@ -1092,6 +1092,12 @@ export class NfceService {
     if (product && (product.stock_control ?? 0) !== 1) {
       await this.productService.setStockControl(item.product_id, 1);
     }
+    // v101: confirmar pela revisão = decisão do usuário → vira USER (sai do AUTO-NFCE).
+    // Sem isso o filtro de origem do PantryService bloqueia a aplicação de estoque
+    // (regra "só após a definição do Catálogo").
+    if (product && (product.origin ?? 'NFCE') !== 'USER') {
+      await this.db.runAsync("UPDATE products_catalog SET origin = 'USER' WHERE id = ?", [item.product_id]);
+    }
     // v37: confirmar É decidir — grava o código na tabela da verdade
     const doc = await this.documents.getById(item.access_key);
     if (item.store_product_code) {
@@ -1115,6 +1121,12 @@ export class NfceService {
     const item = await this.items.getById(itemId);
     if (!item) throw new Error('Item não encontrado');
     const doc = await this.documents.getById(item.access_key);
+    // v101: vincular pela revisão = decisão do usuário → se o produto era AUTO-NFCE,
+    // vira USER (a partir daí entra no estoque / Lista de Compra como qualquer MANUAL).
+    const target = await this.productService.getProduct(productId);
+    if (target && (target.origin ?? 'NFCE') !== 'USER') {
+      await this.db.runAsync("UPDATE products_catalog SET origin = 'USER' WHERE id = ?", [productId]);
+    }
     await this.productService.recordDecision(productId, {
       cnpj: doc?.cnpj ?? null,
       storeName: doc?.store_name ?? null,
@@ -1137,7 +1149,7 @@ export class NfceService {
    * Aceita categoria/subitem (classificação da revisão) e GRAVA A DECISÃO
    * (alias CNPJ+código) — a próxima nota daquela loja resolve sozinha.
    */
-  async createProductFromItem(itemId: string, categoryId?: string | null): Promise<string> {
+  async createProductFromItem(itemId: string, categoryId?: string | null, stockControl: 0 | 1 = 0): Promise<string> {
     const item = await this.items.getById(itemId);
     if (!item?.description) throw new Error('Item sem descrição');
     const conversion = item.qty != null ? convertToBaseUnit(item.qty, item.unit_original) : null;
@@ -1146,10 +1158,9 @@ export class NfceService {
       ean: item.ean_extracted,
       baseUnit: conversion?.baseUnit ?? 'UN',
       categoryId: categoryId ?? null,
-      // v100: produto criado da NF nasce SEM controle (não polui Despensa sem
-      // decisão do usuário). Ele entra Com controle quando o usuário ativa o
-      // assistente da revisão ou edita o formulário depois.
-      stockControl: 0,
+      // v101: o decideImport passa o stockControl decidido pelo usuário;
+      // origem SEMPRE 'USER' (a função createManualProduct grava USER).
+      stockControl,
     });
     const doc = await this.documents.getById(item.access_key);
     await this.productService.recordDecision(product.id, {
@@ -1202,8 +1213,11 @@ export class NfceService {
 
     if (decision.catalog) {
       // 1) cria o produto a partir do item (já grava o alias cnpj+código).
-      const productId = await this.createProductFromItem(itemId, decision.categoryId ?? null);
-      // 2) define a política de estoque + aplica/removido.
+      // v101: o stockControl vem do usuário — se ele ligou "Com controle" na
+      // revisão, o produto nasce COM controle (1) e o estoque entra na hora;
+      // se ele disse "Sem controle", nasce SEM (0) e vai só pra Lista de Compra.
+      const productId = await this.createProductFromItem(itemId, decision.categoryId ?? null, decision.stockControl ? 1 : 0);
+      // 2) define a política de estoque (sempre — para futuras NF da mesma loja).
       const policy = decision.stockControl ? 'ALWAYS' : 'NEVER';
       await this.productService.setPantryPolicy(productId, policy);
       if (policy === 'ALWAYS') {
@@ -1342,6 +1356,12 @@ export class NfceService {
   async classifyPendingBatch(input: { cnpj: string | null; storeProductCode: string | null; productId: string }): Promise<{ linked: number; applied: number }> {
     const product = await this.productService.getProduct(input.productId);
     if (!product) throw new Error('Produto não encontrado');
+    // v101: 1 toque no Catálogo = DECISÃO do usuário. Se o produto alvo era
+    // AUTO-NFCE (criado na leitura de uma NF anterior), vira USER antes de
+    // aplicar estoque — alinhado com a regra "só após a definição do Catálogo".
+    if ((product.origin ?? 'NFCE') !== 'USER') {
+      await this.db.runAsync("UPDATE products_catalog SET origin = 'USER' WHERE id = ?", [input.productId]);
+    }
     let linked = 0;
     let applied = 0;
     const affectedDocs = new Set<string>();

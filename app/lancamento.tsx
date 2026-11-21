@@ -289,8 +289,10 @@ export default function LancamentoScreen() {
   const applyPreparedNote = React.useCallback(
     (prepared: { accessKey: string; header: NfceHeader; items: NfcePreparedItem[]; alreadyRegistered: boolean }) => {
       if (prepared.alreadyRegistered) {
-        nfceLog('tela: fim — nota já registrada → abrindo a revisão');
-        showToast('Esta nota já está lançada — Confira no Fluxo', 'err');
+        nfceLog('tela: fim — nota já registrada → mostrando aviso');
+        // v101: padrão do sistema — aviso PRETO + ✓ (ToastKind 'ok'); sem
+        // abrir a tela de revisão nem mudar de tela.
+        showToast('NFC já cadastrada');
         return false;
       }
       const total = prepared.header.amountPaidCents ?? prepared.header.grossTotalCents ?? null;
@@ -647,9 +649,11 @@ export default function LancamentoScreen() {
       // de tentativa antiga NÃO trava: a nota é buscada e reprocessada.
       const registeredId = await services.nfce.findRegisteredTransactionId(accessKey);
       if (registeredId) {
-        nfceLog('tela: nota já registrada (novo lançamento) → abrindo a revisão');
+        nfceLog('tela: nota já registrada (novo lançamento) → mostrando aviso');
+        // v101: SEM abrir tela de revisão — só avisar em preto (padrão do sistema)
+        // e fechar o modal. O lançamento NÃO é adulterado.
+        showToast('NFC já cadastrada');
         setScannerOpen(false);
-        router.push(`/nfce/${accessKey}`);
         return;
       }
       // v99 — leitura ÚNICA e INVISÍVEL pelo motor do aparelho + só PREPARE

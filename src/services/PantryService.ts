@@ -53,7 +53,10 @@ export class PantryService {
   }
 
   /** Aplica itens de NFC-e ao estoque (lista específica ou todos os elegíveis).
-   *  v100: filtra também por products_catalog.stock_control = 1. */
+   *  v100: filtra também por products_catalog.stock_control = 1.
+   *  v101: exige também products_catalog.origin = 'USER' — AUTO-criados na
+   *  leitura da NF (origin='NFCE') ficam fora até o usuário CLASSIFICAR no
+   *  Catálogo ou na Revisão (1 toque / Decidir / Vincular). */
   async applyNfceItems(accessKey: string, itemIds?: string[] | null): Promise<number> {
     return this.db.transactionAsync(async () => {
       const eligible = await this.db.getAllAsync<{
@@ -64,7 +67,8 @@ export class PantryService {
            JOIN products_catalog pc ON pc.id = ni.product_id
           WHERE ni.access_key = ? AND ni.status = 'PARSED' AND ni.stock_applied = 0
             AND ni.product_id IS NOT NULL
-            AND COALESCE(pc.stock_control, 0) = 1`,
+            AND COALESCE(pc.stock_control, 0) = 1
+            AND COALESCE(pc.origin, 'USER') = 'USER'`,
         [accessKey]
       );
       const toApply = itemIds ? eligible.filter((i) => itemIds.includes(i.id)) : eligible;
@@ -96,11 +100,20 @@ export class PantryService {
     });
   }
 
-  /** Aplica um único item (confirmação tardia do Catálogo). Idempotente. */
+  /** Aplica um único item (confirmação tardia do Catálogo). Idempotente.
+   *  v101: exige origin='USER' no produto — AUTO-criados na NF não entram. */
   async applySingleNfceItem(_accessKey: string, itemId: string, productId: string, deltaBase: number): Promise<void> {
     await this.db.transactionAsync(async () => {
       const already = await this.ledger.existsByNfceItem(itemId);
       if (already) return;
+      // v101: trava pela ORIGEM (não basta stock_control=1). Os caminhos que
+      // chamam aqui (classifyPendingBatch / confirmItemProduct / decideImport)
+      // já viraram o produto para USER antes; aqui é o cinto-e-suspensórios.
+      const prod = await this.db.getFirstAsync<{ origin: string | null; stock_control: number | null }>(
+        'SELECT origin, stock_control FROM products_catalog WHERE id = ?',
+        [productId]
+      );
+      if (!prod || (prod.origin ?? 'NFCE') !== 'USER' || (prod.stock_control ?? 0) !== 1) return;
       const current = await this.stock.getByProduct(productId);
       const newQty = (current?.quantity_base ?? 0) + deltaBase;
       await this.ledger.insert({
@@ -127,9 +140,55 @@ export class PantryService {
     await this.stock.upsert(productId, current?.quantity_base ?? 0, thresholdBase, nowIso());
   }
 
-  /** Lista da despensa (cache + produto; v100: filtra Com controle + Ativo). */
+  /** Lista da despensa (cache + produto; v100: filtra Com controle + Ativo).
+   *  v100 já filtra stock_control=1 + status=ATIVO; v101 mantém — a Despensa
+   *  Estoque continua sendo só do que o usuário definiu como controlado. */
   async listPantry() {
     const rows = await this.stock.listWithProduct();
+    return rows.map((row) => ({
+      ...row,
+      quantity_base: row.quantity_base ?? 0,
+      isLow: row.low_threshold_base != null && (row.quantity_base ?? 0) <= (row.low_threshold_base ?? 0),
+    }));
+  }
+
+  /** v101 — LISTA DE COMPRA base: TODOS os produtos classificados pelo usuário
+   *  (origin='USER') e ativos — com ou sem controle de estoque. É o motor da
+   *  aba "Lista de Compra" da Despensa: o usuário tocado em algum momento
+   *  decide o catálogo desse produto. AUTO-NFCE não aparece (regra "só após
+   *  a definição do Catálogo"). */
+  async listClassifiedActive(): Promise<Array<{
+    product_id: string;
+    name: string;
+    ean: string | null;
+    base_unit: 'G' | 'ML' | 'UN' | null;
+    stock_control: number | null;
+    quantity_base: number;
+    low_threshold_base: number | null;
+    last_movement_at: string | null;
+    isLow: boolean;
+  }>> {
+    const rows = await this.db.getAllAsync<{
+      product_id: string;
+      name: string;
+      ean: string | null;
+      base_unit: 'G' | 'ML' | 'UN' | null;
+      stock_control: number | null;
+      quantity_base: number | null;
+      low_threshold_base: number | null;
+      last_movement_at: string | null;
+    }>(
+      `SELECT pc.id AS product_id, pc.name AS name, pc.ean AS ean, pc.base_unit AS base_unit,
+              pc.stock_control AS stock_control,
+              COALESCE(ps.quantity_base, 0) AS quantity_base,
+              ps.low_threshold_base AS low_threshold_base,
+              ps.last_movement_at AS last_movement_at
+         FROM products_catalog pc
+         LEFT JOIN pantry_stock ps ON ps.product_id = pc.id
+        WHERE COALESCE(pc.origin, 'USER') = 'USER'
+          AND COALESCE(pc.status, 'ATIVO') = 'ATIVO'
+        ORDER BY pc.name`
+    );
     return rows.map((row) => ({
       ...row,
       quantity_base: row.quantity_base ?? 0,

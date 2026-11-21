@@ -215,11 +215,19 @@ describe('v41 — attachToTransaction (salvar lança o total e aplica o estoque 
       accountId: acc,
     });
     await services.nfce.attachToTransaction(KEY, tx.id, [leite.id]);
-    // Depois o usuário classifica o mamão na revisão e confirma o estoque
-    await services.pantry.applyNfceItems(KEY, [mamao.id]);
+    // v101: o mamão AUTO-NFCE ainda não pode entrar sozinho — o usuário
+    // precisa CLASSIFICAR pela revisão (Decidir item / decideImport), o que
+    // vira o produto em USER e aí o estoque entra.
+    await services.nfce.decideImport(mamao.id, { catalog: true, stockControl: true, neverAgain: false });
+    // v101: decideImport > catalog: true CRIA um novo produto USER e rebinda
+    // o item; pegamos o product_id ATUALIZADO para conferir o estoque.
+    const mamaoRow = await db.getFirstAsync<{ product_id: string | null }>(
+      'SELECT product_id FROM nfce_items WHERE id = ?',
+      [mamao.id]
+    );
     const mamaoStock = await db.getFirstAsync<{ q: number }>(
       'SELECT quantity_base AS q FROM pantry_stock WHERE product_id = ?',
-      [mamao.productId!]
+      [mamaoRow?.product_id!]
     );
     expect(mamaoStock?.q).toBeGreaterThan(0);
   });

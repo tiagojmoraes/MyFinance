@@ -31,6 +31,8 @@ interface PantryItem {
   quantity_base: number;
   low_threshold_base: number | null;
   isLow: boolean;
+  /** v101: indica controle de estoque — vem de listClassifiedActive() (Com/Sem). */
+  stock_control?: number | null;
 }
 
 export default function DespensaScreen() {
@@ -39,6 +41,9 @@ export default function DespensaScreen() {
   const [tab, setTab] = React.useState<'LIST' | 'NEW'>('LIST');
   const [listaTab, setListaTab] = React.useState<'ESTOQUE' | 'COMPRA'>('ESTOQUE');
   const [items, setItems] = React.useState<PantryItem[]>([]);
+  /** v101 — base da aba Lista de Compra: classificados pelo usuário (USER) com ou
+   *  sem controle — independentes de `listPantry` que filtra Com controle. */
+  const [classifiedActive, setClassifiedActive] = React.useState<PantryItem[]>([]);
   const [name, setName] = React.useState('');
   const [ean, setEan] = React.useState('');
   const [unit, setUnit] = React.useState<string | null>('UN');
@@ -52,8 +57,12 @@ export default function DespensaScreen() {
   const [visao, setVisao] = React.useState<'CATEGORIA' | 'LOJA'>('CATEGORIA');
 
   const load = React.useCallback(async () => {
-    const list = await services.pantry.listPantry();
+    const [list, classified] = await Promise.all([
+      services.pantry.listPantry(),
+      services.pantry.listClassifiedActive(),
+    ]);
     setItems(list as unknown as PantryItem[]);
+    setClassifiedActive(classified as unknown as PantryItem[]);
     try {
       const raw = await services.settings.get(SETTING_KEYS.despensaListaCompra);
       const arr = raw ? (JSON.parse(raw) as string[]) : [];
@@ -141,6 +150,8 @@ export default function DespensaScreen() {
   }, [services, bump]);
 
   const fmtQty = (item: PantryItem): string => {
+    // v101: sem controle de estoque não tem quantidade — só catálogo.
+    if ((item.stock_control ?? 0) !== 1) return 'Sem controle';
     if (item.base_unit === 'G') return `${item.quantity_base} g`;
     if (item.base_unit === 'ML') return `${item.quantity_base} ml`;
     return `${item.quantity_base} un`;
@@ -274,10 +285,10 @@ export default function DespensaScreen() {
               <Text className="text-xs text-slate-500">{cart.length} selecionado(s)</Text>
             </View>
             <Button label={`＋ Abaixo do mínimo (${items.filter((i) => i.isLow).length})`} variant="outline" onPress={addBelowMinimum} />
-            {items.length === 0 ? (
-              <Text className="text-xs text-slate-500">Sem produtos na despensa — cadastre no estoque ou leia notas.</Text>
+            {classifiedActive.length === 0 ? (
+              <Text className="text-xs text-slate-500">Sem produtos classificados — cadastre no catálogo ou leia notas e classifique os pendentes.</Text>
             ) : (
-              items.map((item) => {
+              classifiedActive.map((item) => {
                 const na = cart.includes(item.product_id);
                 return (
                   <Pressable
