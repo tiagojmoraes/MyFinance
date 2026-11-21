@@ -626,13 +626,13 @@ export class NfceService {
       line: number;
     }): Promise<void> => {
       const conversion = args.qty != null ? convertToBaseUnit(args.qty, args.unitOriginal) : null;
-      const resolution = await this.productService.resolveOrRegister(
+      const resolution = await this.productService.resolveStrict(
         doc.store_name,
         {
           ean: args.ean,
           storeProductCode: args.code,
           name: args.description,
-          unitBase: conversion?.baseUnit ?? null,
+          // sem unitBase aqui — resolveStrict não cria produto nem usa base_unit
         },
         { cnpj: doc.cnpj }
       );

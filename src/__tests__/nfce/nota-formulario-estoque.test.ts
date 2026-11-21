@@ -108,8 +108,8 @@ describe('v41 — prepareFromHtml (nota no formulário)', () => {
     expect(leite.needsReview).toBe(false); // EAN da tabela da verdade → automático
 
     const mamao = byDesc('MAMAO');
-    expect(mamao.matchType).toBe('NEW'); // produto novo criado, mas pergunta 1ª vez
-    expect(mamao.canApplyStock).toBe(true);
+    expect(mamao.matchType).toBe('PENDING'); // produto novo → pendente para classificar no Catálogo
+    expect(mamao.canApplyStock).toBe(false);
     expect(mamao.needsReview).toBe(true);
 
     const arroz = byDesc('ARROZ');

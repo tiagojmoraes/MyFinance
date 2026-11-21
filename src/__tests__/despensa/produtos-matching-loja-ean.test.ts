@@ -129,26 +129,31 @@ describe('v37 — productSimilarity (fuzzy entre lojas)', () => {
 // ───────────────────────── 3. A TABELA DA VERDADE ponta a ponta ─────────────────────────
 
 describe('v37 — mamão Assaí 8142 = Carrefour 456 = Empório 789', () => {
-  test('1ª nota: produto novo PERGUNTA (classifique 1×); decisão grava alias', async () => {
+  test('1ª nota: produto novo vai para Pendentes (classifique 1×); decisão grava alias', async () => {
     const { services, db } = ctx!;
     const key1 = genKey();
     const p1 = await ingest(key1, MAMAO_ASSAI);
     expect(p1.items).toBe(1);
     expect(p1.needsReview).toBe(1); // "só pergunta dos novos" — este é novo
 
-    const item1 = await db.getFirstAsync<{ id: string; product_id: string; match_type: string | null; stock_applied: number }>(
+    const item1 = await db.getFirstAsync<{ id: string; product_id: string | null; match_type: string | null; stock_applied: number }>(
       'SELECT id, product_id, match_type, stock_applied FROM nfce_items WHERE access_key = ?'
     , [key1]);
-    expect(item1?.match_type).toBe('NEW');
-    expect(item1?.product_id).toBeTruthy();
+    expect(item1?.match_type).toBe('PENDING'); // resolveStrict não auto-cria → vai para Pendentes
+    expect(item1?.product_id).toBeNull();
     expect(item1?.stock_applied).toBe(0); // não entra no estoque antes da decisão
 
     const doc1 = await db.getFirstAsync<{ needs_review: number }>('SELECT needs_review FROM nfce_documents WHERE access_key = ?', [key1]);
     expect(doc1?.needs_review).toBe(1);
 
-    // decisão do usuário: confirmar (categoria viria do seletor na UI)
+    // decisão do usuário: criar o produto e vincular (1×), depois confirma para aplicar estoque
+    await services.nfce.createProductFromItem(item1!.id, null, 1);
+    const item1After = await db.getFirstAsync<{ product_id: string; match_type: string | null }>(
+      'SELECT product_id, match_type FROM nfce_items WHERE id = ?', [item1!.id]);
+    expect(item1After?.product_id).toBeTruthy();
+    expect(item1After?.match_type).toBe('MANUAL');
     await services.nfce.confirmItemProduct(item1!.id);
-    const stock1 = await db.getFirstAsync<{ quantity_base: number }>('SELECT quantity_base FROM pantry_stock WHERE product_id = ?', [item1!.product_id]);
+    const stock1 = await db.getFirstAsync<{ quantity_base: number }>('SELECT quantity_base FROM pantry_stock WHERE product_id = ?', [item1After!.product_id]);
     expect(stock1?.quantity_base).toBe(2616); // 2,616 kg = 2616 g
   });
 
@@ -156,16 +161,19 @@ describe('v37 — mamão Assaí 8142 = Carrefour 456 = Empório 789', () => {
     const { services, db } = ctx!;
     const key1 = genKey();
     await ingest(key1, MAMAO_ASSAI);
-    const item1 = await db.getFirstAsync<{ product_id: string; id: string }>('SELECT id, product_id FROM nfce_items WHERE access_key = ?', [key1]);
+    const item1 = await db.getFirstAsync<{ id: string }>('SELECT id FROM nfce_items WHERE access_key = ?', [key1]);
+    // primeira vez: produto novo → criar produto e depois confirmar estoque
+    await services.nfce.createProductFromItem(item1!.id, null, 1);
     await services.nfce.confirmItemProduct(item1!.id);
 
     const key2 = genKey();
     const p2 = await ingest(key2, MAMAO_ASSAI_OUTRA);
     expect(p2.needsReview).toBe(0); // já classificado — não pergunta de novo
+    const item1Pid = (await db.getFirstAsync<{ product_id: string }>('SELECT product_id FROM nfce_items WHERE id = ?', [item1!.id]))!.product_id;
     const item2 = await db.getFirstAsync<{ product_id: string; match_type: string | null; stock_applied: number }>(
       'SELECT product_id, match_type, stock_applied FROM nfce_items WHERE access_key = ?', [key2]);
     expect(item2?.match_type).toBe('ALIAS');
-    expect(item2?.product_id).toBe(item1!.product_id); // MESMA verdade
+    expect(item2?.product_id).toBe(item1Pid); // MESMA verdade
     expect(item2?.stock_applied).toBe(1); // estoque automático
     const doc2 = await db.getFirstAsync<{ needs_review: number }>('SELECT needs_review FROM nfce_documents WHERE access_key = ?', [key2]);
     expect(doc2?.needs_review).toBe(0);
@@ -175,8 +183,9 @@ describe('v37 — mamão Assaí 8142 = Carrefour 456 = Empório 789', () => {
     const { services, db } = ctx!;
     const key1 = genKey();
     await ingest(key1, MAMAO_ASSAI);
-    const item1Row = await db.getFirstAsync<{ id: string; product_id: string }>('SELECT id, product_id FROM nfce_items WHERE access_key = ?', [key1]);
-    // v59: a 1ª nota é NEW — o usuário confirma para criar a verdade
+    const item1Row = await db.getFirstAsync<{ id: string }>('SELECT id FROM nfce_items WHERE access_key = ?', [key1]);
+    // primeira vez: produto novo → criar produto e confirmar para gravar alias
+    await services.nfce.createProductFromItem(item1Row!.id, null, 1);
     await services.nfce.confirmItemProduct(item1Row!.id);
     const item1 = await db.getFirstAsync<{ product_id: string }>('SELECT product_id FROM nfce_items WHERE access_key = ?', [key1]);
 
@@ -207,9 +216,11 @@ describe('v37 — mamão Assaí 8142 = Carrefour 456 = Empório 789', () => {
     const { services, db } = ctx!;
     const key1 = genKey();
     await ingest(key1, MAMAO_ASSAI);
-    const item1Row = await db.getFirstAsync<{ id: string; product_id: string }>('SELECT id, product_id FROM nfce_items WHERE access_key = ?', [key1]);
+    const item1Row = await db.getFirstAsync<{ id: string }>('SELECT id FROM nfce_items WHERE access_key = ?', [key1]);
+    // primeira vez: produto novo → criar produto e confirmar estoque
+    await services.nfce.createProductFromItem(item1Row!.id, null, 1);
     await services.nfce.confirmItemProduct(item1Row!.id);
-    const truthId = item1Row!.product_id;
+    const truthId = (await db.getFirstAsync<{ product_id: string }>('SELECT product_id FROM nfce_items WHERE access_key = ?', [key1]))!.product_id;
 
     // v59: Carrefour — fuzzy sugere a verdade, o usuário confirma (grava alias 456)
     const keyC = genKey();
@@ -242,9 +253,11 @@ describe('v37 — unidade diferente: mesmo código da verdade, KG não vira UN',
     const { services, db } = ctx!;
     const key1 = genKey();
     await ingest(key1, ABACAXI_EMPORIO_UN); // produto novo (base UN) — pergunta
-    const item1 = await db.getFirstAsync<{ id: string; product_id: string }>('SELECT id, product_id FROM nfce_items WHERE access_key = ?', [key1]);
+    const item1 = await db.getFirstAsync<{ id: string }>('SELECT id FROM nfce_items WHERE access_key = ?', [key1]);
+    await services.nfce.createProductFromItem(item1!.id, null, 1);
+    const item1Pid = (await db.getFirstAsync<{ product_id: string }>('SELECT product_id FROM nfce_items WHERE id = ?', [item1!.id]))!.product_id;
     await ctx!.services.nfce.confirmItemProduct(item1!.id);
-    const stock1 = await db.getFirstAsync<{ quantity_base: number }>('SELECT quantity_base FROM pantry_stock WHERE product_id = ?', [item1!.product_id]);
+    const stock1 = await db.getFirstAsync<{ quantity_base: number }>('SELECT quantity_base FROM pantry_stock WHERE product_id = ?', [item1Pid]);
     expect(stock1?.quantity_base).toBe(1); // 1 UN
 
     // mesma fruta vendida por PESO em outra nota — fuzzy SUGERE a verdade (v59),
@@ -253,12 +266,12 @@ describe('v37 — unidade diferente: mesmo código da verdade, KG não vira UN',
     const p2 = await ingest(key2, ABACAXI_EMPORIO_KG);
     const item2 = await db.getFirstAsync<{ product_id: string; match_type: string | null; stock_applied: number }>(
       'SELECT product_id, match_type, stock_applied FROM nfce_items WHERE access_key = ?', [key2]);
-    expect(item2?.product_id).toBe(item1!.product_id); // mesma verdade sugerida
+    expect(item2?.product_id).toBe(item1Pid); // mesma verdade sugerida
     expect(item2?.match_type).toBe('FUZZY');
     expect(item2?.stock_applied).toBe(0); // GUARDA: KG não entra em produto UN (e está em revisão)
     expect(p2.needsReview).toBe(1); // v59: sugestão fuzzy espera a decisão do usuário
 
-    const stock2 = await db.getFirstAsync<{ quantity_base: number }>('SELECT quantity_base FROM pantry_stock WHERE product_id = ?', [item1!.product_id]);
+    const stock2 = await db.getFirstAsync<{ quantity_base: number }>('SELECT quantity_base FROM pantry_stock WHERE product_id = ?', [item1Pid]);
     expect(stock2?.quantity_base).toBe(1); // estoque intacto (sem misturar dimensão)
     // sugestão pendente de decisão pendura o documento para revisão (v59)
     const doc2 = await db.getFirstAsync<{ needs_review: number }>('SELECT needs_review FROM nfce_documents WHERE access_key = ?', [key2]);
@@ -273,7 +286,8 @@ describe('v37 — a última decisão manual vence (reapontamento)', () => {
     const { services, db } = ctx!;
     const key1 = genKey();
     await ingest(key1, MAMAO_ASSAI);
-    const item1 = await db.getFirstAsync<{ id: string; product_id: string }>('SELECT id, product_id FROM nfce_items WHERE access_key = ?', [key1]);
+    const item1 = await db.getFirstAsync<{ id: string }>('SELECT id FROM nfce_items WHERE access_key = ?', [key1]);
+    await services.nfce.createProductFromItem(item1!.id, null, 1);
     await services.nfce.confirmItemProduct(item1!.id); // 8142 → mamão
 
     // nova nota, usuário diz que AQUELE código é outro produto

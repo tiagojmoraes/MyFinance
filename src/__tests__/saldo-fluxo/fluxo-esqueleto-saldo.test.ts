@@ -454,9 +454,10 @@ describe('v67 MELHORIA 1 — fluxo guiado: EAN → Alias → Fuzzy → novo → 
     const fuzzy = rows.find((r) => r.description === 'MAMAO PAPAYA kg')!;
     expect(fuzzy.match_type).toBe('FUZZY');
 
-    // 4) desconhecido → NOVO
+    // 4) desconhecido → PENDING (vai para os Pendentes do Catálogo)
     const novo = rows.find((r) => r.description === 'BOLACHA RECHEADA TOTALMENTE XPTO')!;
-    expect(novo.match_type).toBe('NEW');
+    expect(novo.match_type).toBe('PENDING');
+    expect(novo.product_id).toBeNull();
 
     // MELHORIA 1: novo produto CLASSIFICADO NA HORA com categoria de DÉBITO
     const cat = await services.categories.create({ name: 'Mercearia', direction: 'DEBIT' });
@@ -484,7 +485,8 @@ describe('v67 MELHORIA 1 — fluxo guiado: EAN → Alias → Fuzzy → novo → 
     ));
     const rows = await itemsOf(key);
     const item = rows[0];
-    expect(item.match_type).toBe('NEW');
+    expect(item.match_type).toBe('PENDING'); // resolveStrict não auto-cria → vai para Pendentes
+    expect(item.product_id).toBeNull();
 
     // produto criado na revisão (classificado com categoria de débito)
     const cat = await services.categories.create({ name: 'Frutas', direction: 'DEBIT' });

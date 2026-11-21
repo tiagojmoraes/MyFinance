@@ -35,7 +35,7 @@ const iconOf = (c: CategoryOption) => c.icon ?? ICONS.categorias;
 export { categoryMatchesFilter } from '../lib/categories';
 
 /** Constrói os itens hierárquicos (Pai › Sub) já filtrados pela direção. */
-export function buildCategoryItems(cats: CategoryOption[], filter: CategoryFilter): Array<{ id: string; label: string }> {
+export function buildCategoryItems(cats: CategoryOption[], filter: CategoryFilter, onlyParents?: boolean): Array<{ id: string; label: string }> {
   const matches = (c: CategoryOption): boolean => categoryMatchesFilter(c, filter);
   const parents = cats
     .filter((c) => !c.parent_id && matches(c))
@@ -43,17 +43,19 @@ export function buildCategoryItems(cats: CategoryOption[], filter: CategoryFilte
   const items: Array<{ id: string; label: string }> = [];
   for (const p of parents) {
     items.push({ id: p.id, label: `${iconOf(p)} ${p.name}` });
-    const subs = cats
-      .filter((c) => c.parent_id === p.id && matches(c))
-      .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
-    for (const s of subs) {
-      items.push({ id: s.id, label: `${iconOf(s)} ${p.name} › ${s.name}` });
+    if (!onlyParents) {
+      const subs = cats
+        .filter((c) => c.parent_id === p.id && matches(c))
+        .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+      for (const s of subs) {
+        items.push({ id: s.id, label: `${iconOf(s)} ${p.name} › ${s.name}` });
+      }
     }
   }
   return items;
 }
 
-export function CategorySelect({ label, categories, value, onChange, filter, allowEmpty, emptyLabel }: {
+export function CategorySelect({ label, categories, value, onChange, filter, allowEmpty, emptyLabel, onlyParents }: {
   label: string;
   /** Lista completa de categorias (carregada do banco — nunca estática). */
   categories: CategoryOption[];
@@ -63,8 +65,13 @@ export function CategorySelect({ label, categories, value, onChange, filter, all
   filter: CategoryFilter;
   allowEmpty?: boolean;
   emptyLabel?: string;
+  /** v102 (BUG 2): mostra SÓ categorias pai (sem subcategorias). */
+  onlyParents?: boolean;
 }) {
-  const items = React.useMemo(() => buildCategoryItems(categories, filter), [categories, filter]);
+  const items = React.useMemo(
+    () => buildCategoryItems(categories, filter, onlyParents),
+    [categories, filter, onlyParents]
+  );
   return (
     <Select
       label={label}

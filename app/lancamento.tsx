@@ -1492,6 +1492,7 @@ export default function LancamentoScreen() {
               onChange={setCategoryId}
               filter={categoryFilter}
               allowEmpty
+              onlyParents
             />
           ) : null}
           {/* A conta do grupo vale para todas as linhas à vista e as linhas em conta. */}
