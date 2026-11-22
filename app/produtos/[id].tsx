@@ -22,6 +22,7 @@ import { useAppStore } from '../../src/store/appStore';
 import { ICONS } from '../../src/theme/icons';
 import { theme } from '../../src/theme';
 import { displayProductName, productKey } from '../../src/lib/productName';
+import { parseKgToGrams, gramsToKgText } from '../../src/lib/money';
 
 type StockControl = 0 | 1;
 type Status = 'ATIVO' | 'INATIVO';
@@ -71,6 +72,12 @@ export default function ProdutoEditScreen() {
   // v8 — sugestões por semelhança: SÓ na criação (nunca na edição).
   const [suggestions, setSuggestions] = React.useState<Suggestion[]>([]);
   const suggestionCache = React.useRef(new Map<string, Suggestion[]>());
+  // v103: EAN só vem da NF quando o form nasceu de um pendente (o usuário NÃO digita EAN).
+  // Pré-preenchido UMA vez na abertura; permanece durante a edição da tela.
+  const [pendingEan, setPendingEan] = React.useState<string | null>(null);
+  // v103: unidade ORIGINAL do produto (edição) — base_unit 'ML' (legado) só aparece
+  // como opção se o produto carregado já tinha 'ML'. Serve para a lista de opções.
+  const [originalBaseUnit, setOriginalBaseUnit] = React.useState<BaseUnit | null>(null);
 
   // Carrega categorias
   React.useEffect(() => {
@@ -102,11 +109,19 @@ export default function ProdutoEditScreen() {
       setBaseUnit((row.base_unit as BaseUnit) ?? 'UN');
       setStockControl(((row.stock_control ?? 1) as StockControl));
       setStatus((row.status as Status) ?? 'ATIVO');
+      // v103: guarda a unidade ORIGINAL do produto — ML só aparece como opção se o
+      // carregado já era ML (produto legado).
+      setOriginalBaseUnit((row.base_unit as BaseUnit) ?? null);
       const stockRow = await svc.db.getFirstAsync<{ low_threshold_base: number | null }>(
         'SELECT low_threshold_base FROM pantry_stock WHERE product_id = ?',
         [row.id]
       );
-      setThreshold(stockRow?.low_threshold_base != null ? String(stockRow.low_threshold_base) : '');
+      // v103: edição — converte GRAMAS→kg para preencher o campo se a unidade é KG.
+      if (row.base_unit === 'G') {
+        setThreshold(gramsToKgText(stockRow?.low_threshold_base ?? null));
+      } else {
+        setThreshold(stockRow?.low_threshold_base != null ? String(stockRow.low_threshold_base) : '');
+      }
     }
     setLoaded(true);
   });
@@ -135,6 +150,83 @@ export default function ProdutoEditScreen() {
     return () => { alive = false; clearTimeout(timer); };
   }, [name, isNew, services, params.id]);
 
+  /**
+   * v103 — PRÉ-PREENCHIMENTO a partir do item pendente da NF (apenas na
+   * CRIAÇÃO, uma única vez na abertura). SEM loop: UMA consulta para o EAN
+   * e UMA para a categoria herdada, em paralelo.
+   *  · Categoria: (1) transactions.category_id pelo itemId → access_key →
+   *    transaction_id; (2) senão, nfce_store_categories pelo cnpj do item.
+   *    Se for subcategoria (category pai preenchida), separa pai/filha.
+   *  · EAN: lê nfce_items.ean_extracted; se for só dígitos com 8, 12, 13 ou
+   *    14 posições E nenhum produto já tiver esse EAN, pré-preenche.
+   *  · NÃO sobrescreve escolha do usuário: setCategoryId/setSubcategoryId
+   *    só preenchem se o estado ainda for null.
+   */
+  React.useEffect(() => {
+    if (!isNew || !pending) return;
+    let alive = true;
+    (async () => {
+      try {
+        // Garante categorias ATIVAS para o split pai/filha.
+        let cats = categories;
+        if (cats.length === 0) {
+          cats = (await services.categories.listActive()) as unknown as CategoryRow[];
+          if (cats.length > 0 && alive) setCategories(cats);
+        }
+        if (!alive) return;
+
+        // EAN do item pendente (nunca vem do TextField — campo foi removido).
+        if (pending.itemId) {
+          const itm = await services.db.getFirstAsync<{ ean_extracted: string | null }>(
+            'SELECT ean_extracted FROM nfce_items WHERE id = ?',
+            [pending.itemId]
+          );
+          const raw = itm?.ean_extracted ?? null;
+          if (raw && /^\d{8}$|^\d{12}$|^\d{13}$|^\d{14}$/.test(raw)) {
+            const dup = await services.db.getFirstAsync<{ id: string }>(
+              'SELECT id FROM products_catalog WHERE ean = ? LIMIT 1',
+              [raw]
+            );
+            if (!dup && alive) setPendingEan(raw);
+          }
+        }
+
+        // Categoria herdada.
+        let catId: string | null = null;
+        if (pending.itemId) {
+          const r = await services.db.getFirstAsync<{ category_id: string | null }>(
+            `SELECT t.category_id
+               FROM nfce_items ni
+               JOIN nfce_documents d ON d.access_key = ni.access_key
+               LEFT JOIN transactions t ON t.id = d.transaction_id
+              WHERE ni.id = ?`,
+            [pending.itemId]
+          );
+          if (r?.category_id) catId = r.category_id;
+        }
+        if (!catId && pending.cnpj) {
+          const r = await services.db.getFirstAsync<{ category_id: string | null }>(
+            'SELECT category_id FROM nfce_store_categories WHERE cnpj = ?',
+            [pending.cnpj]
+          );
+          if (r?.category_id) catId = r.category_id;
+        }
+        if (!alive || !catId) return;
+        const c = cats.find((x) => x.id === catId);
+        if (!c || c.archived_at) return; // arquivada: vazio (como hoje).
+        if (c.parent_id) {
+          setCategoryId((cur) => cur ?? c.parent_id);
+          setSubcategoryId((cur) => cur ?? catId);
+        } else {
+          setCategoryId((cur) => cur ?? catId);
+        }
+      } catch {
+        // silencioso: sem categoria herdada continua como hoje.
+      }
+    })();
+    return () => { alive = false; };
+  }, [isNew, pending, services]);
+
   /** v8 — tocar na sugestão: pendente da NF → vincula e volta; criação manual → edita o existente. */
   const applySuggestion = async (productId: string) => {
     if (pending) {
@@ -160,11 +252,15 @@ export default function ProdutoEditScreen() {
     setSaving(true);
     try {
       const finalCategoryId = subcategoryId ?? categoryId;
-      const th = parseInt(threshold, 10);
+      // v103: mínimo em KG quando unidade = Kilos; senão inteiro na unidade.
+      const th = baseUnit === 'G' ? parseKgToGrams(threshold) : parseInt(threshold, 10);
+      const thValid = baseUnit === 'G' ? Number.isFinite(th) : Number.isInteger(th);
       let productId: string;
       if (isNew) {
         const created = await services.products.createManualProduct({
-          name: name.trim(), ean: ean.trim() ? ean.trim() : null,
+          name: name.trim(),
+          // v103: EAN do item pendente (pré-preenchido) OU null; o usuário não digita.
+          ean: pendingEan ?? null,
           baseUnit, categoryId: finalCategoryId,
           pantryPolicy: stockControl ? 'ALWAYS' : 'NEVER',
           stockControl,
@@ -180,10 +276,13 @@ export default function ProdutoEditScreen() {
         }
       } else {
         await services.products.updateProduct(params.id!, {
-          name: name.trim(), ean: ean.trim() ? ean.trim() : null,
+          name: name.trim(),
+          // v103: edição — preserva o EAN carregado (campo removido da tela);
+          // null se o produto original não tinha EAN.
+          ean: ean.trim() ? ean.trim() : null,
           baseUnit, categoryId: finalCategoryId, stockControl, status,
         });
-        await services.pantry.setLowThreshold(params.id!, Number.isInteger(th) ? th : null);
+        await services.pantry.setLowThreshold(params.id!, thValid ? th : null);
         productId = params.id!;
       }
       if (!isNew) {
@@ -228,7 +327,7 @@ export default function ProdutoEditScreen() {
   const preview = displayProductName(name);
 
   return (
-    <Screen title={isNew ? (pending ? 'Classificar produto (da NF)' : 'Novo produto') : 'Editar produto'}>
+    <Screen title={isNew ? (pending ? 'Classificar Produto' : 'Novo produto') : 'Editar produto'}>
       {!loaded ? (
         <Card><Text className="text-slate-500">Carregando...</Text></Card>
       ) : (
@@ -261,7 +360,12 @@ export default function ProdutoEditScreen() {
             <Text className="font-medium text-slate-900">{preview || '—'}</Text>
           </View>
 
-          <TextField label="EAN / GTIN (opcional)" value={ean} onChangeText={setEan} keyboardType="numeric" placeholder="789..." />
+          {isNew && pendingEan ? (
+            <View className="bg-slate-50 rounded-lg p-2">
+              <Text className="text-[10px] text-slate-500">EAN DA NF</Text>
+              <Text className="font-medium text-slate-900">{pendingEan}</Text>
+            </View>
+          ) : null}
 
           <Select
             label="Categoria"
@@ -280,12 +384,18 @@ export default function ProdutoEditScreen() {
             emptyLabel="Sem subcategoria"
           />
 
-          <Text className={`text-sm font-medium ${theme.textMuted}`}>Unidade base</Text>
-          <Segmented<BaseUnit> options={[
-            { value: 'UN', label: 'Unidade' },
-            { value: 'G', label: 'Gramas' },
-            { value: 'ML', label: 'Mililitros' },
-          ]} value={baseUnit} onChange={setBaseUnit} />
+          <Text className={`text-sm font-medium ${theme.textMuted}`}>Unidade Medida</Text>
+          <Segmented<BaseUnit> options={(() => {
+            const opts: Array<{ value: BaseUnit; label: string }> = [
+              { value: 'UN', label: 'Unidade' },
+              { value: 'G', label: 'Kilos' },
+            ];
+            // v103: ML só aparece para edições de produtos legados (criação nunca).
+            if (!isNew && originalBaseUnit === 'ML') {
+              opts.push({ value: 'ML', label: 'Mililitros' });
+            }
+            return opts;
+          })()} value={baseUnit} onChange={setBaseUnit} />
 
           <Text className={`text-sm font-medium ${theme.textMuted}`}>Controle de estoque</Text>
           <Segmented<'YES' | 'NO'> options={[
@@ -293,7 +403,17 @@ export default function ProdutoEditScreen() {
             { value: 'NO', label: 'Sem controle' },
           ]} value={stockControl === 1 ? 'YES' : 'NO'} onChange={(v) => setStockControl(v === 'YES' ? 1 : 0)} />
           {stockControl === 1 ? (
-            <TextField label="Estoque mínimo (na unidade base)" value={threshold} onChangeText={setThreshold} keyboardType="numeric" placeholder="Ex.: 500" />
+            <TextField
+              label={
+                baseUnit === 'G' ? 'Estoque mínimo (kg)'
+                : baseUnit === 'UN' ? 'Estoque mínimo (un)'
+                : 'Estoque mínimo (na unidade de medida)'
+              }
+              value={threshold}
+              onChangeText={setThreshold}
+              keyboardType={(baseUnit === 'G' ? 'decimal-pad' : 'numeric') as 'decimal-pad' | 'numeric'}
+              placeholder={baseUnit === 'G' ? 'Ex.: 0,5' : 'Ex.: 500'}
+            />
           ) : null}
 
           {!isNew ? (

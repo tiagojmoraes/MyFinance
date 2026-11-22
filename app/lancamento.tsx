@@ -279,6 +279,12 @@ export default function LancamentoScreen() {
     totalCents: number | null;
     items: Array<NfcePreparedItem & { include?: boolean }>;
   } | null>(null);
+  /** v103 — "Itens da nota fiscal" nasce RECOLHIDO. Ao carregar outra nota,
+   *  volta a recolhido (dropdown useEffect abaixo). */
+  const [itemsOpen, setItemsOpen] = React.useState(false);
+  React.useEffect(() => {
+    if (nfceNote) setItemsOpen(false);
+  }, [nfceNote?.accessKey]);
 
   /**
    * v99 — Preenche o "Novo Lançamento" com a nota já LIDA (QR da rotina NFC-e
@@ -1513,63 +1519,70 @@ export default function LancamentoScreen() {
         </Card>
 
 
-        {/* v100 — ITENS DA NOTA LIDA (QR) — somente CONSULTA. Sem toggle por item
-            (prompt §3.2/§9.4): o controle de estoque é decidido no Catálogo
-            (Com/Sem controle). Itens pendentes vão para "Novos da NF (N)" no
-            Catálogo — 1 toque lá resolve. */}
+        {/* v103 — ITENS DA NOTA LIDA (QR). RECOLHIDO por padrão; no padrão da
+            "fechinha" do app (ajustes:42-74). O aviso de Fixo/Parcelado fica
+            FORA do card, sempre visível mesmo recolhido. */}
         {nfceNote && kind === 'EXPENSE' && !isEdit ? (
-          <Card className="gap-2 mt-3">
-            <View className="flex-row justify-between items-center">
-              <Text className="font-semibold text-slate-900">Itens da nota fiscal (NFC-e)</Text>
-              <Text className="text-xs text-slate-500">{nfceNote.items.length} item(ns)</Text>
-            </View>
-            <Text className="text-[11px] text-slate-500">
-              {nfceNote.storeName ? `${nfceNote.storeName} · ` : ''}O lançamento usa o VALOR TOTAL da nota ({formatBRL(nfceNote.totalCents ?? 0)}). Itens pendentes de classificar aparecem em "Novos da NF" no Catálogo.
-            </Text>
-            {nfceNote.items.map((it) => (
-              <View key={it.id} className="rounded-xl border border-slate-200 p-2.5 gap-1">
-                <View className="flex-row justify-between gap-2">
-                  <Text className="text-sm font-semibold text-slate-800 flex-1" numberOfLines={2}>
-                    {it.lineNumber}. {it.description ?? '(sem descrição)'}
-                  </Text>
-                  <Text className="text-sm font-bold text-slate-700">
-                    {it.totalCents != null ? formatBRL(it.totalCents) : '—'}
-                  </Text>
-                </View>
-                <Text className="text-[11px] text-slate-500">
-                  Qtde: {it.qty ?? '—'} {it.unitOriginal ?? ''}
-                  {it.productName ? ` · produto: ${it.productName}` : ''}
-                  {it.totalCents == null ? ' · valor não lido' : ''}
+          <View className="mt-3 gap-2">
+            <Pressable
+              onPress={() => setItemsOpen((v) => !v)}
+              accessibilityRole="button"
+              accessibilityLabel={`${itemsOpen ? 'Recolher' : 'Expandir'} itens da nota fiscal`}
+              className="flex-row items-center gap-2 bg-white border border-slate-200 rounded-2xl px-3 py-3"
+            >
+              <Text className="text-sm font-bold text-emerald-700 w-4">{itemsOpen ? ICONS.recolher : ICONS.expandir}</Text>
+              <View className="flex-1">
+                <Text className="text-sm font-bold uppercase tracking-wide text-slate-800">
+                  Itens da nota fiscal (NFC-e)
                 </Text>
-                <View className="flex-row items-center justify-between gap-2">
-                  <Text className={`text-[10px] px-1.5 py-0.5 rounded ${nfceMatchBadge(it).cls}`}>
-                    {nfceMatchBadge(it).text}
-                  </Text>
-                  {it.stockApplied ? (
-                    <Text className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-semibold">
-                      já no estoque
-                    </Text>
-                  ) : it.productId ? (
-                    <Text className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-semibold">
-                      classificado (estoque via Catálogo)
-                    </Text>
-                  ) : (
-                    <Text className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded font-semibold">
-                      classificar no Catálogo
-                    </Text>
-                  )}
-                </View>
               </View>
-            ))}
-            <Text className="text-[11px] text-slate-500">
-              Soma dos itens lidos: {formatBRL(nfceNote.items.reduce((a, b) => a + (b.totalCents ?? 0), 0))}. Decisão de estoque vai pelo Catálogo (Com/Sem controle).
-            </Text>
+              <Text className="text-xs text-slate-500">{nfceNote.items.length} item(ns)</Text>
+            </Pressable>
+            {itemsOpen ? (
+              <Card className="gap-2">
+                {nfceNote.items.map((it) => (
+                  <View key={it.id} className="rounded-xl border border-slate-200 p-2.5 gap-1">
+                    <View className="flex-row justify-between gap-2">
+                      <Text className="text-sm font-semibold text-slate-800 flex-1" numberOfLines={2}>
+                        {it.lineNumber}. {it.description ?? '(sem descrição)'}
+                      </Text>
+                      <Text className="text-sm font-bold text-slate-700">
+                        {it.totalCents != null ? formatBRL(it.totalCents) : '—'}
+                      </Text>
+                    </View>
+                    <Text className="text-[11px] text-slate-500">
+                      Qtde: {it.qty ?? '—'} {it.unitOriginal ?? ''}
+                      {it.productName ? ` · produto: ${it.productName}` : ''}
+                      {it.totalCents == null ? ' · valor não lido' : ''}
+                    </Text>
+                    <View className="flex-row items-center justify-between gap-2">
+                      <Text className={`text-[10px] px-1.5 py-0.5 rounded ${nfceMatchBadge(it).cls}`}>
+                        {nfceMatchBadge(it).text}
+                      </Text>
+                      {it.stockApplied ? (
+                        <Text className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-semibold">
+                          já no estoque
+                        </Text>
+                      ) : it.productId ? (
+                        <Text className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-semibold">
+                          classificado (estoque via Catálogo)
+                        </Text>
+                      ) : (
+                        <Text className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded font-semibold">
+                          classificar no Catálogo
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                ))}
+              </Card>
+            ) : null}
             {modality !== 'AVISTA' ? (
               <Text className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-2">
                 Em Fixo/Parcelado a nota NÃO é anexada nem aplica estoque — salve em À vista para vincular a nota aos itens.
               </Text>
             ) : null}
-          </Card>
+          </View>
         ) : null}
 
         {/* ---------- CONSOLIDADO: linhas (débito/crédito, modalidade, descrição, valor e categoria). ---------- */}

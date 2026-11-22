@@ -14,13 +14,14 @@
 import React from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
-import { Screen, Card, TextField, Button, EmptyState, Segmented } from '../src/components/ui';
+import { Screen, Card, TextField, Button, EmptyState, Segmented, SectionTitle } from '../src/components/ui';
 import { useDataEffect } from '../src/components/useDataEffect';
 import { useAppStore } from '../src/store/appStore';
 import { ICONS } from '../src/theme/icons';
 import { theme } from '../src/theme';
 import { displayProductName } from '../src/lib/productName';
 import { showToast } from '../src/lib/toast';
+import { formatStockQty } from '../src/lib/money';
 
 interface PendingGroup {
   groupKey: string;
@@ -58,7 +59,14 @@ interface IgnoredRule {
   store_name: string | null;
 }
 
-type Tab = 'PENDENTES' | 'COM_ESTOQUE' | 'SEM_ESTOQUE' | 'INATIVO';
+type Tab = 'PENDENTES' | 'CLASSIFICADOS' | 'INATIVO';
+
+/** Rótulo curto da unidade para o cartão do produto. */
+function unitLabelOf(u: 'G' | 'ML' | 'UN' | null | undefined): string {
+  if (u === 'G') return 'Kilos';
+  if (u === 'ML') return 'Mililitros (legado)';
+  return 'Unidade';
+}
 
 export default function ProdutosScreen() {
   const services = useDataEffect();
@@ -69,8 +77,11 @@ export default function ProdutosScreen() {
   const [pantry, setPantry] = React.useState<PantryRow[]>([]);
   const [ignoredRules, setIgnoredRules] = React.useState<IgnoredRule[]>([]);
   const [search, setSearch] = React.useState('');
-  // v101: carrossel com 4 abas — começa nos Pendentes se houver; senão em Com Estoque.
+  // v103: 3 abas — começa nos Pendentes se houver; senão em Classificados.
   const [tab, setTab] = React.useState<Tab>('PENDENTES');
+  // v103: vira true quando a 1ª carga dos pendentes termina — usado para
+  // saltarmos direto para "Classificados" se nada estiver pendente.
+  const [pendingLoaded, setPendingLoaded] = React.useState(false);
 
   // useDataEffect provides dataVersion trigger via appStore.bump().
   // We fetch on mount and on data version changes.
@@ -88,6 +99,7 @@ export default function ProdutosScreen() {
       setPantry(pantryList as unknown as PantryRow[]);
       setPending(pend as unknown as PendingGroup[]);
       setIgnoredRules(rules as unknown as IgnoredRule[]);
+      setPendingLoaded(true);
     };
     void load();
   }, [services]);
@@ -105,6 +117,7 @@ export default function ProdutosScreen() {
     setPantry(pantryList as unknown as PantryRow[]);
     setPending(pend as unknown as PendingGroup[]);
     setIgnoredRules(rules as unknown as IgnoredRule[]);
+    setPendingLoaded(true);
   });
 
   const categoryLabelOf = React.useCallback((p: ProductRow): string => {
@@ -123,25 +136,32 @@ export default function ProdutosScreen() {
     const s = pantry.find((x) => x.product_id === p.id);
     const q = s?.quantity_base ?? 0;
     const unit = s?.base_unit ?? p.base_unit;
-    if (unit === 'G') return `${q} g`;
-    if (unit === 'ML') return `${q} ml`;
-    return `${q} un`;
+    return formatStockQty(unit, q);
   }, [pantry]);
 
-  // v101/v102: filtra pela aba e pela busca. A regra da aba é só pelos campos do
-// próprio produto (decisão do usuário): origin='USER' + status + stock_control.
-  const filteredByTab = React.useMemo(() => {
+  // v103: 3 abas. CLASSIFICADOS reúne COM/SEM estoque — a separação é só visual.
+  // A regra da aba é só pelos campos do próprio produto (decisão do usuário):
+  // origin='USER' + status + stock_control. SEM query em loop: tudo em memória.
+  const classifiedProdutos = React.useMemo(() => {
     const q = search.trim().toLowerCase();
     const match = (p: ProductRow): boolean => (q ? p.name.toLowerCase().includes(q) : true);
     const ativo = (p: ProductRow): boolean => (p.status ?? 'ATIVO') === 'ATIVO';
     const userDecided = (p: ProductRow): boolean => (p.origin ?? 'NFCE') === 'USER';
-    const byTab: Record<Tab, ProductRow[]> = {
-      PENDENTES: [], // aqui é a lista de NF pendentes (abaixo) — não usa products
-      COM_ESTOQUE: products.filter((p) => userDecided(p) && ativo(p) && (p.stock_control ?? 0) === 1 && match(p)),
-      SEM_ESTOQUE: products.filter((p) => userDecided(p) && ativo(p) && (p.stock_control ?? 0) === 0 && match(p)),
+    const list = products
+      .filter((p) => userDecided(p) && ativo(p) && match(p))
+      .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+    return {
+      comEstoque: list.filter((p) => (p.stock_control ?? 0) === 1),
+      semEstoque: list.filter((p) => (p.stock_control ?? 0) === 0),
+    };
+  }, [products, search]);
+
+  const filteredByTab = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const match = (p: ProductRow): boolean => (q ? p.name.toLowerCase().includes(q) : true);
+    return {
       INATIVO: products.filter((p) => ((p.status ?? 'ATIVO') === 'INATIVO') && match(p)),
     };
-    return byTab;
   }, [products, search]);
 
   // v102 — regras ignoradas filtradas pela busca (descrição e loja).
@@ -156,13 +176,19 @@ export default function ProdutosScreen() {
   // Render
   const tabOptions: Array<{ value: Tab; label: string }> = [
     { value: 'PENDENTES', label: `Pendentes (${pending.length})` },
-    { value: 'COM_ESTOQUE', label: `Com Estoque (${filteredByTab.COM_ESTOQUE.length})` },
-    { value: 'SEM_ESTOQUE', label: `Sem Estoque (${filteredByTab.SEM_ESTOQUE.length})` },
+    { value: 'CLASSIFICADOS', label: `Classificados (${classifiedProdutos.comEstoque.length + classifiedProdutos.semEstoque.length})` },
     { value: 'INATIVO', label: `Inativo|Excluído (${filteredByTab.INATIVO.length + ignoredFiltered.length})` },
   ];
+  // v103: aba inicial — pula para CLASSIFICADOS se NÃO houver pendência
+  // (ao abrir com catálogo já todo classificado, sem precisar de 1 toque).
+  React.useEffect(() => {
+    if (tab === 'PENDENTES' && pendingLoaded && pending.length === 0) {
+      setTab('CLASSIFICADOS');
+    }
+  }, [pendingLoaded, pending.length, tab]);
   return (
     <Screen title="Catálogo de Produto">
-      {/* v101 — CARROSSEL: 4 abas Segmented. */}
+      {/* v103 — CARROSSEL: 3 abas Segmented. */}
       <Segmented<Tab> options={tabOptions} value={tab} onChange={setTab} />
 
       <TextField label="Buscar produto" value={search} onChangeText={setSearch} placeholder="Ex.: Café • Gourmet • 500G" />
@@ -189,73 +215,97 @@ export default function ProdutosScreen() {
             </View>
           </Card>
         )
-      ) : (
-        <>
-          {tab === 'INATIVO' ? (
-            filteredByTab.INATIVO.length === 0 && ignoredFiltered.length === 0 ? (
-              <EmptyState
-                icon={ICONS.produtos}
-                title="Sem inativos ou excluídos"
-                hint="Nenhum produto inativo ou ignorado ainda."
-              />
-            ) : (
-              <>
-                {filteredByTab.INATIVO.map((p) => (
-                  <ProductCard
-                    key={p.id}
-                    product={p}
-                    categoryLabel={categoryLabelOf(p)}
-                    stockLabel={stockLabelOf(p)}
-                  />
-                ))}
-                {ignoredFiltered.length > 0 ? (
-                  <Card className="!py-3 border-slate-300 mt-3">
-                    <Text className={`font-bold ${theme.primaryText}`}>Ignorados da NF (não é produto)</Text>
-                    <Text className="text-[11px] text-slate-500 mt-0.5">
-                      Toque em "Restaurar" para voltarem a perguntar na próxima nota desta loja.
-                    </Text>
-                    <View className="mt-2 gap-2">
-                      {ignoredFiltered.map((r) => (
-                        <IgnoredRuleRow key={r.id} rule={r} onRestore={async () => {
-                          try { await services.nfce.restoreIgnoreRule(r.id); showToast('Regra restaurada'); bump(); }
-                          catch (e) { showToast(e instanceof Error ? e.message : String(e), 'err'); }
-                        }} />
-                      ))}
-                    </View>
-                  </Card>
-                ) : null}
-              </>
-            )
-          ) : filteredByTab[tab].length === 0 ? (
-            <EmptyState
-              icon={ICONS.produtos}
-              title={tab === 'COM_ESTOQUE' ? 'Sem produtos com controle' : 'Sem produtos sem controle'}
-              hint='Use "+ Novo produto" ou classifique um item da aba Pendentes.'
-            />
-          ) : (
-            filteredByTab[tab].map((p) => (
+      ) : tab === 'INATIVO' ? (
+        filteredByTab.INATIVO.length === 0 && ignoredFiltered.length === 0 ? (
+          <EmptyState
+            icon={ICONS.produtos}
+            title="Sem inativos ou excluídos"
+            hint="Nenhum produto inativo ou ignorado ainda."
+          />
+        ) : (
+          <>
+            {filteredByTab.INATIVO.map((p) => (
               <ProductCard
                 key={p.id}
                 product={p}
                 categoryLabel={categoryLabelOf(p)}
                 stockLabel={stockLabelOf(p)}
+                unitLabel={unitLabelOf(p.base_unit)}
               />
-            ))
-          )}
-        </>
-      )}
+            ))}
+            {ignoredFiltered.length > 0 ? (
+              <Card className="!py-3 border-slate-300 mt-3">
+                <Text className={`font-bold ${theme.primaryText}`}>Ignorados da NF (não é produto)</Text>
+                <Text className="text-[11px] text-slate-500 mt-0.5">
+                  Toque em "Restaurar" para voltarem a perguntar na próxima nota desta loja.
+                </Text>
+                <View className="mt-2 gap-2">
+                  {ignoredFiltered.map((r) => (
+                    <IgnoredRuleRow key={r.id} rule={r} onRestore={async () => {
+                      try { await services.nfce.restoreIgnoreRule(r.id); showToast('Regra restaurada'); bump(); }
+                      catch (e) { showToast(e instanceof Error ? e.message : String(e), 'err'); }
+                    }} />
+                  ))}
+                </View>
+              </Card>
+            ) : null}
+          </>
+        )
+      ) : tab === 'CLASSIFICADOS' ? (
+        // v103 — duas seções: COM e SEM estoque. EmptyState só se as DUAS vazias.
+        classifiedProdutos.comEstoque.length === 0 && classifiedProdutos.semEstoque.length === 0 ? (
+          <EmptyState
+            icon={ICONS.produtos}
+            title="Sem produtos classificados"
+            hint='Classifique um item da aba Pendentes ou use "＋ Novo produto".'
+          />
+        ) : (
+          <>
+            {classifiedProdutos.comEstoque.length > 0 ? (
+              <>
+                <SectionTitle>Com estoque ({classifiedProdutos.comEstoque.length})</SectionTitle>
+                {classifiedProdutos.comEstoque.map((p) => (
+                  <ProductCard
+                    key={p.id}
+                    product={p}
+                    categoryLabel={categoryLabelOf(p)}
+                    stockLabel={stockLabelOf(p)}
+                    unitLabel={unitLabelOf(p.base_unit)}
+                  />
+                ))}
+              </>
+            ) : null}
+            {classifiedProdutos.semEstoque.length > 0 ? (
+              <>
+                <SectionTitle>Sem estoque ({classifiedProdutos.semEstoque.length})</SectionTitle>
+                {classifiedProdutos.semEstoque.map((p) => (
+                  <ProductCard
+                    key={p.id}
+                    product={p}
+                    categoryLabel={categoryLabelOf(p)}
+                    stockLabel={stockLabelOf(p)}
+                    unitLabel={unitLabelOf(p.base_unit)}
+                  />
+                ))}
+              </>
+            ) : null}
+          </>
+        )
+      ) : null}
 
       <Button label="＋ Novo produto" variant="primary" onPress={() => router.push('/produtos/novo')} />
     </Screen>
   );
 }
 
-const ProductCard = React.memo(function ProductCard({ product, categoryLabel, stockLabel }: {
+const ProductCard = React.memo(function ProductCard({ product, categoryLabel, stockLabel, unitLabel }: {
   product: ProductRow;
   categoryLabel: string;
   stockLabel: string;
+  unitLabel: string;
 }) {
   const inactive = (product.status ?? 'ATIVO') === 'INATIVO';
+  const hasStock = (product.stock_control ?? 0) === 1;
   return (
     <Pressable
       onPress={() => router.push(`/produtos/${product.id}`)}
@@ -263,14 +313,23 @@ const ProductCard = React.memo(function ProductCard({ product, categoryLabel, st
       accessibilityLabel={`Editar ${product.name}`}
     >
       <Card className={inactive ? '!py-3 opacity-60' : '!py-3'}>
-        <View className="flex-row justify-between items-center gap-2">
+        <View className="flex-row justify-between items-start gap-2">
           <View className="flex-1">
             <Text className="font-semibold text-slate-900">{displayProductName(product.name)}</Text>
             <Text className="text-xs text-slate-500 mt-0.5">{categoryLabel}</Text>
-            <Text className={`text-sm font-bold mt-0.5 ${theme.primaryText}`}>{stockLabel}</Text>
-            <Text className="text-[11px] text-slate-400 mt-0.5">
-              {product.stock_control ? 'Com controle' : 'Sem controle'}{inactive ? ' · Inativo' : ''}
+            <Text className="text-[11px] text-slate-500 mt-0.5">
+              {unitLabel}{inactive ? ' · Inativo' : ''}
             </Text>
+            {hasStock ? (
+              <Text className={`text-sm font-bold mt-0.5 ${theme.primaryText}`}>{stockLabel}</Text>
+            ) : null}
+            <View className="mt-1">
+              <View className={`self-start px-2 py-0.5 rounded-full ${hasStock ? 'bg-emerald-50' : 'bg-slate-100'}`}>
+                <Text className={`text-[10px] font-semibold ${hasStock ? 'text-emerald-700' : 'text-slate-600'}`}>
+                  {hasStock ? 'Com controle' : 'Sem controle'}
+                </Text>
+              </View>
+            </View>
           </View>
           <Pressable
             onPress={() => router.push(`/produtos/${product.id}`)}
@@ -299,12 +358,8 @@ const PendingRow = React.memo(function PendingRow({ group, onCreateNew, onIgnore
         {group.storeName ?? 'Loja'}{group.storeProductCode ? ` · código ${group.storeProductCode}` : ''} · {group.n} item(ns) desta nota
       </Text>
       <View className="mt-2 flex-row gap-2">
-        <Pressable onPress={onCreateNew} className="bg-amber-50 px-3 py-2 rounded-lg" accessibilityRole="button">
-          <Text className="text-amber-800 font-medium">＋ Criar produto</Text>
-        </Pressable>
-        <Pressable onPress={onIgnore} className="bg-slate-50 px-3 py-2 rounded-lg" accessibilityRole="button">
-          <Text className="text-slate-700 font-medium">Não é produto</Text>
-        </Pressable>
+        <Button label="＋ Criar produto" variant="primary" onPress={onCreateNew} />
+        <Button label="Não é produto" variant="danger" onPress={onIgnore} />
       </View>
     </View>
   );

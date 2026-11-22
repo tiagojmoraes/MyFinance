@@ -71,3 +71,43 @@ export function divideCents(totalCents: number, n: number): number[] {
   if (n > 0) out[n - 1] = (base + remainder) * sign;
   return out;
 }
+
+/**
+ * Estoque em KILOS — formato único para o usuário (v103).
+ *  · 'G' (base interna continua em GRAMAS) → kg em pt-BR com até 3 casas, sem
+ *    zeros à direita ("1,5 kg", "0,25 kg", "12 kg");
+ *  · 'UN' → "N un";
+ *  · 'ML' (legado) → "N ml";
+ *  · null/qualquer outra → "N un" (compat).
+ */
+export function formatStockQty(baseUnit: string | null | undefined, qBase: number): string {
+  const q = Math.round(Number(qBase) || 0);
+  if (baseUnit === 'G') {
+    const kg = q / 1000;
+    if (Number.isInteger(kg)) return `${kg} kg`;
+    return `${kg.toLocaleString('pt-BR', { maximumFractionDigits: 3 })} kg`;
+  }
+  if (baseUnit === 'ML') return `${q} ml`;
+  return `${q} un`;
+}
+
+/** Aceita texto pt-BR ("0,5", "1.250", "1.250,5") e devolve GRAMAS (inteiro).
+ *  Inválido → NaN (a UI testa `Number.isFinite`). */
+export function parseKgToGrams(text: string): number {
+  const cleaned = String(text ?? '').replace(/[^\d,.\-]/g, '').trim();
+  if (!cleaned) return NaN;
+  const normalized = cleaned.includes(',')
+    ? cleaned.replace(/\./g, '').replace(',', '.')
+    : cleaned;
+  const v = Number.parseFloat(normalized);
+  if (!Number.isFinite(v)) return NaN;
+  return Math.round(v * 1000);
+}
+
+/** Inverso: preenche campos de edição a partir de GRAMAS ("250" → "0,25"). */
+export function gramsToKgText(g: number | null | undefined): string {
+  if (g == null) return '';
+  const kg = Number(g) / 1000;
+  if (Number.isInteger(kg)) return String(kg);
+  return kg.toLocaleString('pt-BR', { maximumFractionDigits: 3 });
+}

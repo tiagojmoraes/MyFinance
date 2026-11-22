@@ -19,7 +19,7 @@ import { showToast } from '../lib/toast';
 import { Screen, Card, TextField, Select, Button, EmptyState, SectionTitle } from '../src/components/ui';
 import { useDataEffect } from '../src/components/useDataEffect';
 import { useAppStore } from '../src/store/appStore';
-import { formatBRL } from '../src/lib/money';
+import { formatBRL, formatStockQty, parseKgToGrams } from '../src/lib/money';
 import { ymdToBr } from '../src/lib/dates';
 import { SETTING_KEYS } from '../src/services/SettingsService';
 import type { ListaCompraProduct, ListaCompraOffer } from '../src/services/PantryService';
@@ -129,8 +129,9 @@ export default function DespensaScreen() {
         ean: ean.trim() ? ean.trim() : null,
         baseUnit: (unit as 'G' | 'ML' | 'UN') ?? 'UN',
       });
-      const th = parseInt(threshold, 10);
-      await services.pantry.setLowThreshold(product.id, Number.isInteger(th) ? th : null);
+      const th = unit === 'G' ? parseKgToGrams(threshold) : parseInt(threshold, 10);
+      const valid = unit === 'G' ? Number.isFinite(th) : Number.isInteger(th);
+      await services.pantry.setLowThreshold(product.id, valid ? th : null);
       setName(''); setEan(''); setThreshold('');
       setTab('LIST');
       bump();
@@ -152,16 +153,21 @@ export default function DespensaScreen() {
   const fmtQty = (item: PantryItem): string => {
     // v101: sem controle de estoque não tem quantidade — só catálogo.
     if ((item.stock_control ?? 0) !== 1) return 'Sem controle';
-    if (item.base_unit === 'G') return `${item.quantity_base} g`;
-    if (item.base_unit === 'ML') return `${item.quantity_base} ml`;
-    return `${item.quantity_base} un`;
+    return formatStockQty(item.base_unit, item.quantity_base);
   };
 
   const units = [
     { id: 'UN', label: 'Unidade' },
-    { id: 'G', label: 'Gramas' },
-    { id: 'ML', label: 'Mililitros' },
+    { id: 'G', label: 'Kilos' },
+    { id: 'ML', label: 'Mililitros (legado)' },
   ];
+
+  // v103: alerta de estoque baixo em KG quando unidade é "Kilos".
+  const thresholdLabel = unit === 'G' ? 'Alerta de estoque baixo (kg)'
+    : unit === 'UN' ? 'Alerta de estoque baixo (un)'
+    : 'Alerta de estoque baixo (na unidade base)';
+  const thresholdKb = (unit === 'G' ? 'decimal-pad' : 'numeric') as 'decimal-pad' | 'numeric';
+  const thresholdPlaceholder = unit === 'G' ? 'Ex.: 0,5' : 'Ex.: 1000';
 
   // ---------- v72: formatação dos preços da lista ----------
   const priceLabel = (dim: 'G' | 'ML' | 'UN', unitPriceBaseCents: number): string => {
@@ -267,7 +273,7 @@ export default function DespensaScreen() {
                   <TextField label="Nome" value={name} onChangeText={setName} placeholder="Ex.: Arroz 5kg" />
                   <TextField label="EAN/GTIN (opcional)" value={ean} onChangeText={setEan} keyboardType="numeric" placeholder="789..." />
                   <Select label="Unidade base" items={units} selectedId={unit} onSelect={setUnit} />
-                  <TextField label="Alerta de estoque baixo (na unidade base)" value={threshold} onChangeText={setThreshold} keyboardType="numeric" placeholder="Ex.: 1000" />
+                  <TextField label={thresholdLabel} value={threshold} onChangeText={setThreshold} keyboardType={thresholdKb} placeholder={thresholdPlaceholder} />
                   <Button label="Cadastrar produto" onPress={addProduct} />
                 </Card>
               </View>
