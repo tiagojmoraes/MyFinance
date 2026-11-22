@@ -106,18 +106,21 @@ export class PantryStockRepo {
     return this.db.getFirstAsync<PantryStockRow>('SELECT * FROM pantry_stock WHERE product_id = ?', [productId]);
   }
 
-  /** Lista para a tela Despensa (cache + produto). */
+  /** Lista para a tela Despensa (cache + produto). v104: agora seleciona
+   *  `pc.stock_control` para a UI decidir se a quantidade é controlável. */
   listWithProduct(): Promise<{
     product_id: string;
     name: string;
     ean: string | null;
     base_unit: 'G' | 'ML' | 'UN' | null;
+    stock_control: number | null;
     quantity_base: number;
     low_threshold_base: number | null;
     last_movement_at: string | null;
   }[]> {
     return this.db.getAllAsync(
       `SELECT pc.id AS product_id, pc.name AS name, pc.ean AS ean, pc.base_unit AS base_unit,
+              pc.stock_control AS stock_control,
               COALESCE(ps.quantity_base, 0) AS quantity_base,
               ps.low_threshold_base AS low_threshold_base,
               ps.last_movement_at AS last_movement_at

@@ -809,6 +809,77 @@ CREATE INDEX IF NOT EXISTS idx_nfce_ignores_cnpj_desc ON nfce_item_ignores(cnpj,
         }
       },
     },
+    // v104 — LISTA DE COMPRA SALVA: o carrinho único (despensa_lista_compra em
+    // app_settings) sai e dá lugar a 2 tabelas próprias. Cada lista tem
+    // cabeçalho (nome, datas, status) e itens com quantidade na UNIDADE BASE
+    // (g, ml, un) — mantém compat com KG via parseKgToGrams e com UN inteiro.
+    //  · shopping_lists: cabeçalho. status = 'OPEN' | 'CLOSED' (não decidido em tela).
+    //  · shopping_list_items: itens por lista. UNIQUE(list_id, product_id) para
+    //    evitar duplicar o mesmo produto na mesma lista.
+    // Migração antiga (cart em app_settings): o conteúdo existente é convertido
+    // em uma lista "Lista anterior" só se houver itens salvos.
+    {
+      version: 61,
+      name: 'v104_listas_compra_salvas',
+      sql: '', // aplicado por fn (precisa migrar carrinho do app_settings)
+      fn: async (driver) => {
+        await driver.execAsync(/* sql */ `
+CREATE TABLE IF NOT EXISTS shopping_lists (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','CLOSED'))
+);
+CREATE TABLE IF NOT EXISTS shopping_list_items (
+  id TEXT PRIMARY KEY NOT NULL,
+  list_id TEXT NOT NULL REFERENCES shopping_lists(id) ON DELETE CASCADE,
+  product_id TEXT NOT NULL REFERENCES products_catalog(id),
+  qty_base INTEGER NOT NULL CHECK (qty_base > 0)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_shopping_list_item
+  ON shopping_list_items(list_id, product_id);
+CREATE INDEX IF NOT EXISTS idx_shopping_list_items_list
+  ON shopping_list_items(list_id);
+        `);
+        // v104: migra o carrinho ÚNICO (v72) para a primeira lista, se houver.
+        // O carrinho guardava só product_id — quantidade padrão 1 na unidade
+        // base (o usuário ajustava ao "Ver lista"). Mantém o nome
+        // "Lista anterior" como rótulo amigável.
+        const raw = await driver.getFirstAsync<{ value: string | null }>(
+          "SELECT value FROM app_settings WHERE key = 'despensa_lista_compra'"
+        );
+        if (raw?.value) {
+          let productIds: string[] = [];
+          try {
+            const arr = JSON.parse(raw.value);
+            if (Array.isArray(arr)) productIds = arr.filter((x) => typeof x === 'string');
+          } catch {
+            /* best-effort */
+          }
+          if (productIds.length > 0) {
+            const now = new Date().toISOString();
+            const listId = `list-${now.replace(/[^0-9]/g, '')}-${Math.random().toString(36).slice(2, 8)}`;
+            await driver.runAsync(
+              `INSERT INTO shopping_lists (id, name, created_at, updated_at, status)
+               VALUES (?, 'Lista anterior', ?, ?, 'OPEN')`,
+              [listId, now, now]
+            );
+            // Dedup antes de inserir (a chave uq_shopping_list_item garante 1 ocorrência).
+            const unique = Array.from(new Set(productIds));
+            for (const pid of unique) {
+              await driver.runAsync(
+                `INSERT INTO shopping_list_items (id, list_id, product_id, qty_base)
+                 VALUES (?, ?, ?, 1)`,
+                [`item-${listId}-${pid}`, listId, pid]
+              );
+            }
+          }
+          // Apaga o setting legado (a partir de agora tudo passa pela tabela).
+          await driver.runAsync("DELETE FROM app_settings WHERE key = 'despensa_lista_compra'");
+        }
+      },
+    },
 ];
 
 /**

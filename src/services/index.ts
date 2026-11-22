@@ -22,6 +22,7 @@ import { DashboardService } from './DashboardService';
 import { SearchService } from './SearchService';
 import { BankMessageService } from './BankMessageService';
 import { WishlistService } from './WishlistService';
+import { ShoppingListService } from './ShoppingListService';
 
 /** Driver proxy que delega ao driver real assim que o bootstrap terminar. */
 class DeferredDriver implements DbDriver {
@@ -82,6 +83,8 @@ export interface Services {
   bankMessages: BankMessageService;
   /** v69: Programação de Compra (classificações, reservas e metodologia). */
   wishlist: WishlistService;
+  /** v104: LISTAS DE COMPRA SALVAS — múltiplas, com quantidade por item. */
+  shoppingList: ShoppingListService;
   ready: Promise<void>;
 }
 
@@ -117,7 +120,10 @@ export function buildServices(db: DbDriver): Omit<Services, 'ready'> {
   // — transferência atômica — e o BalanceService para a sobra do mês).
   const bankMessages = new BankMessageService(db);
   const wishlist = new WishlistService(db, transactions, balance);
-  return { db, balance, invoices, transactions, installments, recurrences, products, pantry, nfce, ofx, backup, categories, settings, budgets, savings, dashboard, search, bankMessages, wishlist };
+  // v104: o serviço da LISTA DE COMPRA não depende de orçamento/transferência
+  // (só lê do banco e persiste listas); fica no grafo principal.
+  const shoppingList = new ShoppingListService(db);
+  return { db, balance, invoices, transactions, installments, recurrences, products, pantry, nfce, ofx, backup, categories, settings, budgets, savings, dashboard, search, bankMessages, wishlist, shoppingList };
 }
 
 let singleton: Services | null = null;

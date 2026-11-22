@@ -198,11 +198,19 @@ export class PantryService {
 
   // ------------------------------------------------------ lista de compra ----
 
-  /** v100 — LISTA DE COMPRA: nasce de produtos controláveis, com oferta
-   *  (última + média), atual e mínimo. Visões Por CNPJ / Por Categoria. */
-  async getListaCompraData(productIds: string[]): Promise<ListaCompraProduct[]> {
-    if (productIds.length === 0) return [];
-    const marks = productIds.map(() => '?').join(',');
+  /** v104 — LISTA DE COMPRA com quantidade por item.
+   *  Recebe uma lista de itens (`items`) com `productId` e `qtyBase`
+   *  (quantidade na UNIDADE BASE — gramas para KG, ml para L, unidades para
+   *  UN). O retorno inclui o preço unitário por BASE para cada loja, com a
+   *  MELHOR oferta destacada (menor preço entre lojas).
+   *
+   *  v104 — preço por kg/L: usa `nfce_items.unit_price_cents` (em R$/kg ou R$/L
+   *  — lido desde a v98) quando existir; senão cai para `total_cents /
+   *  qtyBase`. KG nunca mistura com UN. */
+  async getListaCompraData(items: ListaCompraItemInput[]): Promise<ListaCompraProduct[]> {
+    if (items.length === 0) return [];
+    const ids = items.map((i) => i.productId);
+    const marks = ids.map(() => '?').join(',');
     const prods = await this.db.getAllAsync<{
       id: string; name: string; base_unit: 'G' | 'ML' | 'UN' | null; category_id: string | null;
       category_name: string | null; parent_name: string | null;
@@ -217,13 +225,16 @@ export class PantryService {
          LEFT JOIN categories p ON p.id = c.parent_id
          LEFT JOIN pantry_stock ps ON ps.product_id = pc.id
         WHERE pc.id IN (${marks})`,
-      [...productIds] as never
+      [...ids] as never
     );
+    const qtyByProduct = new Map<string, number>();
+    for (const it of items) qtyByProduct.set(it.productId, Math.max(0, it.qtyBase || 0));
+
     const byProduct = new Map<string, ListaCompraProduct>();
-    for (const pid of productIds) {
-      const cat = prods.find((p) => p.id === pid);
-      byProduct.set(pid, {
-        productId: pid,
+    for (const it of items) {
+      const cat = prods.find((p) => p.id === it.productId);
+      byProduct.set(it.productId, {
+        productId: it.productId,
         name: cat?.name ?? 'Produto',
         baseUnit: cat?.base_unit ?? null,
         categoryId: cat?.category_id ?? null,
@@ -233,16 +244,18 @@ export class PantryService {
         offers: [],
         currentBase: cat?.quantity_base ?? 0,
         minBase: cat?.low_threshold_base ?? null,
+        qtyBase: qtyByProduct.get(it.productId) ?? 0,
         aggregate: null,
       });
     }
 
     const rows = await this.db.getAllAsync<{
-      product_id: string; qty: number | null; unit_original: string | null; total_cents: number | null;
+      product_id: string; qty: number | null; unit_original: string | null;
+      total_cents: number | null; unit_price_cents: number | null;
       store_name: string | null; issued_at: string | null; access_key: string;
       doc_cnpj: string | null;
     }>(
-      `SELECT ni.product_id, ni.qty, ni.unit_original, ni.total_cents,
+      `SELECT ni.product_id, ni.qty, ni.unit_original, ni.total_cents, ni.unit_price_cents,
               d.store_name, d.issued_at, d.access_key, d.cnpj AS doc_cnpj
          FROM nfce_items ni
          JOIN nfce_documents d ON d.access_key = ni.access_key
@@ -250,7 +263,7 @@ export class PantryService {
           AND ni.status = 'PARSED' AND ni.qty > 0 AND ni.total_cents > 0
           AND d.issued_at IS NOT NULL
         ORDER BY ni.product_id, d.issued_at DESC, ni.line_number ASC`,
-      [...productIds] as never
+      [...ids] as never
     );
 
     const seenStore = new Map<string, Set<string>>();
@@ -268,12 +281,21 @@ export class PantryService {
       if (lojas.has(storeKey)) continue;
       lojas.add(storeKey);
       seenStore.set(r.product_id, lojas);
+      // v104: nfce_items.unit_price_cents está em R$/kg, R$/L ou R$/un. Para
+      // cair em R$/BASE (g, ml, un), KG/ML divide por 1000; UN fica igual.
+      const unitPriceBase = (conv.baseUnit === 'UN')
+        ? (r.unit_price_cents ?? 0)
+        : ((r.unit_price_cents ?? 0) / 1000);
+      const fallback = (r.total_cents ?? 0) / conv.deltaBase;
+      const priceBase = r.unit_price_cents != null && r.unit_price_cents > 0
+        ? unitPriceBase
+        : fallback;
       entry.offers.push({
         storeName: loja,
         cnpj: r.doc_cnpj,
         date: (r.issued_at ?? '').slice(0, 10),
         accessKey: r.access_key,
-        unitPriceBaseCents: Math.round((r.total_cents ?? 0) / conv.deltaBase * 1000) / 1000,
+        unitPriceBaseCents: priceBase,
         dim: conv.baseUnit,
       });
     }
@@ -289,7 +311,7 @@ export class PantryService {
         storeCount: new Set(entry.offers.map((o) => o.cnpj ?? o.storeName)).size,
       };
     }
-    return productIds.map((pid) => byProduct.get(pid)!);
+    return items.map((it) => byProduct.get(it.productId)!);
   }
 
   /** Histórico do produto. */
@@ -303,6 +325,7 @@ export interface ListaCompraOffer {
   cnpj: string | null;
   date: string;
   accessKey: string;
+  /** Preço na UNIDADE BASE (R$/g · R$/ml · R$/un). */
   unitPriceBaseCents: number;
   dim: 'G' | 'ML' | 'UN';
 }
@@ -315,6 +338,13 @@ export interface OfferAggregate {
   storeCount: number;
 }
 
+/** v104 — entrada da lista de compra (produto + quantidade na unidade base). */
+export interface ListaCompraItemInput {
+  productId: string;
+  /** Quantidade na UNIDADE BASE: g (Kilos) · ml (Litros/ML) · un (Unidade). */
+  qtyBase: number;
+}
+
 export interface ListaCompraProduct {
   productId: string;
   name: string;
@@ -325,6 +355,8 @@ export interface ListaCompraProduct {
   dim: 'G' | 'ML' | 'UN' | null;
   currentBase: number;
   minBase: number | null;
+  /** Quantidade da LISTA na unidade base (originada em shopping_list_items.qty_base). */
+  qtyBase: number;
   aggregate: OfferAggregate | null;
   offers: ListaCompraOffer[];
 }

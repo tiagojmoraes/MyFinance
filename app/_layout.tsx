@@ -88,6 +88,10 @@ export default function RootLayout() {
           {/* v70 (MELHORIA 2.3): cadastro/edição de categoria em TELA PRÓPRIA */}
           <Stack.Screen name="categoria-nova" />
           <Stack.Screen name="despensa" />
+          {/* v104: tela PRÓPRIA para cadastrar produto fora do inline do Estoque (＋ da Despensa). */}
+          <Stack.Screen name="produto-novo" />
+          {/* v104: lista de compra — tela própria para MONTAR nova lista (＋ da aba Lista de Compra). */}
+          <Stack.Screen name="lista-compra-nova" />
           <Stack.Screen name="nfce" />
           <Stack.Screen name="ofx" />
           <Stack.Screen name="ajustes" />
