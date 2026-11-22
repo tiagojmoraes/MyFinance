@@ -13,6 +13,8 @@ import { View, Text, Pressable } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { router } from 'expo-router';
 import * as Sharing from 'expo-sharing';
+import * as Print from 'expo-print';
+import * as FileSystem from 'expo-file-system/legacy';
 import { showToast } from '../lib/toast';
 import { Screen, Card, Button, EmptyState, SectionTitle } from '../src/components/ui';
 import { useDataEffect } from '../src/components/useDataEffect';
@@ -21,6 +23,25 @@ import { formatBRL, formatStockQty } from '../src/lib/money';
 import { ymdToBr } from '../src/lib/dates';
 import type { ListaCompraProduct, ListaCompraOffer } from '../src/services/PantryService';
 import type { ShoppingListSummary } from '../src/services/ShoppingListService';
+
+/** v106 — junta mensagem + códigos de erro do nativo (expo-modules). Usado
+ *  no catch do PDF para mostrar a causa completa em vez do cabeçalho
+ *  truncado que vinha antes. */
+function formatErr(err: unknown): string {
+  if (!err) return '';
+  if (typeof err === 'string') return err.slice(0, 200);
+  if (err instanceof Error) {
+    const e = err as Error & { code?: string; cause?: unknown };
+    const parts = [e.message];
+    if (e.code) parts.push(`código: ${e.code}`);
+    if (e.cause) {
+      try { parts.push(`causa: ${e.cause instanceof Error ? e.cause.message : String(e.cause)}`); }
+      catch { parts.push('causa: [indisponível]'); }
+    }
+    return parts.join(' · ').slice(0, 200);
+  }
+  try { return JSON.stringify(err).slice(0, 200); } catch { return String(err).slice(0, 200); }
+}
 
 interface PantryItem {
   product_id: string;
@@ -49,6 +70,8 @@ export default function DespensaScreen() {
     name: string; updatedAt: string;
   } | null>(null);
   const [visao, setVisao] = React.useState<'CATEGORIA' | 'LOJA'>('CATEGORIA');
+  /** v106 — anti duplo toque do PDF (gera + compartilha). */
+  const [pdfBusy, setPdfBusy] = React.useState(false);
 
   const reloadLists = React.useCallback(async () => {
     const summaries = await services.shoppingList.listSummaries();
@@ -205,26 +228,37 @@ export default function DespensaScreen() {
   // v104 — ações do menu "⋮" das listas salvas:
   // "Ver lista" abre previewListId (mantém layout e visões atuais).
   // "Gerar Lista" produz o PDF agrupado conforme a visão ativa e compartilha.
+  // v106 — anti duplo toque + erro completo + cópia do PDF com nome limpo +
+  // fallback para o diálogo nativo de impressão.
   const generatePdf = async (grouping: 'CATEGORIA' | 'LOJA') => {
+    if (pdfBusy) return;
+    setPdfBusy(true);
+    let generatedUri: string | null = null;
+    const stamp = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const fileName = `lista-compra-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}.pdf`;
     try {
       const { printListaPdf } = await import('../src/lib/listaPdf');
       const groups = grouping === 'CATEGORIA'
         ? porCategoria.map((g) => ({
             title: g.cat,
-            lines: g.items.map(({ p, melhor }) => ({
+            lines: g.items.map(({ p, melhor, subtotalCents }) => ({
               productName: p.name,
               qty: formatQtyForPdf(p),
-              priceLabel: melhor ? priceLabel(melhor.dim, melhor.unitPriceBaseCents) : undefined,
+              // v106 — "R$ 19,90/kg · R$ 9,95" (preço unitário + total do item).
+              priceLabel: melhor
+                ? `${priceLabel(melhor.dim, melhor.unitPriceBaseCents)} · ${formatBRL(Math.round(subtotalCents * 100) / 100)}`
+                : undefined,
               categoryLabel: melhor?.storeName ?? undefined,
             })),
             totalLabel: formatBRL(Math.round(g.totalCents * 100) / 100),
           }))
         : porLoja.map((g) => ({
             title: `${g.loja} · ${formatBRL(Math.round(g.total * 100) / 100)}`,
-            lines: g.cats.flatMap(([cat, prods]) => prods.map(({ p, offer }) => ({
+            lines: g.cats.flatMap(([cat, prods]) => prods.map(({ p, offer, subtotalCents }) => ({
               productName: p.name,
               qty: formatQtyForPdf(p),
-              priceLabel: priceLabel(offer.dim, offer.unitPriceBaseCents),
+              priceLabel: `${priceLabel(offer.dim, offer.unitPriceBaseCents)} · ${formatBRL(Math.round(subtotalCents * 100) / 100)}`,
               categoryLabel: cat,
             }))),
           }));
@@ -238,14 +272,52 @@ export default function DespensaScreen() {
         grandTotalLabel: formatBRL(Math.round(grandTotalCents * 100) / 100),
       };
       const { uri } = await printListaPdf(input);
+      generatedUri = uri;
       const canShare = await Sharing.isAvailableAsync();
-      if (canShare) {
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Compartilhar lista' });
-      } else {
+      if (!canShare) {
         showToast('PDF gerado — sem app de compartilhamento no aparelho');
+        return;
+      }
+      // v106 — copia o PDF para o cache com nome limpo (muitos visualizadores
+      // ignoram nomes tipo "Print_AAA..."). Compartilha a cópia. Em fallback
+      // (cópia falha), usa o URI original.
+      const targetUri = `${FileSystem.cacheDirectory ?? ''}${fileName}`;
+      let shareUri = uri;
+      if (targetUri) {
+        try {
+          await FileSystem.copyAsync({ from: uri, to: targetUri });
+          shareUri = targetUri;
+        } catch (copyErr) {
+          console.warn('[despensa] Falha ao copiar PDF para cache — usando URI original.', copyErr);
+        }
+      }
+      try {
+        await Sharing.shareAsync(shareUri, {
+          mimeType: 'application/pdf',
+          dialogTitle: 'Compartilhar lista',
+          UTI: 'com.adobe.pdf',
+        } as Parameters<typeof Sharing.shareAsync>[1]);
+      } catch (shareErr) {
+        // v106 — fallback: abre o diálogo nativo do sistema (permite "Salvar
+        // como PDF" no Android). Se também falhar, mostra causa completa.
+        const fullShare = formatErr(shareErr);
+        console.warn('[despensa] Sharing.shareAsync falhou; tentando Print.printAsync.', shareErr);
+        try {
+          await Print.printAsync({ uri });
+          showToast('PDF aberto para impressão/salvar — escolha "Salvar como PDF" se quiser o arquivo.');
+        } catch (printErr) {
+          console.warn('[despensa] Print.printAsync também falhou.', printErr);
+          const fullPrint = formatErr(printErr);
+          showToast(`PDF gerado, mas falhou compartilhar: ${fullPrint || fullShare}`, 'err');
+        }
       }
     } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), 'err');
+      const msg = formatErr(err);
+      console.warn('[despensa] Falha ao gerar/compartilhar PDF.', err, { generatedUri, fileName });
+      const tail = `PDF: ${generatedUri ?? '—'} · arquivo: ${fileName}`;
+      showToast(`${msg || 'Falha ao gerar PDF'} — ${tail}`.slice(0, 320), 'err');
+    } finally {
+      setPdfBusy(false);
     }
   };
 
@@ -323,8 +395,10 @@ export default function DespensaScreen() {
             visao={visao}
             setVisao={setVisao}
             porCategoria={porCategoria}
+            porLoja={porLoja}
             priceLabel={priceLabel}
             formatBRL={formatBRL}
+            pdfBusy={pdfBusy}
             onClose={closeList}
             onGeneratePdf={generatePdf}
             onRemoveItem={async (productId) => {
@@ -469,8 +543,21 @@ function ListRow({ list, fmtTotal, onPress, onDelete }: {
   );
 }
 
+/** v106 — item agrupado por loja (preço daquela loja + subtotal). */
+type PorLojaItem = { p: ListaCompraProduct; offer: ListaCompraOffer; subtotalCents: number };
+/** v106 — agrupamento por loja: cats são [categoria, itens[]]. */
+type PorLojaGroup = {
+  loja: string;
+  cats: Array<[string, PorLojaItem[]]>;
+  total: number;
+  /** Itens da lista que NÃO têm oferta nesta loja (cobre o "rodapé N sem preço"). */
+  faltam: number;
+};
+
 /** v104 — preview de uma lista (mantém layout e visões atuais do v72 +
- *  botões para alterar quantidade / excluir / gerar PDF). */
+ *  botões para alterar quantidade / excluir / gerar PDF).
+ *  v106 — recebe `porLoja` pré-calculada (com subtotalCents e `faltam`),
+ *  e expõe `pdfBusy` para travar o botão enquanto gera/compartilha. */
 function ListPreview(props: {
   listName: string;
   updatedAt: string;
@@ -478,8 +565,10 @@ function ListPreview(props: {
   visao: 'CATEGORIA' | 'LOJA';
   setVisao: (v: 'CATEGORIA' | 'LOJA') => void;
   porCategoria: Array<{ cat: string; items: Array<{ p: ListaCompraProduct; melhor: ListaCompraOffer | null; subtotalCents: number }>; totalCents: number }>;
+  porLoja: PorLojaGroup[];
   priceLabel: (dim: 'G' | 'ML' | 'UN', unitPriceBaseCents: number) => string;
   formatBRL: (cents: number) => string;
+  pdfBusy: boolean;
   onClose: () => void;
   onGeneratePdf: (grouping: 'CATEGORIA' | 'LOJA') => Promise<void>;
   onRemoveItem: (productId: string) => Promise<void>;
@@ -495,11 +584,15 @@ function ListPreview(props: {
           <Text className="font-semibold text-slate-900 flex-1 text-center" numberOfLines={1}>{props.listName}</Text>
           <Pressable
             onPress={() => props.onGeneratePdf(props.visao)}
+            disabled={props.pdfBusy}
             accessibilityRole="button"
-            accessibilityLabel="Gerar PDF da lista"
-            className="bg-emerald-50 rounded-lg px-3 py-2"
+            accessibilityState={{ disabled: props.pdfBusy }}
+            accessibilityLabel={props.pdfBusy ? 'Gerando PDF' : 'Gerar PDF da lista'}
+            className={`rounded-lg px-3 py-2 ${props.pdfBusy ? 'bg-slate-100' : 'bg-emerald-50'}`}
           >
-            <Text className="font-bold text-emerald-700">PDF</Text>
+            <Text className={`font-bold ${props.pdfBusy ? 'text-slate-400' : 'text-emerald-700'}`}>
+              {props.pdfBusy ? 'Gerando…' : 'PDF'}
+            </Text>
           </Pressable>
         </View>
       </Card>
@@ -551,6 +644,7 @@ function ListPreview(props: {
           ) : (
             <ListPreviewPorLoja
               data={props.data}
+              porLoja={props.porLoja}
               priceLabel={props.priceLabel}
               formatBRL={props.formatBRL}
               onRemoveItem={props.onRemoveItem}
@@ -567,39 +661,15 @@ function ListPreview(props: {
  *  MULTIPLICAM qty × preço (a regra correta do cálculo). */
 function ListPreviewPorLoja(props: {
   data: ListaCompraProduct[];
+  porLoja: PorLojaGroup[];
   priceLabel: (dim: 'G' | 'ML' | 'UN', unitPriceBaseCents: number) => string;
   formatBRL: (cents: number) => string;
   onRemoveItem: (productId: string) => Promise<void>;
   onSetQty: (productId: string, qtyBase: number) => Promise<void>;
 }) {
-  // Monta o agrupamento por loja ▸ categoria ▸ item.
-  const groups = React.useMemo(() => {
-    const lojaMap = new Map<string, Map<string, Array<{ p: ListaCompraProduct; offer: ListaCompraOffer; subtotalCents: number }>>>();
-    for (const p of props.data) {
-      for (const o of p.offers) {
-        const cats = lojaMap.get(o.storeName) ?? new Map();
-        const key = p.parentCategoryName ? `${p.parentCategoryName} ▸ ${p.categoryName ?? 'Sem categoria'}` : p.categoryName ?? 'Sem categoria';
-        const arr = cats.get(key) ?? [];
-        arr.push({ p, offer: o, subtotalCents: p.qtyBase * o.unitPriceBaseCents });
-        cats.set(key, arr);
-        lojaMap.set(o.storeName, cats);
-      }
-    }
-    return [...lojaMap.entries()]
-      .map(([loja, cats]) => {
-        const todos = [...cats.values()].flat();
-        return {
-          loja,
-          cats: [...cats.entries()].sort((a, b) => a[0].localeCompare(b[0])),
-          total: todos.reduce((a, b) => a + b.subtotalCents, 0),
-        };
-      })
-      .sort((a, b) => a.total - b.total);
-  }, [props.data]);
-
   return (
     <>
-      {groups.map(({ loja, cats, total }) => (
+      {props.porLoja.map(({ loja, cats, total, faltam }) => (
         <Card key={loja} className="gap-1.5">
           <View className="flex-row justify-between items-center">
             <Text className="font-semibold text-slate-900" numberOfLines={1}>{loja}</Text>
@@ -611,11 +681,13 @@ function ListPreviewPorLoja(props: {
           {cats.map(([cat, prods]) => (
             <View key={cat} className="pl-2 gap-1">
               <Text className="text-[11px] font-semibold text-slate-500">{cat}</Text>
-              {prods.map(({ p, offer }) => (
+              {prods.map(({ p, offer, subtotalCents }) => (
                 <PreviewItemCard
                   key={p.productId}
                   p={p}
                   rightLabel={props.priceLabel(offer.dim, offer.unitPriceBaseCents)}
+                  rightSubLabel={offer.date ? `compra em ${ymdToBr(offer.date)}` : undefined}
+                  subtotalLabel={props.formatBRL(Math.round(subtotalCents * 100) / 100)}
                   priceLabel={props.priceLabel}
                   onRemove={() => props.onRemoveItem(p.productId)}
                   onSetQty={(qty) => props.onSetQty(p.productId, qty)}
@@ -623,8 +695,30 @@ function ListPreviewPorLoja(props: {
               ))}
             </View>
           ))}
+          {faltam > 0 ? (
+            <Text className="text-[10px] text-slate-400 px-1">
+              {faltam} item(ns) sem preço nesta loja
+            </Text>
+          ) : null}
         </Card>
       ))}
+      {props.data.filter((p) => p.offers.length === 0).length > 0 ? (
+        <Card className="gap-1.5 !py-3 border-slate-200">
+          <Text className="text-[11px] font-semibold text-slate-500">Sem preço em notas lidas</Text>
+          {props.data
+            .filter((p) => p.offers.length === 0)
+            .map((p) => (
+              <PreviewItemCard
+                key={p.productId}
+                p={p}
+                rightLabel="sem preço em notas lidas"
+                priceLabel={props.priceLabel}
+                onRemove={() => props.onRemoveItem(p.productId)}
+                onSetQty={(qty) => props.onSetQty(p.productId, qty)}
+              />
+            ))}
+        </Card>
+      ) : null}
       <Text className="text-[11px] text-slate-400 px-1">
         Total da loja = soma de (quantidade × preço na loja) de cada item. Lojas ordenadas da mais barata para a mais cara.
       </Text>

@@ -14,7 +14,7 @@
 import React from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
-import { Screen, Card, TextField, Button, EmptyState, Segmented, SectionTitle } from '../src/components/ui';
+import { Screen, Card, TextField, Button, EmptyState, Segmented } from '../src/components/ui';
 import { useDataEffect } from '../src/components/useDataEffect';
 import { useAppStore } from '../src/store/appStore';
 import { ICONS } from '../src/theme/icons';
@@ -82,6 +82,8 @@ export default function ProdutosScreen() {
   // v103: vira true quando a 1ª carga dos pendentes termina — usado para
   // saltarmos direto para "Classificados" se nada estiver pendente.
   const [pendingLoaded, setPendingLoaded] = React.useState(false);
+  // v106: sub-seletor da aba CLASSIFICADOS (Com Estoque / Sem Estoque).
+  const [classTab, setClassTab] = React.useState<'COM' | 'SEM'>('COM');
 
   // useDataEffect provides dataVersion trigger via appStore.bump().
   // We fetch on mount and on data version changes.
@@ -252,45 +254,53 @@ export default function ProdutosScreen() {
           </>
         )
       ) : tab === 'CLASSIFICADOS' ? (
-        // v103 — duas seções: COM e SEM estoque. EmptyState só se as DUAS vazias.
-        classifiedProdutos.comEstoque.length === 0 && classifiedProdutos.semEstoque.length === 0 ? (
-          <EmptyState
-            icon={ICONS.produtos}
-            title="Sem produtos classificados"
-            hint='Classifique um item da aba Pendentes ou use "＋ Novo produto".'
+        // v106 — sub-seletor Com/Sem estoque: o usuário escolhe QUAL lista
+        // ver; o totalizador da aba principal segue somando as duas.
+        <>
+          <Segmented<'COM' | 'SEM'>
+            options={[
+              { value: 'COM', label: `Com Estoque (${classifiedProdutos.comEstoque.length})` },
+              { value: 'SEM', label: `Sem Estoque (${classifiedProdutos.semEstoque.length})` },
+            ]}
+            value={classTab}
+            onChange={setClassTab}
           />
-        ) : (
-          <>
-            {classifiedProdutos.comEstoque.length > 0 ? (
-              <>
-                <SectionTitle>Com estoque ({classifiedProdutos.comEstoque.length})</SectionTitle>
-                {classifiedProdutos.comEstoque.map((p) => (
-                  <ProductCard
-                    key={p.id}
-                    product={p}
-                    categoryLabel={categoryLabelOf(p)}
-                    stockLabel={stockLabelOf(p)}
-                    unitLabel={unitLabelOf(p.base_unit)}
-                  />
-                ))}
-              </>
-            ) : null}
-            {classifiedProdutos.semEstoque.length > 0 ? (
-              <>
-                <SectionTitle>Sem estoque ({classifiedProdutos.semEstoque.length})</SectionTitle>
-                {classifiedProdutos.semEstoque.map((p) => (
-                  <ProductCard
-                    key={p.id}
-                    product={p}
-                    categoryLabel={categoryLabelOf(p)}
-                    stockLabel={stockLabelOf(p)}
-                    unitLabel={unitLabelOf(p.base_unit)}
-                  />
-                ))}
-              </>
-            ) : null}
-          </>
-        )
+          {classTab === 'COM' ? (
+            classifiedProdutos.comEstoque.length === 0 ? (
+              <EmptyState
+                icon={ICONS.produtos}
+                title="Nenhum produto com estoque"
+                hint='Ative "Controlar estoque" na edição de um produto classificado para ele aparecer aqui.'
+              />
+            ) : (
+              classifiedProdutos.comEstoque.map((p) => (
+                <ProductCard
+                  key={p.id}
+                  product={p}
+                  categoryLabel={categoryLabelOf(p)}
+                  stockLabel={stockLabelOf(p)}
+                  unitLabel={unitLabelOf(p.base_unit)}
+                />
+              ))
+            )
+          ) : classifiedProdutos.semEstoque.length === 0 ? (
+            <EmptyState
+              icon={ICONS.produtos}
+              title="Nenhum produto sem estoque"
+              hint='Deixe "Controlar estoque" desligado na edição de um produto classificado para ele aparecer aqui.'
+            />
+          ) : (
+            classifiedProdutos.semEstoque.map((p) => (
+              <ProductCard
+                key={p.id}
+                product={p}
+                categoryLabel={categoryLabelOf(p)}
+                stockLabel={stockLabelOf(p)}
+                unitLabel={unitLabelOf(p.base_unit)}
+              />
+            ))
+          )}
+        </>
       ) : null}
 
       <Button label="＋ Novo produto" variant="primary" onPress={() => router.push('/produtos/novo')} />
