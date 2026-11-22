@@ -1473,4 +1473,90 @@ export class NfceService {
     }
     return { ignored };
   }
+
+  /**
+   * v102 — LISTA REGRAS DE "NÃO É PRODUTO" para a aba Inativo|Excluído do
+   * Catálogo. Cada linha é uma regra persistida em `nfce_item_ignores`; o
+   * nome da loja vem do documento mais recente com aquele CNPJ (subselect).
+   */
+  async listIgnoredRules(): Promise<Array<{
+    id: string;
+    cnpj: string | null;
+    ean: string | null;
+    store_product_code: string | null;
+    description_norm: string;
+    created_at: string | null;
+    store_name: string | null;
+  }>> {
+    return this.db.getAllAsync<{
+      id: string; cnpj: string | null; ean: string | null;
+      store_product_code: string | null; description_norm: string;
+      created_at: string | null; store_name: string | null;
+    }>(
+      `SELECT i.id, i.cnpj, i.ean, i.store_product_code,
+              i.description_norm, i.created_at,
+              (SELECT d.store_name FROM nfce_documents d
+                WHERE d.cnpj IS NOT NULL AND i.cnpj IS NOT NULL AND d.cnpj = i.cnpj
+                ORDER BY d.issued_at DESC LIMIT 1) AS store_name
+         FROM nfce_item_ignores i
+         ORDER BY i.created_at DESC`
+    );
+  }
+
+  /** v102 — RESTAURAR REGRA "NÃO É PRODUTO": os itens IGNORED do mesmo CNPJ
+   *  que casam por (ean) OU (store_product_code) OU (lower(trim(description))
+   *  = description_norm) voltam a PARSED; a regra some. Em transação, com
+   *  UPDATE em lote (1 query) + DELETE da regra. needs_review é recalculado
+   *  nos documentos afetados, como ignorePendingBatch já faz. */
+  async restoreIgnoreRule(ruleId: string): Promise<{ restored: number }> {
+    const rule = await this.db.getFirstAsync<{
+      cnpj: string | null; ean: string | null;
+      store_product_code: string | null; description_norm: string;
+    }>(
+      `SELECT cnpj, ean, store_product_code, description_norm
+         FROM nfce_item_ignores WHERE id = ?`,
+      [ruleId]
+    );
+    if (!rule) throw new Error('Regra não encontrada');
+    const affectedDocs = new Set<string>();
+    await this.db.transactionAsync(async () => {
+      const ids = await this.db.getAllAsync<{ id: string; access_key: string }>(
+        `SELECT ni.id, ni.access_key
+           FROM nfce_items ni
+           JOIN nfce_documents d ON d.access_key = ni.access_key
+          WHERE ni.status = 'IGNORED' AND ni.product_id IS NULL
+            AND d.cnpj IS ?
+            AND (
+              (CAST(? AS TEXT) IS NOT NULL AND ni.ean_extracted IS NOT NULL AND ni.ean_extracted = CAST(? AS TEXT))
+              OR (CAST(? AS TEXT) IS NOT NULL AND ni.store_product_code IS NOT NULL AND ni.store_product_code = CAST(? AS TEXT))
+              OR (TRIM(LOWER(IFNULL(ni.description, ''))) = ?)
+            )`,
+        [
+          rule.cnpj,
+          rule.ean ?? null, rule.ean ?? null,
+          rule.store_product_code ?? null, rule.store_product_code ?? null,
+          rule.description_norm,
+        ] as never
+      );
+      const idList: string[] = [];
+      for (const r of ids) { idList.push(r.id); affectedDocs.add(r.access_key); }
+      if (idList.length > 0) {
+        const placeholders = idList.map(() => '?').join(',');
+        await this.db.runAsync(
+          `UPDATE nfce_items SET status = 'PARSED' WHERE id IN (${placeholders})`,
+          idList
+        );
+      }
+      await this.db.runAsync(
+        `DELETE FROM nfce_item_ignores WHERE id = ?`,
+        [ruleId]
+      );
+    });
+    for (const docKey of affectedDocs) {
+      await this.documents.updateHeader(docKey, {
+        needs_review: await this.hasPendingReview(docKey),
+      });
+    }
+    return { restored: affectedDocs.size };
+  }
 }
