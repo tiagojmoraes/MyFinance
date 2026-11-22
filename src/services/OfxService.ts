@@ -6,7 +6,7 @@
  *  2. Hash SHA-256 -> verificar uniqueness em ofx_imports (abortar se duplicado).
  *  3. Query SQL agregada (CTE com VALUES do lote) buscando TODOS os candidatos.
  *  4. Processar resultados em JS/TS: agrupar por FITID, heurística de desempate
- *     (memo similarity + date proximity), classificar MATCHED_AUTO / AMBIGUOUS / NEW_TX.
+ *     (só proximidade de DATA+VALOR), classificar MATCHED_AUTO / AMBIGUOUS / NEW_TX.
  *  5. Abrir UMA transação SQLite e gravar todos os inserts/updates do lote.
  *  6. Commit e refresh.
  */
@@ -15,7 +15,7 @@ import type { DbDriver } from '../db/types';
 import { genId } from '../lib/id';
 import { sha256Hex } from '../lib/hash';
 import { nowIso, addDays } from '../lib/dates';
-import { memoSimilarity, normalizeText } from '../lib/text';
+import { normalizeText } from '../lib/text';
 import { parseOfx, dedupeByFitid } from '../parsers/ofx';
 import { OfxImportRepo, OfxLineRepo } from '../repos/misc';
 import { TransactionRepo, FinancialMoveRepo } from '../repos/finance';
@@ -152,12 +152,13 @@ export class OfxService {
         decisions.set(line.fitid, { status: 'NEW_TX', txId: null, candidates: [] });
         continue;
       }
+      // v8 — score só por DATA+VALOR: o memo não desempata mais (texto do
+      // extrato é sujo). Candidatos empatados na data viram AMBIGUOUS e o
+      // usuário decide na tela de OFX.
       const scored = usable
         .map((c) => ({
           ...c,
-          score:
-            memoSimilarity(line.memo, c.txDescription) +
-            this.dateProximityScore(line.postedOn ?? c.ofxDate, c.txDate),
+          score: this.dateProximityScore(line.postedOn ?? c.ofxDate, c.txDate),
         }))
         .sort((a, b) => b.score - a.score);
 

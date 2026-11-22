@@ -63,11 +63,10 @@
  *    "só pergunta dos novos";
  *  - A CHAVE DA VERDADE é o CNPJ (estável na nota), não o store_name
  *    (que varia: "SENDAS DISTRIBUIDORA" × "Assaí"): alias agora tem cnpj;
- *  - FUZZY POR TOKENS (productSimilarity): v59 — SÓ SUGERE o candidato na
- *    revisão (score >= 0.84), nunca unifica sozinho nem grava decisão;
- *    o usuário decide durante a NF (É esse / É outro / + Produto novo);
+ *  - SEM FUZZY NA RESOLUÇÃO (v8): a semelhança de nome existe SÓ na tela
+ *    "＋ Criar produto"; item sem EAN/alias fica PENDING (Catálogo);
  *  - LOG DA DECISÃO em nfce_items (match_type/match_score): EAN | ALIAS
- *    (código) | FUZZY (nome+score) | MANUAL (você decidiu) | NEW;
+ *    (código) | MANUAL (você decidiu) | NEW | PENDING (FUZZY antigo = legado);
  *  - RE-RESOLUÇÃO RETROATIVA: itens antigos sem produto são re-resolvidos
  *    quando a nota é reprocessada — o aprendizado alcança o passado;
  *  - GUARDA DE UNIDADE: item em KG ligado a produto em UN NÃO entra no
@@ -117,7 +116,7 @@ import { PantryService } from './PantryService';
  * o que o prepareFromHtml devolve para a tela montar o card "Itens da nota".
  * canApplyStock = produto vinculado + conversão de unidade possível + guarda de
  * dimensão ok (mesma regra do estoque automático). needsReview segue a regra
- * "só pergunta dos novos" (novo produto ou fuzzy abaixo do automático).
+ * "só pergunta dos novos" (item sem produto ou NEW).
  */
 export interface NfcePreparedItem {
   id: string;
@@ -611,10 +610,8 @@ export class NfceService {
     /**
      * v100 — resolve UM item contra a TABELA DA VERDADE sem auto-criar produto.
      * (a) CNPJ+código bate → ALIAS (zero interação).
-     * (b) Sem código, fuzzy SUGERE — match fica ALIAS-só-quando-usuário-confirmar
-     *     (no Catálogo), então aqui fica como PENDING com sugestão gravada em
-     *     match_type='FUZZY' e score.
-     * (c) Nada bate → product_id NULL (PENDING — vai para o Catálogo).
+     * (b) Nada bate → product_id NULL (PENDING — vai para o Catálogo).
+     * Sem fuzzy: a sugestão por nome só existe na tela "＋ Criar produto".
      */
     const resolveAndLink = async (args: {
       itemId: string;
@@ -648,8 +645,8 @@ export class NfceService {
          resolution.matchType === 'IGNORE' ? ' · NUNCA MAIS' :
          resolution.needsReview ? ' · REVISÃO' : '')
       );
-      // v100: PENDING e FUZZY sempre pendem revisão — o usuário classifica 1 vez
-      // no Catálogo (decisão possível: É esse / outro novo / não é produto).
+      // PENDING pende revisão — o usuário classifica 1 vez no Catálogo
+      // (decisão possível: É esse / outro novo / não é produto).
       if (resolution.needsReview || resolution.matchType === 'PENDING') needsReview++;
       // v101 — AUTO-CRIADO pela NF não entra automaticamente na Despensa/Lista:
       // fica com stock_control=0 e origin='NFCE' até o usuário CLASSIFICAR no
@@ -883,8 +880,8 @@ export class NfceService {
         !r.product_base_unit || !conversion?.baseUnit || r.product_base_unit === conversion.baseUnit;
       const canApplyStock =
         r.status === 'PARSED' && r.stock_applied === 0 && !!r.product_id && !!conversion && unitOk;
-      // v59: fuzzy SÓ SUGERE — TODO FUZZY vai para revisão (a decisão é do usuário);
-      // EAN/ALIAS continuam automáticos (são a verdade gravada pelo usuário)
+      // LEGADO: itens gravados como FUZZY por versões antigas continuam em
+      // revisão (tratados como PENDING); EAN/ALIAS continuam automáticos.
       const needsReview =
         r.status === 'PARSED' &&
         (!r.product_id ||
@@ -1059,9 +1056,9 @@ export class NfceService {
   /**
    * v37 — HÁ PENDÊNCIA DE REVISÃO? (estável entre reprocessamentos)
    * Pendência real = item PARSED sem produto OU marcado para perguntar
-   * (NEW sempre; FUZZY sempre — v59: fuzzy SÓ SUGERE, a decisão é do usuário
-   * durante a NF, nunca unifica sozinho). Decisões MANUAIS e matches
-   * automáticos (EAN/ALIAS) NÃO penduram o documento.
+   * (NEW sempre; FUZZY só como LEGADO de versões antigas, tratado como
+   * PENDING). Decisões MANUAIS e matches automáticos (EAN/ALIAS) NÃO
+   * penduram o documento.
    */
   private async hasPendingReview(accessKey: string): Promise<0 | 1> {
     const row = await this.db.getFirstAsync<{ n: number }>(
@@ -1075,7 +1072,7 @@ export class NfceService {
     return (row?.n ?? 0) > 0 ? 1 : 0;
   }
 
-  /** Confirmar sugestão fuzzy (REVIEW_SUGGESTED) e aplicar ao estoque. */
+  /** Confirmar o produto do item (É esse) e aplicar ao estoque. */
   async confirmItemProduct(itemId: string): Promise<void> {
     const item = await this.items.getById(itemId);
     if (!item || !item.product_id) throw new Error('Item sem produto vinculado');
@@ -1296,9 +1293,10 @@ export class NfceService {
 
   /**
    * v100 — LISTA PENDENTE PARA O CATÁLOGO. Agrupa os nfce_items PENDING
-   * (product_id IS NULL, status PARSED) por (cnpj, store_product_code) e
-   * traz o top-3 de sugestões fuzzy por grupo. Cada grupo representa UM item
-   * a classificar — 1 toque resolve. A tela `/produtos` exibe "Novos da NF (N)".
+   * (product_id IS NULL, status PARSED) por (cnpj, store_product_code).
+   * Cada grupo representa UM item a classificar — 1 toque resolve. A tela
+   * `/produtos` exibe "Novos da NF (N)". Sem sugestões: semelhança de nome
+   * só existe na tela "＋ Criar produto".
    */
   async listPendingItems(): Promise<Array<{
     groupKey: string;
@@ -1308,7 +1306,6 @@ export class NfceService {
     sampleDescription: string;
     n: number;
     sampleItemId: string;
-    suggestions: Array<{ productId: string; name: string; score: number }>;
   }>> {
     const rows = await this.db.getAllAsync<{
       id: string; access_key: string; description: string | null;
@@ -1333,15 +1330,12 @@ export class NfceService {
       groupKey: string; cnpj: string | null; storeName: string | null;
       storeProductCode: string | null;
       sampleDescription: string; n: number; sampleItemId: string;
-      suggestions: Array<{ productId: string; name: string; score: number }>;
     }> = [];
     for (const g of groups.values()) {
-      const sugg = g.description ? await this.productService.suggestTop3(g.description, 3) : [];
       out.push({
         groupKey: g.cnpj ? `${g.cnpj}::${g.store_product_code ?? ''}` : `loja::${g.store_product_code ?? ''}`,
         cnpj: g.cnpj, storeName: g.store_name, storeProductCode: g.store_product_code,
         sampleDescription: g.description ?? '', n: g.count, sampleItemId: g.id,
-        suggestions: sugg.map((s) => ({ productId: s.product.id, name: s.product.name, score: s.score })),
       });
     }
     return out;

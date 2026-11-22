@@ -94,7 +94,6 @@ export default function NfceReviewScreen() {
   const [cats, setCats] = React.useState<CatOption[]>([]);
   // v37 — classificação na revisão: seletor de produto e categoria/subitem
   const [linkingId, setLinkingId] = React.useState<string | null>(null);
-  const [suggestions, setSuggestions] = React.useState<Array<{ id: string; label: string; pct: number }>>([]);
   const [search, setSearch] = React.useState('');
   const [creatingId, setCreatingId] = React.useState<string | null>(null);
   const [newCatId, setNewCatId] = React.useState<string | null>(null);
@@ -185,16 +184,11 @@ export default function NfceReviewScreen() {
     }
   };
 
-  /** v37: abre o seletor "Vincular produto" com sugestões da tabela da verdade. */
-  const openLinker = async (item: ItemRow) => {
+  /** v8 — seletor "Vincular produto": busca manual no catálogo (sem sugestões
+   *  por semelhança; o fuzzy de nome existe só na tela "＋ Criar produto"). */
+  const openLinker = (item: ItemRow) => {
     setLinkingId(item.id);
     setSearch('');
-    try {
-      const sugg = item.description ? await services.products.suggestProducts(item.description, 6) : [];
-      setSuggestions(sugg.map((s) => ({ id: s.product.id, label: s.product.name, pct: Math.round(s.score * 100) })));
-    } catch {
-      setSuggestions([]);
-    }
   };
 
   const linkTo = async (item: ItemRow, productId: string) => {
@@ -316,11 +310,7 @@ export default function NfceReviewScreen() {
 
   const filteredProducts = (q: string) => {
     const nq = normalizeText(q);
-    const list = suggestions.length && !nq
-      ? suggestions.map((s) => ({ id: s.id, label: `${s.label} · ${s.pct}%` }))
-      : (nq
-          ? products.filter((p) => normalizeText(p.label).includes(nq))
-          : suggestions.map((s) => ({ id: s.id, label: `${s.label} · ${s.pct}%` })));
+    const list = nq ? products.filter((p) => normalizeText(p.label).includes(nq)) : products;
     return list.slice(0, 6);
   };
 

@@ -220,9 +220,11 @@ export interface NfceItemRow {
   product_id: string | null;
   status: 'PARSED' | 'ERROR' | 'IGNORED';
   stock_applied: number;
-  /** v37 — LOG DA DECISÃO: como este item foi ligado ao produto da verdade. */
+  /** v37 — LOG DA DECISÃO: como este item foi ligado ao produto da verdade.
+   *  `FUZZY` só existe em LINHAS ANTIGAS (v8 não grava mais) e é tratado
+   *  como PENDING na revisão. */
   match_type?: 'EAN' | 'ALIAS' | 'FUZZY' | 'MANUAL' | 'NEW' | null;
-  /** v37: score do fuzzy (0..1) — 1.0 em EAN/ALIAS/MANUAL; null sem match. */
+  /** v37: score do match (0..1) — 1.0 em EAN/ALIAS/MANUAL; null sem match. */
   match_score?: number | null;
   /** v98: valor unitário lido da nota — null quando a página não traz
    *  "Vl. Unitário". */
@@ -310,7 +312,7 @@ export class NfceItemRepo {
 
   /** v37: registra COMO o item foi ligado (log da decisão — aprendizado).
  *  v100: aceita 'PENDING' (item sem produto ainda — vai para o Catálogo). */
-  setMatch(id: string, matchType: 'EAN' | 'ALIAS' | 'FUZZY' | 'MANUAL' | 'NEW' | 'PENDING' | 'IGNORE', score: number | null): Promise<unknown> {
+  setMatch(id: string, matchType: 'EAN' | 'ALIAS' | 'MANUAL' | 'NEW' | 'PENDING' | 'IGNORE', score: number | null): Promise<unknown> {
     return this.db.runAsync('UPDATE nfce_items SET match_type = ?, match_score = ? WHERE id = ?', [
       matchType, score, id,
     ]);

@@ -2,11 +2,10 @@
  *  Regras acordadas com o usuário:
  *  - Produto = o que se vê. Alias (CNPJ+código) = o que o app usa por dentro, NÃO aparece na tela.
  *  - Classificar (categoria/subcategoria) = 1 vez, na tabela. Nunca durante a NF.
- *  - Vincular = durante a NF, 1 item por vez. Fuzzy só SUGERE, nunca unifica sozinho.
+ *  - Vincular = durante a NF, 1 item por vez. Sem fuzzy: EAN → alias → pendente.
  *  - Memória: SEMPRE / PERGUNTAR / NUNCA por produto.
  *  - Estoque por unidade da NF: KG e UN separados, sem conversão.
  */
-import { productSimilarity } from './text';
 
 export type PantryPolicy = 'ALWAYS' | 'ASK' | 'NEVER';
 export type StockUnit = 'G' | 'ML' | 'UN' | 'KG' | 'L';
@@ -48,31 +47,16 @@ export function findByAlias(aliases: ProductAlias[], cnpj: string | null | undef
   if (!a) return null;
   return products.find(p => p.id === a.productId) ?? null;
 }
-/** 3º passo: Fuzzy SÓ SUGERE (nunca unifica). Retorna melhor sugestão + score. */
-export function suggestByFuzzy(name: string, products: CatalogProduct[]): { product: CatalogProduct; score: number } | null {
-  if (!products.length) return null;
-  let best: CatalogProduct | null = null; let bestScore = 0;
-  for (const p of products) {
-    const s = productSimilarity(name, p.name);
-    if (s > bestScore) { bestScore = s; best = p; }
-  }
-  if (!best) return null;
-  return { product: best, score: bestScore };
-}
-/** Resolve um item da NF: EAN → Alias → Fuzzy-sugestão → Pergunta. */
+/** Resolve um item da NF: EAN → Alias → Pergunta (sem fuzzy). */
 export type NfItemResolution =
   | { kind: 'AUTO_EAN'; product: CatalogProduct }
   | { kind: 'AUTO_ALIAS'; product: CatalogProduct }
-  | { kind: 'ASK_FUZZY'; suggestion: CatalogProduct | null; score: number }
   | { kind: 'ASK_NEW' };
 export function resolveNfItem(input: { name: string; eanRaw: string | null; cnpj: string | null; storeCode: string | null }, products: CatalogProduct[], aliases: ProductAlias[]): NfItemResolution {
   const byEan = findByEan(products, input.eanRaw);
   if (byEan) return { kind: 'AUTO_EAN', product: byEan };
   const byAlias = findByAlias(aliases, input.cnpj, input.storeCode, products);
   if (byAlias) return { kind: 'AUTO_ALIAS', product: byAlias };
-  const sugg = suggestByFuzzy(input.name, products);
-  if (sugg && sugg.score >= 0.84) return { kind: 'ASK_FUZZY', suggestion: sugg.product, score: sugg.score };
-  if (sugg) return { kind: 'ASK_FUZZY', suggestion: null, score: sugg.score };
   return { kind: 'ASK_NEW' };
 }
 /** Ao confirmar um vínculo, grava/ensina o alias (CNPJ+código → produto) e, se veio EAN, grava EAN no produto. */

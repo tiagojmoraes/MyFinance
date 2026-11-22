@@ -1,11 +1,13 @@
 /**
- * ProductService v100 — TABELA DA VERDADE.
+ * ProductService v8 — TABELA DA VERDADE.
  *
  * Hierarquia no resolver automático da NF:
  *   1. (CNPJ, código) — chave da verdade. Resolve SEM interação. ZERO interação.
  *   2. Legacy (loja, código) — só se a nota não tem CNPJ.
- *   3. Fuzzy por qualificador (§6.4) — SUGERE top-3. Nunca unifica sozinho.
- *   4. Item PENDENTE — vai para o Catálogo (vai preferir SEMPRE 1 toque lá).
+ *   3. Item PENDENTE — vai para o Catálogo (vai preferir SEMPRE 1 toque lá).
+ *
+ * Sem fuzzy na resolução: a sugestão por semelhança existe SÓ na tela
+ * "＋ Criar produto" (`suggestTop3`), nunca vira vínculo automático.
  *
  * `classifyPending` / `createFromPending` / `ignoreFromPending` são as 3 ações
  * do 1 toque no Catálogo. A 1ª vez de cada item = 1 toque. Da 2ª em diante =
@@ -14,12 +16,12 @@
 
 import type { DbDriver } from '../db/types';
 import { genId } from '../lib/id';
-import { normalizeText, productSimilarity, FUZZY_AUTO_THRESHOLD, FUZZY_ASK_THRESHOLD } from '../lib/text';
+import { productSimilarity, FUZZY_ASK_THRESHOLD } from '../lib/text';
 import { displayName, productKey } from '../lib/productName';
 import { ProductRepo, ProductAliasRepo } from '../repos/catalog';
 import type { ProductRow } from '../repos/catalog';
 
-export type MatchType = 'EAN' | 'ALIAS' | 'FUZZY' | 'MANUAL' | 'NEW' | 'PENDING' | 'IGNORE';
+export type MatchType = 'EAN' | 'ALIAS' | 'MANUAL' | 'NEW' | 'PENDING' | 'IGNORE';
 
 export interface ResolutionResult {
   product: ProductRow | null;
@@ -169,11 +171,22 @@ export class ProductService {
 
   // ---------------------- CATÁLOGO FORM — SUGESTÕES (top-3) ----------------
 
-  /** v100 — fuzzy SÓ SUGERE top-3 (prompt §6.3). */
-  async suggestTop3(nfDescription: string, limit = 3): Promise<Array<{ product: ProductRow; score: number }>> {
+  /**
+   * v8 — sugestões por semelhança (até 3). Único consumidor: a tela
+   * "＋ Criar produto" — SUGERE, nunca vincula sozinho. Uma consulta em lote;
+   * `excludeId` ignora o próprio produto (edição/auto-sugestão).
+   */
+  async suggestTop3(
+    name: string,
+    opts: { limit?: number; excludeId?: string | null } = {}
+  ): Promise<Array<{ product: ProductRow; score: number }>> {
+    const typed = name?.trim();
+    if (!typed) return [];
+    const { limit = 3, excludeId = null } = opts;
     const catalog = await this.products.getAll(1000);
-    const target = displayName(nfDescription);
+    const target = displayName(typed);
     return catalog
+      .filter((product) => !excludeId || product.id !== excludeId)
       .map((product) => ({ product, score: productSimilarity(target, product.name) }))
       .filter((x) => x.score >= FUZZY_ASK_THRESHOLD)
       .sort((a, b) => b.score - a.score)
@@ -196,8 +209,9 @@ export class ProductService {
   }
 
   /**
-   * Compat: legacy resolve(), agora só lê não cria. Resolve por CNPJ+código
-   * (TABELA DA VERDADE), fuzzy SUGERE, e devolve PENDING quando não acha.
+   * Compat: legacy resolve(), agora só lê não cria. Resolve por EAN ou
+   * CNPJ+código (TABELA DA VERDADE) e devolve PENDING quando não acha.
+   * Sem fuzzy: a semelhança de nome só aparece na tela "＋ Criar produto".
    * Testes antigos ainda passam: EAN não casa mais (spec §5.6 — NÃO usar EAN
    * como chave); a versão cheia do fluxo da NF usa `resolve` direto.
    */
@@ -237,11 +251,6 @@ export class ProductService {
         if (product) return { product, matchType: 'ALIAS', needsReview: false, score: 1 };
       }
     }
-    // FUZZY
-    const candidates = await this.suggestTop3(input.name, 1);
-    if (candidates.length > 0 && candidates[0].score >= FUZZY_ASK_THRESHOLD) {
-      return { product: candidates[0].product, matchType: 'FUZZY', needsReview: true, score: candidates[0].score };
-    }
     // AUTO-CREATE (legado / testes) — a NF usa `resolve()` direto e NÃO cria.
     const row: ProductRow = {
       id: genId(),
@@ -262,19 +271,13 @@ export class ProductService {
     return { product: row, matchType: 'NEW', needsReview: true };
   }
 
-  /** Compat: sugestões para a tela. v100 = top-3 do fuzzy. */
-  async suggestProducts(name: string, limit = 6) {
-    return this.suggestTop3(name, Math.max(3, limit));
-  }
-
   /**
-   * v100 — resolve APENAS o que dá para resolver no momento da leitura.
+   * resolve APENAS o que dá para resolver no momento da leitura.
    * Ordem:
    *  1. ignore por (CNPJ, código) ou (CNPJ, EAN) → IGNORE.
    *  2. (CNPJ, código) → ALIAS (zero interação).
    *  3. (loja, código) → ALIAS (legado, só nota sem CNPJ).
-   *  4. FUZZY SÓ SUGERE — não resolve sozinho (precisa do 1 toque no Catálogo).
-   *  5. PENDENTE (sem produto) — usuário classifica 1 vez no Catálogo.
+   *  4. PENDENTE (sem produto) — usuário classifica 1 vez no Catálogo.
    * IMPORTANTE: a tabela `nfce_item_ignores` é EXCLUSIVA de "não é produto"
    * e casa por (CNPJ, código) — descrição nunca é chave.
    */
@@ -325,16 +328,7 @@ export class ProductService {
         }
       }
     }
-    // 4) FUZZY SÓ SUGERE — devolve um candidato para o seletor top-3 do Catálogo
-    const candidates = await this.suggestTop3(input.name, 1);
-    if (candidates.length > 0 && candidates[0].score >= FUZZY_ASK_THRESHOLD) {
-      return {
-        product: candidates[0].product,
-        matchType: 'FUZZY',
-        needsReview: true,
-        score: candidates[0].score,
-      };
-    }
+    // 4) PENDENTE — vai para o Catálogo (1 toque); sem fuzzy na resolução
     return { product: null, matchType: 'PENDING', needsReview: true };
   }
 

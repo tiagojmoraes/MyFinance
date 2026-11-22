@@ -1,6 +1,7 @@
 /**
- * Normalização de texto e similaridade fuzzy (Passo 3 da hierarquia de produtos v7).
- * Threshold da spec: Levenshtein > 0.90 OU Jaro-Winkler > 0.92.
+ * Normalização de texto e similaridade de PRODUTO (v8).
+ * O fuzzy de produtos existe só como SUGESTÃO na tela "＋ Criar produto";
+ * não resolve item de NF nem concilia OFX (ver productSimilarity abaixo).
  */
 
 /** Normaliza: lowercase, remove acentos, colapsa espaços duplos/trim. */
@@ -88,28 +89,6 @@ export function jaroWinkler(a: string, b: string): number {
   return jaroScore + prefix * 0.1 * (1 - jaroScore);
 }
 
-export const FUZZY_LEVENSHTEIN_THRESHOLD = 0.9;
-export const FUZZY_JARO_WINKLER_THRESHOLD = 0.92;
-
-/** Regra da spec: Levenshtein > 0.90 OU Jaro-Winkler > 0.92 (sobre textos normalizados). */
-export function isFuzzyMatch(candidate: string, target: string): boolean {
-  const c = normalizeText(candidate);
-  const t = normalizeText(target);
-  if (!c || !t) return false;
-  return (
-    levenshteinSimilarity(c, t) > FUZZY_LEVENSHTEIN_THRESHOLD ||
-    jaroWinkler(c, t) > FUZZY_JARO_WINKLER_THRESHOLD
-  );
-}
-
-/** Score composto para heurística de desempate do OFX (memo + proximidade de data). */
-export function memoSimilarity(memo: string | null | undefined, description: string | null | undefined): number {
-  const m = normalizeText(memo);
-  const d = normalizeText(description);
-  if (!m || !d) return 0;
-  return Math.max(jaroWinkler(m, d), levenshteinSimilarity(m, d));
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // v37 — TABELA DA VERDADE: similaridade por TOKENS de produto
 //
@@ -121,9 +100,8 @@ export function memoSimilarity(memo: string | null | undefined, description: str
 //    (interseção de tokens) — exige que o NÚCLEO do nome coincida.
 //
 // Zonas de decisão (TABELA DA VERDADE):
-//  · score >= FUZZY_AUTO_THRESHOLD -> UNIFICA sozinho (grava a decisão);
-//  · score >= FUZZY_ASK_THRESHOLD  -> PERGUNTA (candidato na revisão);
-//  · abaixo                        -> produto NOVO (classificar uma vez).
+//  · score >= FUZZY_ASK_THRESHOLD  -> SUGERE na tela "＋ Criar produto";
+//  · abaixo                        -> nenhuma sugestão (produto novo).
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** Tokens que NÃO identificam produto (unidades, embalagem, conectivos). */
@@ -192,9 +170,7 @@ function jaccard(a: string[], b: string[]): number {
   return union ? inter / union : 0;
 }
 
-/** v37: >= isto UNIFICA sozinho (mesmo produto em lojas diferentes). */
-export const FUZZY_AUTO_THRESHOLD = 0.94;
-/** v37: >= isto PERGUNTA na revisão (candidato provável); abaixo, produto novo. */
+/** v37: >= isto SUGERE na tela "＋ Criar produto" (candidato provável); abaixo, nada. */
 export const FUZZY_ASK_THRESHOLD = 0.84;
 
 /**

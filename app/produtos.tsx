@@ -29,7 +29,6 @@ interface PendingGroup {
   sampleDescription: string;
   n: number;
   sampleItemId: string;
-  suggestions: Array<{ productId: string; name: string; score: number }>;
 }
 interface ProductRow {
   id: string;
@@ -129,23 +128,6 @@ export default function ProdutosScreen() {
     return byTab;
   }, [products, search]);
 
-  /** v100 — 1 TOQUE: confirma que esse código da loja é o produto escolhido,
-   *  grava a amarração (CNPJ + código), vincula TODOS os itens pendentes do
-   *  mesmo (cnpj, código) e aplica estoque (Com controle + dimensão ok). */
-  const confirmPending = React.useCallback(async (g: PendingGroup, productId: string) => {
-    try {
-      await services.nfce.classifyPendingBatch({
-        cnpj: g.cnpj,
-        storeProductCode: g.storeProductCode,
-        productId,
-      });
-      showToast('Classificado');
-      bump();
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : String(e), 'err');
-    }
-  }, [services, bump]);
-
   // Render
   const tabOptions: Array<{ value: Tab; label: string }> = [
     { value: 'PENDENTES', label: `Pendentes (${pending.length})` },
@@ -168,11 +150,11 @@ export default function ProdutosScreen() {
           <Card className="!py-3 border-amber-300">
             <Text className={`font-bold ${theme.primaryText}`}>Pendentes de classificação ({pending.length})</Text>
             <Text className="text-[11px] text-slate-500 mt-0.5">
-              Toque em uma sugestão para classificar 1 vez — só então o produto entra na Despensa ou na Lista de Compra.
+              Toque em "＋ Criar produto" para classificar 1 vez — só então o produto entra na Despensa ou na Lista de Compra.
             </Text>
             <View className="mt-2 gap-2">
               {pending.map((g) => (
-                <PendingRow key={g.groupKey} group={g} onConfirm={(p) => confirmPending(g, p)} onCreateNew={() => router.push(`/produtos/novo?pending=${encodeURIComponent(JSON.stringify({
+                <PendingRow key={g.groupKey} group={g} onCreateNew={() => router.push(`/produtos/novo?pending=${encodeURIComponent(JSON.stringify({
                   description: g.sampleDescription, cnpj: g.cnpj, storeName: g.storeName, storeProductCode: g.storeProductCode, itemId: g.sampleItemId,
                 }))}`)} onIgnore={async () => {
                   try { await services.nfce.ignorePendingBatch({ cnpj: g.cnpj, storeProductCode: g.storeProductCode }); showToast('Ignorado'); bump(); }
@@ -242,9 +224,8 @@ const ProductCard = React.memo(function ProductCard({ product, categoryLabel, st
   );
 });
 
-const PendingRow = React.memo(function PendingRow({ group, onConfirm, onCreateNew, onIgnore }: {
+const PendingRow = React.memo(function PendingRow({ group, onCreateNew, onIgnore }: {
   group: PendingGroup;
-  onConfirm: (productId: string) => void;
   onCreateNew: () => void;
   onIgnore: () => void;
 }) {
@@ -255,20 +236,6 @@ const PendingRow = React.memo(function PendingRow({ group, onConfirm, onCreateNe
       <Text className="text-[11px] text-slate-500 mt-0.5">
         {group.storeName ?? 'Loja'}{group.storeProductCode ? ` · código ${group.storeProductCode}` : ''} · {group.n} item(ns) desta nota
       </Text>
-      {group.suggestions.length > 0 ? (
-        <View className="mt-2 flex-row flex-wrap gap-2">
-          {group.suggestions.slice(0, 3).map((s) => (
-            <Pressable key={s.productId} onPress={() => onConfirm(s.productId)} accessibilityRole="button"
-              className="bg-emerald-50 px-3 py-2 rounded-lg">
-              <Text className="text-emerald-900 font-bold">
-                {displayProductName(s.name)} {Math.round(s.score * 100)}%
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-      ) : (
-        <Text className="text-[11px] text-slate-500 mt-2">Nenhuma sugestão aceita o mínimo de semelhança.</Text>
-      )}
       <View className="mt-2 flex-row gap-2">
         <Pressable onPress={onCreateNew} className="bg-amber-50 px-3 py-2 rounded-lg" accessibilityRole="button">
           <Text className="text-amber-800 font-medium">＋ Criar produto</Text>

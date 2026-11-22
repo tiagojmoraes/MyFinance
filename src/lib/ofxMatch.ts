@@ -49,26 +49,7 @@ export function matchCardInstallment(line: OfxLineInput, installments: Installme
   return { status: 'MATCHED_AUTO', installmentId: scored[0].i.id, reason: `Parcela ${scored[0].i.sequenceNumber}/${scored[0].i.totalInstallments} a ${scored[0].d}d` };
 }
 
-/** v56 FIX — memoSimilarity NÃO pode decidir sozinho.
- *  Probado: memoSimilarity("MERCADO","FEIJÃO") = 0.64 (falso positivo),
- *  memoSimilarity("FARMACIA DROGASIL","Drogasil") = 0.47 (falso negativo).
- *  Por isso: DATA+VALOR decidem. Memo só DESEMPATA candidatos empatados por data.
- *  v63.1: o desempate usa a similaridade BRUTA com folga clara (>= 0.2) — com o
- *  peso 0.2 multiplicado antes, a diferença Mercado(0.74) × Farmácia(0.50) virava
- *  0.048 e nunca desempatava (o bug que a bateria v56 pegou).
+/** v8 — o memo NÃO desempata mais (texto do extrato é sujo). Data+valor
+ *  decidem; candidatos empatados na data ficam AMBIGUOUS e o usuário decide
+ *  na tela de OFX. `matchOfxLine` é o único match (conta e cartão).
  */
-import { memoSimilarity } from './text';
-export function memoTieBreak(memo: string, description: string | null): number {
-  if (!memo || !description) return 0;
-  return 0.2 * memoSimilarity(memo, description);
-}
-export function matchOfxLineWithMemo(line: OfxLineInput, existing: ExistingTx[], windowDays = 10): MatchResult {
-  const base = matchOfxLine(line, existing, windowDays);
-  if (base.status !== 'AMBIGUOUS') return base;
-  // Ambíguo por data: tenta desempatar por memo (só se a folga for CLARA)
-  const scored = base.candidates.map(tx => ({ tx, sim: line.memo && tx.description ? memoSimilarity(line.memo, tx.description) : 0 })).sort((a,b) => b.sim - a.sim);
-  if (scored.length >= 2 && scored[0].sim - scored[1].sim >= 0.2) {
-    return { status: 'MATCHED_AUTO', txId: scored[0].tx.id, score: base.score + memoTieBreak(line.memo, scored[0].tx.description), candidates: base.candidates, reason: `Desempate por memo: ${scored[0].sim.toFixed(2)} vs ${scored[1].sim.toFixed(2)}` };
-  }
-  return base;
-}

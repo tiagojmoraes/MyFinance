@@ -6,10 +6,13 @@
  *    digita só conteúdo), categoria ▸ subcategoria, Com/Sem controle, mínimo,
  *    unidade, status Ativo/Inativo (e "Não é produto");
  *  · inativar BLOQUEIA com saldo > 0;
- *  · o mesmo formulário serve para NF + manual + edição.
+ *  · o mesmo formulário serve para NF + manual + edição;
+ *  · v8 — na CRIAÇÃO, ao digitar o nome, mostra até 3 produtos semelhantes
+ *    do catálogo (só sugestão; tocar usa o existente — com `?pending=`,
+ *    vincula o item da NF em vez de criar outro produto).
  */
 import React from 'react';
-import { View, Text } from 'react-native';
+import { View, Text, Pressable } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { showToast } from '../../src/lib/toast';
 import { Screen, Card, TextField, Select, Segmented, Button } from '../../src/components/ui';
@@ -18,7 +21,7 @@ import { useDataEffect } from '../../src/components/useDataEffect';
 import { useAppStore } from '../../src/store/appStore';
 import { ICONS } from '../../src/theme/icons';
 import { theme } from '../../src/theme';
-import { displayProductName } from '../../src/lib/productName';
+import { displayProductName, productKey } from '../../src/lib/productName';
 
 type StockControl = 0 | 1;
 type Status = 'ATIVO' | 'INATIVO';
@@ -38,6 +41,8 @@ interface PendingInput {
   description?: string; cnpj?: string | null; storeName?: string | null;
   storeProductCode?: string | null; itemId?: string;
 }
+/** v8 — sugestão de produto existente (só na criação). */
+interface Suggestion { id: string; name: string; score: number }
 
 export default function ProdutoEditScreen() {
   const params = useLocalSearchParams<{ id?: string; pending?: string }>();
@@ -63,6 +68,9 @@ export default function ProdutoEditScreen() {
   const [deleteConfirm, setDeleteConfirm] = React.useState(false);
   const [productName, setProductName] = React.useState('');
   const [categories, setCategories] = React.useState<CategoryRow[]>([]);
+  // v8 — sugestões por semelhança: SÓ na criação (nunca na edição).
+  const [suggestions, setSuggestions] = React.useState<Suggestion[]>([]);
+  const suggestionCache = React.useRef(new Map<string, Suggestion[]>());
 
   // Carrega categorias
   React.useEffect(() => {
@@ -102,6 +110,50 @@ export default function ProdutoEditScreen() {
     }
     setLoaded(true);
   });
+
+  // v8 — compara o nome digitado com o catálogo (debounce 250 ms + cache por
+  // nome). Sem sugestão acima do limiar: nada aparece (sem aviso).
+  React.useEffect(() => {
+    if (!isNew) { setSuggestions([]); return; }
+    const typed = name.trim();
+    if (typed.length < 3) { setSuggestions([]); return; }
+    const key = productKey(typed);
+    const cached = suggestionCache.current.get(key);
+    if (cached) { setSuggestions(cached); return; }
+    let alive = true;
+    const timer = setTimeout(async () => {
+      try {
+        const found = await services.products.suggestTop3(typed, { limit: 3, excludeId: params.id ?? null });
+        if (!alive) return;
+        const list: Suggestion[] = found.map((s) => ({ id: s.product.id, name: s.product.name, score: s.score }));
+        suggestionCache.current.set(key, list);
+        setSuggestions(list);
+      } catch {
+        if (alive) setSuggestions([]);
+      }
+    }, 250);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [name, isNew, services, params.id]);
+
+  /** v8 — tocar na sugestão: pendente da NF → vincula e volta; criação manual → edita o existente. */
+  const applySuggestion = async (productId: string) => {
+    if (pending) {
+      try {
+        await services.nfce.classifyPendingBatch({
+          cnpj: pending.cnpj ?? null,
+          storeProductCode: pending.storeProductCode ?? null,
+          productId,
+        });
+        showToast('Vinculado ao produto existente');
+        bump();
+        router.back();
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : String(err), 'err');
+      }
+      return;
+    }
+    router.replace(`/produtos/${productId}`);
+  };
 
   const save = async () => {
     if (!name.trim()) { showToast('Informe o nome do produto', 'err'); return; }
@@ -204,6 +256,19 @@ export default function ProdutoEditScreen() {
           )}
 
           <TextField label="Nome" value={name} onChangeText={setName} placeholder="Ex.: Café" />
+          {isNew && suggestions.length > 0 ? (
+            <View className="gap-1">
+              <Text className="text-[11px] text-slate-500">Já existe no catálogo — toque para usar:</Text>
+              {suggestions.map((s) => (
+                <Pressable key={s.id} onPress={() => applySuggestion(s.id)} accessibilityRole="button"
+                  accessibilityLabel={`Usar ${s.name}`} className="bg-emerald-50 px-3 py-2 rounded-lg">
+                  <Text className="text-emerald-900 font-medium">
+                    {displayProductName(s.name)} · {Math.round(s.score * 100)}%
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
           <View className="bg-slate-50 rounded-lg p-2">
             <Text className="text-[10px] text-slate-500">EXIBIÇÃO (com bullet •)</Text>
             <Text className="font-medium text-slate-900">{preview || '—'}</Text>
@@ -261,7 +326,7 @@ export default function ProdutoEditScreen() {
             </>
           ) : null}
 
-          <Button label={isNew ? 'Cadastrar produto' : 'Salvar alterações'} onPress={save} loading={saving} />
+          <Button label={isNew ? (suggestions.length > 0 ? 'Criar mesmo assim' : 'Cadastrar produto') : 'Salvar alterações'} onPress={save} loading={saving} />
 
           {pending ? (
             <Button label="Não é produto — nunca mais" variant="outline" onPress={onIgnorePending} />
