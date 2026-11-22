@@ -1366,25 +1366,16 @@ export class NfceService {
     let applied = 0;
     const affectedDocs = new Set<string>();
     await this.db.transactionAsync(async () => {
-      const rows = await this.db.getAllAsync<{ id: string; access_key: string; qty: number | null; unit_original: string | null }>(
+      // v7: casa EXATAMENTE o grupo tocado (CNPJ + código da loja). Antes o
+      // `OR` pegava a loja inteira e 1 toque classificava TODOS os pendentes.
+      const matched = await this.db.getAllAsync<{ id: string; access_key: string; qty: number | null; unit_original: string | null }>(
         `SELECT ni.id, ni.access_key, ni.qty, ni.unit_original
            FROM nfce_items ni
            JOIN nfce_documents d ON d.access_key = ni.access_key
           WHERE ni.status = 'PARSED' AND ni.product_id IS NULL
-            AND ( (? IS NOT NULL AND d.cnpj = ?)
-               OR (? IS NOT NULL AND ni.store_product_code = ?) )`,
-        [
-          input.cnpj, input.cnpj,
-          input.storeProductCode, input.storeProductCode,
-        ] as never
+            AND d.cnpj IS ? AND ni.store_product_code IS ?`,
+        [input.cnpj, input.storeProductCode] as never
       );
-      // Refinamento: como `OR` não é seguro, filtra compatível:
-      const matched = rows.filter((r) => {
-        // Para cada item, o par (cnpj_code) da nota deve casar
-        const sameCnpj = !!input.cnpj; // já filtrado acima
-        const sameCode = !input.storeProductCode || true; // já filtrado
-        return sameCnpj && sameCode;
-      });
       // Atualiza items
       for (const r of matched) {
         await this.items.setProductId(r.id, input.productId);
@@ -1428,18 +1419,15 @@ export class NfceService {
     let ignored = 0;
     const affectedDocs = new Set<string>();
     await this.db.transactionAsync(async () => {
-      const rows = await this.db.getAllAsync<{ id: string; access_key: string; description: string | null; ean_extracted: string | null; store_product_code: string | null }>(
+      // v7: só o grupo (CNPJ + código) tocado — antes `!!input.cnpj` marcava
+      // como IGNORED todos os pendentes da loja.
+      const matched = await this.db.getAllAsync<{ id: string; access_key: string; description: string | null; ean_extracted: string | null; store_product_code: string | null }>(
         `SELECT ni.id, ni.access_key, ni.description, ni.ean_extracted, ni.store_product_code
            FROM nfce_items ni JOIN nfce_documents d ON d.access_key = ni.access_key
           WHERE ni.status = 'PARSED' AND ni.product_id IS NULL
-            AND ( (? IS NOT NULL AND d.cnpj = ?)
-               OR (? IS NOT NULL AND ni.store_product_code = ?) )`,
-        [
-          input.cnpj, input.cnpj,
-          input.storeProductCode, input.storeProductCode,
-        ] as never
+            AND d.cnpj IS ? AND ni.store_product_code IS ?`,
+        [input.cnpj, input.storeProductCode] as never
       );
-      const matched = rows.filter((r) => !!input.cnpj);
       for (const r of matched) {
         await this.items.setStatus(r.id, 'IGNORED');
         ignored++;
