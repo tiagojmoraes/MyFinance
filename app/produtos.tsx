@@ -16,6 +16,7 @@ import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { Screen, Card, TextField, Button, EmptyState, Segmented } from '../src/components/ui';
 import { useDataEffect } from '../src/components/useDataEffect';
+import { useAppStore } from '../src/store/appStore';
 import { ICONS } from '../src/theme/icons';
 import { theme } from '../src/theme';
 import { displayProductName } from '../src/lib/productName';
@@ -46,16 +47,27 @@ interface ProductRow {
 }
 interface CategoryRow { id: string; name: string; parent_id: string | null; archived_at: string | null; }
 interface PantryRow { product_id: string; quantity_base: number; base_unit?: string | null; low_threshold_base?: number | null; }
+/** v102 — regra persistida em `nfce_item_ignores` (catálogo Inativo|Excluído). */
+interface IgnoredRule {
+  id: string;
+  cnpj: string | null;
+  ean: string | null;
+  store_product_code: string | null;
+  description_norm: string;
+  created_at: string | null;
+  store_name: string | null;
+}
 
 type Tab = 'PENDENTES' | 'COM_ESTOQUE' | 'SEM_ESTOQUE' | 'INATIVO';
 
 export default function ProdutosScreen() {
   const services = useDataEffect();
-  const bump = React.useCallback(() => {}, []); // (Refresh manual se precisar)
+  const bump = useAppStore((s) => s.bump);
   const [products, setProducts] = React.useState<ProductRow[]>([]);
   const [pending, setPending] = React.useState<PendingGroup[]>([]);
   const [categories, setCategories] = React.useState<CategoryRow[]>([]);
   const [pantry, setPantry] = React.useState<PantryRow[]>([]);
+  const [ignoredRules, setIgnoredRules] = React.useState<IgnoredRule[]>([]);
   const [search, setSearch] = React.useState('');
   // v101: carrossel com 4 abas — começa nos Pendentes se houver; senão em Com Estoque.
   const [tab, setTab] = React.useState<Tab>('PENDENTES');
@@ -64,31 +76,35 @@ export default function ProdutosScreen() {
   // We fetch on mount and on data version changes.
   React.useEffect(() => {
     const load = async () => {
-      const [plist, clist, pantryList, pend] = await Promise.all([
+      const [plist, clist, pantryList, pend, rules] = await Promise.all([
         services.products.listProducts(500),
         services.categories.listActive(),
         services.pantry.listPantry(),
         services.nfce.listPendingItems(),
+        services.nfce.listIgnoredRules(),
       ]);
       setProducts(plist as unknown as ProductRow[]);
       setCategories(clist as unknown as CategoryRow[]);
       setPantry(pantryList as unknown as PantryRow[]);
       setPending(pend as unknown as PendingGroup[]);
+      setIgnoredRules(rules as unknown as IgnoredRule[]);
     };
     void load();
   }, [services]);
   // Buscar subscribe to data version
   useDataEffect(async (svc) => {
-    const [plist, clist, pantryList, pend] = await Promise.all([
+    const [plist, clist, pantryList, pend, rules] = await Promise.all([
       svc.products.listProducts(500),
       svc.categories.listActive(),
       svc.pantry.listPantry(),
       svc.nfce.listPendingItems(),
+      svc.nfce.listIgnoredRules(),
     ]);
     setProducts(plist as unknown as ProductRow[]);
     setCategories(clist as unknown as CategoryRow[]);
     setPantry(pantryList as unknown as PantryRow[]);
     setPending(pend as unknown as PendingGroup[]);
+    setIgnoredRules(rules as unknown as IgnoredRule[]);
   });
 
   const categoryLabelOf = React.useCallback((p: ProductRow): string => {
@@ -112,7 +128,7 @@ export default function ProdutosScreen() {
     return `${q} un`;
   }, [pantry]);
 
-  // v101: filtra pela aba e pela busca. A regra da aba é só pelos campos do
+  // v101/v102: filtra pela aba e pela busca. A regra da aba é só pelos campos do
 // próprio produto (decisão do usuário): origin='USER' + status + stock_control.
   const filteredByTab = React.useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -128,12 +144,21 @@ export default function ProdutosScreen() {
     return byTab;
   }, [products, search]);
 
+  // v102 — regras ignoradas filtradas pela busca (descrição e loja).
+  const ignoredFiltered = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return ignoredRules;
+    return ignoredRules.filter((r) =>
+      r.description_norm.includes(q) || (r.store_name ?? '').toLowerCase().includes(q)
+    );
+  }, [ignoredRules, search]);
+
   // Render
   const tabOptions: Array<{ value: Tab; label: string }> = [
     { value: 'PENDENTES', label: `Pendentes (${pending.length})` },
     { value: 'COM_ESTOQUE', label: `Com Estoque (${filteredByTab.COM_ESTOQUE.length})` },
     { value: 'SEM_ESTOQUE', label: `Sem Estoque (${filteredByTab.SEM_ESTOQUE.length})` },
-    { value: 'INATIVO', label: `Inativo|Excluído (${filteredByTab.INATIVO.length})` },
+    { value: 'INATIVO', label: `Inativo|Excluído (${filteredByTab.INATIVO.length + ignoredFiltered.length})` },
   ];
   return (
     <Screen title="Catálogo de Produto">
@@ -157,7 +182,7 @@ export default function ProdutosScreen() {
                 <PendingRow key={g.groupKey} group={g} onCreateNew={() => router.push(`/produtos/novo?pending=${encodeURIComponent(JSON.stringify({
                   description: g.sampleDescription, cnpj: g.cnpj, storeName: g.storeName, storeProductCode: g.storeProductCode, itemId: g.sampleItemId,
                 }))}`)} onIgnore={async () => {
-                  try { await services.nfce.ignorePendingBatch({ cnpj: g.cnpj, storeProductCode: g.storeProductCode }); showToast('Ignorado'); bump(); }
+                  try { await services.nfce.ignorePendingBatch({ cnpj: g.cnpj, storeProductCode: g.storeProductCode }); showToast('Movido para Inativo|Excluído'); bump(); }
                   catch (e) { showToast(e instanceof Error ? e.message : String(e), 'err'); }
                 }} />
               ))}
@@ -166,20 +191,57 @@ export default function ProdutosScreen() {
         )
       ) : (
         <>
-          {filteredByTab[tab].length === 0 ? (
+          {tab === 'INATIVO' ? (
+            filteredByTab.INATIVO.length === 0 && ignoredFiltered.length === 0 ? (
+              <EmptyState
+                icon={ICONS.produtos}
+                title="Sem inativos ou excluídos"
+                hint="Nenhum produto inativo ou ignorado ainda."
+              />
+            ) : (
+              <>
+                {filteredByTab.INATIVO.map((p) => (
+                  <ProductCard
+                    key={p.id}
+                    product={p}
+                    categoryLabel={categoryLabelOf(p)}
+                    stockLabel={stockLabelOf(p)}
+                  />
+                ))}
+                {ignoredFiltered.length > 0 ? (
+                  <Card className="!py-3 border-slate-300 mt-3">
+                    <Text className={`font-bold ${theme.primaryText}`}>Ignorados da NF (não é produto)</Text>
+                    <Text className="text-[11px] text-slate-500 mt-0.5">
+                      Toque em "Restaurar" para voltarem a perguntar na próxima nota desta loja.
+                    </Text>
+                    <View className="mt-2 gap-2">
+                      {ignoredFiltered.map((r) => (
+                        <IgnoredRuleRow key={r.id} rule={r} onRestore={async () => {
+                          try { await services.nfce.restoreIgnoreRule(r.id); showToast('Regra restaurada'); bump(); }
+                          catch (e) { showToast(e instanceof Error ? e.message : String(e), 'err'); }
+                        }} />
+                      ))}
+                    </View>
+                  </Card>
+                ) : null}
+              </>
+            )
+          ) : filteredByTab[tab].length === 0 ? (
             <EmptyState
               icon={ICONS.produtos}
-              title={tab === 'INATIVO' ? 'Sem inativos ou excluídos' : tab === 'COM_ESTOQUE' ? 'Sem produtos com controle' : 'Sem produtos sem controle'}
-              hint={tab === 'INATIVO' ? 'Nenhum produto inativo ainda.' : 'Use "+ Novo produto" ou classifique um item da aba Pendentes.'}
+              title={tab === 'COM_ESTOQUE' ? 'Sem produtos com controle' : 'Sem produtos sem controle'}
+              hint='Use "+ Novo produto" ou classifique um item da aba Pendentes.'
             />
-          ) : filteredByTab[tab].map((p) => (
-            <ProductCard
-              key={p.id}
-              product={p}
-              categoryLabel={categoryLabelOf(p)}
-              stockLabel={stockLabelOf(p)}
-            />
-          ))}
+          ) : (
+            filteredByTab[tab].map((p) => (
+              <ProductCard
+                key={p.id}
+                product={p}
+                categoryLabel={categoryLabelOf(p)}
+                stockLabel={stockLabelOf(p)}
+              />
+            ))
+          )}
         </>
       )}
 
@@ -242,6 +304,27 @@ const PendingRow = React.memo(function PendingRow({ group, onCreateNew, onIgnore
         </Pressable>
         <Pressable onPress={onIgnore} className="bg-slate-50 px-3 py-2 rounded-lg" accessibilityRole="button">
           <Text className="text-slate-700 font-medium">Não é produto</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+});
+
+/** v102 — cartão por regra ignorada (catálogo Inativo|Excluído). */
+const IgnoredRuleRow = React.memo(function IgnoredRuleRow({ rule, onRestore }: {
+  rule: IgnoredRule;
+  onRestore: () => void;
+}) {
+  const desc = rule.description_norm || '(sem descrição)';
+  return (
+    <View className="border border-slate-200 rounded-lg p-3 bg-white">
+      <Text className="font-medium text-slate-900">{desc}</Text>
+      <Text className="text-[11px] text-slate-500 mt-0.5">
+        {rule.store_name ?? 'Loja'}{rule.store_product_code ? ` · código ${rule.store_product_code}` : ''}
+      </Text>
+      <View className="mt-2 flex-row">
+        <Pressable onPress={onRestore} className="bg-emerald-50 px-3 py-2 rounded-lg" accessibilityRole="button">
+          <Text className="text-emerald-800 font-medium">Restaurar</Text>
         </Pressable>
       </View>
     </View>

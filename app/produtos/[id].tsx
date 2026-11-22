@@ -4,7 +4,7 @@
  *    de NF pendente via `?pending=...`);
  *  · /produtos/ID → edita (nome com ` • ` gerado pelo sistema — o usuário
  *    digita só conteúdo), categoria ▸ subcategoria, Com/Sem controle, mínimo,
- *    unidade, status Ativo/Inativo (e "Não é produto");
+ *    unidade, status Ativo/Inativo;
  *  · inativar BLOQUEIA com saldo > 0;
  *  · o mesmo formulário serve para NF + manual + edição;
  *  · v8 — na CRIAÇÃO, ao digitar o nome, mostra até 3 produtos semelhantes
@@ -223,19 +223,6 @@ export default function ProdutoEditScreen() {
     }
   };
 
-  const onIgnorePending = async () => {
-    if (pending?.cnpj && pending?.storeProductCode) {
-      try {
-        await services.nfce.ignorePendingBatch({ cnpj: pending.cnpj, storeProductCode: pending.storeProductCode });
-        showToast('Marcado como "não é produto" — não pergunta mais.');
-        bump();
-        router.back();
-      } catch (err) {
-        showToast(err instanceof Error ? err.message : String(err), 'err');
-      }
-    }
-  };
-
   const parents = categories.filter((c) => !c.parent_id);
   const subs = categoryId ? categories.filter((c) => c.parent_id === categoryId) : [];
   const preview = displayProductName(name);
@@ -327,10 +314,6 @@ export default function ProdutoEditScreen() {
           ) : null}
 
           <Button label={isNew ? (suggestions.length > 0 ? 'Criar mesmo assim' : 'Cadastrar produto') : 'Salvar alterações'} onPress={save} loading={saving} />
-
-          {pending ? (
-            <Button label="Não é produto — nunca mais" variant="outline" onPress={onIgnorePending} />
-          ) : null}
 
           {!isNew ? (
             <Button label={`${ICONS.excluir} Excluir do catálogo`} variant="outline" onPress={() => setDeleteConfirm(true)} />
