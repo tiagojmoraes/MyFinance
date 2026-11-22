@@ -270,11 +270,13 @@ export class BudgetService {
       efetByCat.set(r.cid, (efetByCat.get(r.cid) ?? 0) + r.confirmed);
     }
 
-    // v100 — SPLIT CONGELADO DE ORÇAMENTO POR NF: quando a NF tem
-    // `budget_split_json` (gravado no attachToTransaction), os valores alocados
-    // às subcategorias próprias SOMAM no orçamento delas; o que ficou na
-    // categoria do lançamento SUBTRAI do que simple/instRows somaram lá (para
-    // não contar em dobro). Classificação tardia não muda o snapshot.
+    // v100 — SPLIT DE ORÇAMENTO POR NF: quando a NF tem
+    // `budget_split_json` (gravado pelo NfceService em cada classificação,
+    // incluindo a tardia), os valores alocados às categorias dos produtos
+    // SOMAM no orçamento delas — e como o pai cobre a subárvore inteira,
+    // NÃO precisa de orçamento próprio lá. O que ficou na categoria do
+    // lançamento SUBTRAI do que simple/instRows somaram lá (para não contar
+    // em dobro). O snapshot é REESCRITO a cada reclassificação.
     const splitRows = await this.db.getAllAsync<{
       tx_id: string; cid: string | null; pending: number; confirmed: number; split_json: string | null;
     }>(

@@ -962,9 +962,13 @@ export class NfceService {
    *  · grava transaction_id no documento (UNIQUE bloqueia 1 NF em 2 lançamentos);
    *  · aplica estoque dos itens VINCULADOS + Com controle + dimensão ok
    *    (sem toggle na tela — o "Com controle" do Catálogo é quem decide);
-   *  · congela o SPLIT DE ORÇAMENTO (por item: categoria do produto se a
-   *    subcategoria tem orçamento próprio; senão, fica na categoria do CNPJ).
-   *    Classificação tardia NÃO recalcula (spec §8.3).
+   *  · calcula o SPLIT DE ORÇAMENTO por categoria do produto: cada item
+   *    PARSED com produto+category_id conta para ESSA categoria (o
+   *    BudgetService já soma a subárvore no pai, com ou sem orçamento
+   *    próprio). Itens sem produto ou sem categoria vão para a
+   *    categoria do lançamento; se nula, ficam fora.
+   *    O split é REESCRITO a cada classificação tardia (link/confirm/
+   *    classifyPendingBatch) — spec §8.3.
    *  · marca o lançamento-âncora: é a 1ª categoria por CNPJ (que entra em
    *    nfce_store_categories) e serve para a tela Lançamento mostrar/lembrar.
    *  · Idempotente: reaplicar não duplica movimento no ledger.
@@ -1016,8 +1020,10 @@ export class NfceService {
     return { applied, split };
   }
 
-  /** v100 — split congelado: items com subcategoria de orçamento próprio
-   *  desconta dela; o resto vai para a categoria do lançamento (do CNPJ). */
+  /** v100 — split por categoria do produto (com ou sem orçamento próprio —
+   *  BudgetService já cobre a subárvore no pai). Sem query em loop: agrupa
+   *  em memória. Itens sem produto ou sem categoria viram resíduo (categoria
+   *  do lançamento; se nula, fora). Reescrito em cada classificação tardia. */
   private async computeBudgetSplit(accessKey: string, _txId: string, defaultCategoryId: string | null): Promise<Array<{ categoryId: string; cents: number }>> {
     const items = await this.db.getAllAsync<{ total_cents: number | null; product_id: string | null; category_id: string | null }>(
       `SELECT ni.total_cents, ni.product_id, pc.category_id
@@ -1033,24 +1039,33 @@ export class NfceService {
       if (cents <= 0) continue;
       const subId = it.category_id ?? null;
       if (subId) {
-        const row = await this.db.getFirstAsync<{ id: string }>(
-          'SELECT id FROM budgets WHERE category_id = ? AND is_active = 1',
-          [subId]
-        );
-        if (row && row.id) {
-          split.set(subId, (split.get(subId) ?? 0) + cents);
-          continue;
-        }
+        split.set(subId, (split.get(subId) ?? 0) + cents);
+        continue;
       }
       residual += cents;
     }
     const out: Array<{ categoryId: string; cents: number }> = [];
     for (const [cid, c] of split.entries()) out.push({ categoryId: cid, cents: c });
-    if (residual > 0) {
-      const target = defaultCategoryId;
-      if (target) out.push({ categoryId: target, cents: residual });
+    if (residual > 0 && defaultCategoryId) {
+      out.push({ categoryId: defaultCategoryId, cents: residual });
     }
     return out;
+  }
+
+  /** Recalcula e grava budget_split_json após classificação tardia.
+   *  Sem transaction_id a nota ainda não foi anexada - nada a fazer. */
+  private async recomputeBudgetSplit(accessKey: string): Promise<void> {
+    const doc = await this.documents.getById(accessKey);
+    if (!doc?.transaction_id) return;
+    const tx = await this.db.getFirstAsync<{ category_id: string | null }>(
+      'SELECT category_id FROM transactions WHERE id = ?',
+      [doc.transaction_id]
+    );
+    const split = await this.computeBudgetSplit(accessKey, doc.transaction_id, tx?.category_id ?? null);
+    await this.db.runAsync(
+      `UPDATE nfce_documents SET budget_split_json = ? WHERE access_key = ?`,
+      [JSON.stringify(split), accessKey]
+    );
   }
 
   /**
@@ -1107,6 +1122,8 @@ export class NfceService {
     await this.items.setMatch(itemId, 'MANUAL', item.match_score ?? null);
     await this.pantryService.applySingleNfceItem(item.access_key, itemId, item.product_id, conversion.deltaBase);
     await this.documents.updateHeader(item.access_key, { needs_review: await this.hasPendingReview(item.access_key) });
+    // v101: classificação tardia - reescreve split de orçamento na categoria do produto
+    await this.recomputeBudgetSplit(item.access_key);
   }
 
   /**
@@ -1134,6 +1151,8 @@ export class NfceService {
     await this.items.setMatch(itemId, 'MANUAL', 1);
     await this.items.setStatus(itemId, 'PARSED');
     await this.documents.updateHeader(item.access_key, { needs_review: await this.hasPendingReview(item.access_key) });
+    // v101: classificação tardia - reescreve split de orçamento na categoria do produto
+    await this.recomputeBudgetSplit(item.access_key);
   }
 
   /** Ignora item (não entra em estoque). */
@@ -1404,6 +1423,11 @@ export class NfceService {
       });
     }
     nfceLog(`serviço: classifyPendingBatch → ${linked} item(ns) vinculados, ${applied} ao estoque`);
+    // v101: classificação tardia - reescreve split de orçamento para cada nota afetada
+    // (sem transaction_id a função sai sem fazer nada, como esperado)
+    for (const docKey of affectedDocs) {
+      await this.recomputeBudgetSplit(docKey);
+    }
     return { linked, applied };
   }
 
