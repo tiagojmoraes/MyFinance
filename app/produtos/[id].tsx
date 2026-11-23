@@ -324,7 +324,6 @@ export default function ProdutoEditScreen() {
 
   const parents = categories.filter((c) => !c.parent_id);
   const subs = categoryId ? categories.filter((c) => c.parent_id === categoryId) : [];
-  const preview = displayProductName(name);
 
   return (
     <Screen title={isNew ? (pending ? 'Classificar Produto' : 'Novo produto') : 'Editar produto'}>
@@ -335,9 +334,6 @@ export default function ProdutoEditScreen() {
           {pending && (
             <View className="bg-amber-50 p-3 rounded-lg">
               <Text className="text-xs text-amber-800 font-bold">Veio da NF — classificar 1 vez</Text>
-              <Text className="text-[11px] text-amber-700 mt-1">
-                A decisão grava a amarração (CNPJ + código) — as próximas notas desta loja já resolvem sozinhas (zero interação).
-              </Text>
             </View>
           )}
 
@@ -355,10 +351,6 @@ export default function ProdutoEditScreen() {
               ))}
             </View>
           ) : null}
-          <View className="bg-slate-50 rounded-lg p-2">
-            <Text className="text-[10px] text-slate-500">EXIBIÇÃO (com bullet •)</Text>
-            <Text className="font-medium text-slate-900">{preview || '—'}</Text>
-          </View>
 
           {isNew && pendingEan ? (
             <View className="bg-slate-50 rounded-lg p-2">

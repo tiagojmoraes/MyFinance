@@ -405,4 +405,55 @@ export function groupKindInfo(grp: GroupMonth): {
   };
 }
 
+/** v14 — item ordenado da expansão do CONSOLIDADO (receitas primeiro, depois
+ *  despesas; cada bloco do MAIOR valor para o MENOR; empate por descrição A→Z). */
+export interface GroupSortedItem {
+  kind: 'tx' | 'inst';
+  isIncome: boolean;
+  cents: number;
+  description: string;
+  node: FlowTx | InstAgg;
+}
+
+/** v14 — junta os três conjuntos do mês numa ÚNICA lista ordenada:
+ *  1º RECEITAS (tx.type === 'INCOME' OU inst.type === 'INCOME');
+ *  2º DESPESAS (qualquer outro tipo);
+ *  cada bloco do MAIOR valor (`tx.amount_cents` / `inst.amountCents`) para o
+ *  MENOR; empate resolve por descrição A→Z (pt-BR).
+ *  O caller (a tela Fluxo) controla se `children` entra ou não — se o grupo
+ *  não está no mês do cabeçalho, passe lista vazia. */
+export function sortGroupItems(
+  children: FlowTx[],
+  occurrences: FlowTx[],
+  installments: InstAgg[]
+): GroupSortedItem[] {
+  const out: GroupSortedItem[] = [];
+  const pushTx = (n: FlowTx): void => {
+    out.push({
+      kind: 'tx',
+      isIncome: n.type === 'INCOME',
+      cents: n.amount_cents,
+      description: n.description ?? '',
+      node: n,
+    });
+  };
+  for (const ch of children) pushTx(ch);
+  for (const o of occurrences) pushTx(o);
+  for (const inst of installments) {
+    out.push({
+      kind: 'inst',
+      isIncome: inst.type === 'INCOME',
+      cents: inst.amountCents,
+      description: inst.description ?? '',
+      node: inst,
+    });
+  }
+  out.sort((a, b) => {
+    if (a.isIncome !== b.isIncome) return a.isIncome ? -1 : 1; // receitas ANTES
+    if (a.cents !== b.cents) return b.cents - a.cents;          // maior → menor
+    return a.description.localeCompare(b.description, 'pt-BR');
+  });
+  return out;
+}
+
 // v49 FIX — global cache REMOVIDO (key só headerId, nunca invalidava -> valor/data antigos). Cache correto é o useMemo do Fluxo (depende de gm).

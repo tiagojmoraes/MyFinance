@@ -51,6 +51,8 @@ export default function CategoriasScreen() {
   const [subOpenFor, setSubOpenFor] = React.useState<string | null>(null);
   const [subName, setSubName] = React.useState('');
   const [subSaving, setSubSaving] = React.useState(false);
+  // v14 — subcategorias RECOLHIDAS por padrão; a seta ▸/▾ mostra/oculta a lista.
+  const [openCats, setOpenCats] = React.useState<Record<string, boolean>>({});
   const saveSub = async (parent: CategoryRow) => {
     const nm = subName.trim();
     if (!nm) {
@@ -63,6 +65,8 @@ export default function CategoriasScreen() {
       await services.categories.create({ name: nm, direction: (parent.direction as CategoryDirection) ?? 'DEBIT', icon: parent.icon ?? CATEGORY_ICON_OPTIONS[0], parentId: parent.id });
       setSubName('');
       setSubOpenFor(null);
+      // v14 — garante que o grupo fique ABERTO para a subcategoria recém-criada aparecer.
+      setOpenCats((cur) => ({ ...cur, [parent.id]: true }));
       bump();
     } catch (err) {
       showToast(err instanceof Error ? err.message : String(err), 'err');
@@ -166,43 +170,70 @@ export default function CategoriasScreen() {
     );
   };
 
-  const renderCat = (c: CategoryRow, isChild: boolean) => (
-    <Pressable key={c.id} onPress={() => openEdit(c)} accessibilityRole="button" accessibilityLabel={`Editar ${c.name}`}>
-      <Card className={`!py-2.5 ${isChild ? 'ml-4 border-dashed' : 'mb-1'}`}>
-        <View className="flex-row items-center gap-2">
-          <View className="w-9 h-9 rounded-lg bg-slate-50 items-center justify-center">
-            <Text className="text-lg">{c.icon ?? '🏷️'}</Text>
+  const renderCat = (c: CategoryRow, isChild: boolean) => {
+    const subs = isChild ? [] : subsOf(c.id);
+    const hasSubs = subs.length > 0;
+    const isOpen = !!openCats[c.id];
+    return (
+      <Pressable onPress={() => openEdit(c)} accessibilityRole="button" accessibilityLabel={`Editar ${c.name}`}>
+        <Card className={`!py-2.5 ${isChild ? 'ml-4 border-dashed' : 'mb-1'}`}>
+          <View className="flex-row items-center gap-2">
+            {/* v14 — seta ANTES do pictograma (▸ recolhido / ▾ aberto) — só
+                aparece quando há subcategorias ativas; sem sub reserva o mesmo
+                espaço para alinhar. Em RN o Pressable filho consome o toque
+                sem disparar a edição do cartão. */}
+            {!isChild ? (
+              <Pressable
+                onPress={() => setOpenCats((cur) => ({ ...cur, [c.id]: !cur[c.id] }))}
+                accessibilityRole="button"
+                accessibilityLabel={`${isOpen ? 'Recolher' : 'Expandir'} ${c.name}`}
+                hitSlop={6}
+                className="w-4 items-center justify-center"
+              >
+                <Text className="text-sm font-bold text-emerald-700 w-4 text-center">
+                  {hasSubs ? (isOpen ? ICONS.recolher : ICONS.expandir) : ' '}
+                </Text>
+              </Pressable>
+            ) : (
+              <View className="w-4" />
+            )}
+            <View className="w-9 h-9 rounded-lg bg-slate-50 items-center justify-center">
+              <Text className="text-lg">{c.icon ?? '🏷️'}</Text>
+            </View>
+            <View className="flex-1">
+              <Text className="font-semibold text-slate-900 text-sm">
+                {isChild ? '↳ ' : ''}{c.name}
+              </Text>
+              <Text className="text-[11px] text-slate-500">
+                {c.direction === 'DEBIT' ? `${ICONS.despesa} Débito` : c.direction === 'CREDIT' ? `${ICONS.receita} Crédito` : 'Ambos'}
+                {' · '}tocar para editar
+                {!isChild && hasSubs && !isOpen ? ` · ${subs.length} subcategoria(s)` : ''}
+              </Text>
+            </View>
+            {/* v17 (melhoria 5): Excluir (sem uso) OU Arquivar (com movimentação) */}
+            {renderLifecycleAction(c)}
+            {/* v68: "+ Subcategoria" abre o campo de nome ALI MESMO — sem trocar
+                de tela e sem escolher a categoria de novo em outro lugar */}
+            {!isChild ? (
+              <Pressable
+                onPress={() => {
+                  // v14 — também ABRE o grupo para a nova sub aparecer quando salvar.
+                  setOpenCats((cur) => ({ ...cur, [c.id]: true }));
+                  setSubOpenFor((cur) => (cur === c.id ? null : c.id));
+                  setSubName('');
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={`Adicionar subcategoria em ${c.name}`}
+                className="bg-slate-100 rounded-lg px-2 py-1.5"
+              >
+                <Text className="text-[11px] font-semibold text-slate-600">+ Subcategoria</Text>
+              </Pressable>
+            ) : null}
           </View>
-          <View className="flex-1">
-            <Text className="font-semibold text-slate-900 text-sm">
-              {isChild ? '↳ ' : ''}{c.name}
-            </Text>
-            <Text className="text-[11px] text-slate-500">
-              {c.direction === 'DEBIT' ? `${ICONS.despesa} Débito` : c.direction === 'CREDIT' ? `${ICONS.receita} Crédito` : 'Ambos'}
-              {' · '}tocar para editar
-            </Text>
-          </View>
-          {/* v17 (melhoria 5): Excluir (sem uso) OU Arquivar (com movimentação) */}
-          {renderLifecycleAction(c)}
-          {/* v68: "+ Subcategoria" abre o campo de nome ALI MESMO — sem trocar
-              de tela e sem escolher a categoria de novo em outro lugar */}
-          {!isChild ? (
-            <Pressable
-              onPress={() => {
-                setSubOpenFor((cur) => (cur === c.id ? null : c.id));
-                setSubName('');
-              }}
-              accessibilityRole="button"
-              accessibilityLabel={`Adicionar subcategoria em ${c.name}`}
-              className="bg-slate-100 rounded-lg px-2 py-1.5"
-            >
-              <Text className="text-[11px] font-semibold text-slate-600">+ Subcategoria</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      </Card>
-    </Pressable>
-  );
+        </Card>
+      </Pressable>
+    );
+  };
 
   return (
     <Screen title="Categorias">
@@ -256,7 +287,8 @@ export default function CategoriasScreen() {
                   </View>
                 </Card>
               ) : null}
-              {subsOf(c.id).map((sub) => renderCat(sub, true))}
+              {/* v14 — subcategorias só renderizam quando o grupo está ABERTO */}
+              {openCats[c.id] ? subsOf(c.id).map((sub) => renderCat(sub, true)) : null}
             </View>
           ))}
         </>

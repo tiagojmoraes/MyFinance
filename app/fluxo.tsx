@@ -134,6 +134,7 @@ import {
   groupMonthTotals,
   groupStatusInfo,
   groupStatusItems,
+  sortGroupItems,
   type FlowTx,
   type GroupMonth,
   type InstAgg,
@@ -1068,14 +1069,17 @@ export default function FluxoScreen() {
         })}
         {isOpen ? (
           <View className="gap-1.5">
-            {/* Expansão = itens reais do mês: linhas à vista (só no mês do
-                cabeçalho) + ocorrências das fixas + parcelas em conta — todos
-                no MESMO formato unificado (v14). */}
-            {grp.isHeaderMonth && children.length > 0
-              ? children.map((ch) => renderTxCard(ch, { child: true }))
-              : null}
-            {grp.occurrences.map((ch) => renderTxCard(ch, { child: true }))}
-            {grp.installments.map((inst) => renderInstallmentRow(inst, { child: true }))}
+            {/* v14 — ordenação única do conteúdo expandido: 1º RECEITAS,
+                depois DESPESAS; cada bloco do MAIOR valor para o MENOR;
+                empate por descrição A→Z. `children` só entra no mês do
+                cabeçalho. */}
+            {sortGroupItems(
+              grp.isHeaderMonth ? children : [],
+              grp.occurrences,
+              grp.installments
+            ).map((item) => item.kind === 'tx'
+              ? renderTxCard(item.node as FlowTx, { child: true })
+              : renderInstallmentRow(item.node as InstAgg, { child: true }))}
           </View>
         ) : null}
       </View>
