@@ -236,7 +236,9 @@ export default function DespensaScreen() {
     let generatedUri: string | null = null;
     const stamp = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
-    const fileName = `lista-compra-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}.pdf`;
+    // v108 — nome legível, sem ":" (caractere inválido em arquivo no
+    // Android/Windows). Hífen entre HH e MM é o equivalente seguro.
+    const fileName = `Lista_Compra_${pad(stamp.getDate())}-${pad(stamp.getMonth() + 1)}-${stamp.getFullYear()}_${pad(stamp.getHours())}-${pad(stamp.getMinutes())}.pdf`;
     try {
       const { printListaPdf } = await import('../src/lib/listaPdf');
       const groups = grouping === 'CATEGORIA'
@@ -285,6 +287,10 @@ export default function DespensaScreen() {
       let shareUri = uri;
       if (targetUri) {
         try {
+          // v108 — apagar o destino antes de copiar: dois PDFs no mesmo
+          // minuto cairiam no fallback de nome estranho (Expo-prefixado) e
+          // o usuário perdia o arquivo limpo.
+          await FileSystem.deleteAsync(targetUri, { idempotent: true });
           await FileSystem.copyAsync({ from: uri, to: targetUri });
           shareUri = targetUri;
         } catch (copyErr) {

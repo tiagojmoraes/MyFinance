@@ -4,8 +4,12 @@
  * Usa `expo-print` (já vem no Expo Go 58) — única dependência nova da v100.
  * v14 — visual de FOLHA DE CADERNO/BLOCO DE MERCADO: fundo creme com pauta
  * azul-claro, margem vermelha à esquerda, tinta azul, fonte manuscrita da
- * pilha do sistema, sublinhado ondulado no título, caixinha ☐ em cada item,
- * preço ligado por pontilhado e total estimado com sublinhado duplo.
+ * pilha do sistema, sublinhado ondulado no título, caixinha ☐ em cada item.
+ * v108 — visual SÓBRIO, unissex e de fácil leitura: fundo branco, azul sóbrio
+ * de destaque (#1e3a5f), fonte "Helvetica Neue", sem efeitos manuscritos e
+ * sem rotações nos itens. Caixinha ☐ reta com border-radius 2px; total com
+ * borda azul e sem sublinhado duplo; separador sólido fino cinza em vez de
+ * pontilhado azul. Estrutura e informações do layout v14 preservadas.
  */
 
 import { Platform } from 'react-native';
@@ -39,71 +43,61 @@ export interface ListaPdfInput {
 const escape = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-/** Constrói o HTML estilo "folha de caderno / bloco de mercado". */
+/** Constrói o HTML sóbrio e de fácil leitura (v108). Estrutura v14 preservada. */
 export function buildListaHtml(input: ListaPdfInput): string {
   const date = input.generatedAt ?? defaultBrDateTime();
   const ts = escape(date);
 
   const style = `
     @page { size: A4; margin: 16mm; }
-    html, body { background: #fffdf3; }
+    html, body { background: #ffffff; }
     body {
-      font-family: "Bradley Hand", "Noteworthy", "Segoe Print", "Marker Felt", "Comic Sans MS", cursive;
-      color: #1f3a8a;
+      font-family: "Helvetica Neue", Helvetica, Arial, "Segoe UI", Roboto, sans-serif;
+      color: #111827;
       font-size: 14px;
-      line-height: 1.3;
+      line-height: 1.35;
       margin: 0;
       padding: 0;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
-      background-color: #fffdf3;
-      /* Pauta azul-claro a cada 28px (por baixo) + margem vermelha à esquerda
-         (por cima). A barra vermelha é estreita e fica antes do conteúdo. */
-      background-image:
-        repeating-linear-gradient(
-          to bottom,
-          rgba(0,0,0,0) 0,
-          rgba(0,0,0,0) 27px,
-          #cfe1f5 27px,
-          #cfe1f5 28px
-        ),
-        linear-gradient(to right, #f7c8c8 0, #f7c8c8 18px, rgba(0,0,0,0) 18px);
-      background-repeat: repeat, no-repeat;
-      background-size: 100% 28px, 100% 100%;
+      background-color: #ffffff;
     }
-    .page-wrap { padding: 0 4mm 0 calc(4mm + 24px); }
+    .page-wrap { padding: 0; }
     .head {
       display: flex;
       align-items: flex-end;
       justify-content: space-between;
       gap: 12px;
-      padding: 2px 0 4px 0;
+      padding: 2px 0 6px 0;
     }
     .title {
       flex: 1;
-      font-size: 34px;
-      line-height: 1.1;
+      color: #1e3a5f;
+      font-size: 26px;
+      line-height: 1.15;
+      font-weight: 700;
       margin: 0;
       padding: 0 0 4px 0;
-      border-bottom: 2px wavy #1f3a8a;
     }
     .date {
       font-size: 11px;
-      opacity: 0.7;
+      color: #475569;
       white-space: nowrap;
       padding: 0 0 6px 0;
     }
     .subtitle {
       font-size: 12px;
-      margin: 2px 0 8px 0;
-      opacity: 0.85;
+      color: #475569;
+      margin: 2px 0 12px 0;
     }
-    .group { margin-top: 8px; }
+    .group { margin-top: 14px; }
     .group-title {
-      font-size: 19px;
-      margin: 10px 0 4px 0;
-      padding: 0 0 2px 0;
-      border-bottom: 1.5px solid #1f3a8a;
+      color: #1e3a5f;
+      font-size: 15px;
+      font-weight: 700;
+      margin: 12px 0 6px 0;
+      padding: 0 0 4px 0;
+      border-bottom: 1px solid #1e3a5f;
       page-break-after: avoid;
       page-break-inside: avoid;
       display: flex;
@@ -111,10 +105,11 @@ export function buildListaHtml(input: ListaPdfInput): string {
       align-items: baseline;
       gap: 8px;
     }
-    .group-title .name { font-weight: bold; }
+    .group-title .name { font-weight: 700; }
     .group-total-inline {
-      font-size: 14px;
-      font-weight: bold;
+      font-size: 13px;
+      font-weight: 700;
+      color: #1e3a5f;
       padding-left: 8px;
       white-space: nowrap;
     }
@@ -122,57 +117,61 @@ export function buildListaHtml(input: ListaPdfInput): string {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 3px 0 4px 0;
+      padding: 4px 0 5px 0;
       margin: 0 0 2px 0;
-      border-bottom: 1px dotted #1f3a8a;
+      border-bottom: 1px solid #e5e7eb;
       page-break-inside: avoid;
     }
     .item .check {
       flex: 0 0 14px;
       width: 14px;
       height: 14px;
-      border: 1.5px solid #1f3a8a;
-      /* borda irregular — dá o ar de caixinha desenhada à mão */
-      border-radius: 2px 5px 3px 4px;
+      border: 1.5px solid #1e3a5f;
+      border-radius: 2px;
       display: inline-block;
       box-sizing: border-box;
     }
-    .item .qty { font-weight: bold; margin-right: 2px; }
-    .item .name { flex: 1; min-width: 0; }
+    .item .qty {
+      color: #111827;
+      font-weight: 700;
+      margin-right: 2px;
+    }
+    .item .name { flex: 1; min-width: 0; color: #111827; }
     .item .cat {
       font-size: 11px;
-      opacity: 0.7;
+      color: #475569;
       margin-left: 4px;
     }
     .item .price {
       font-size: 13px;
+      color: #111827;
+      font-variant-numeric: tabular-nums;
       white-space: nowrap;
-      padding: 0 2px 0 8px;
+      padding: 0 0 0 8px;
     }
-    .item.rot-a { transform: rotate(-0.4deg); }
-    .item.rot-b { transform: rotate(0.3deg); }
     .group-total-line {
       display: flex;
       justify-content: flex-end;
-      font-weight: bold;
-      margin: 4px 0 2px 0;
+      color: #1e3a5f;
+      font-weight: 700;
+      margin: 6px 0 2px 0;
       page-break-inside: avoid;
     }
     .grand-total {
-      margin: 18px 0 4px 0;
-      padding: 6px 4px;
-      border-top: 4px double #1f3a8a;
-      border-bottom: 4px double #1f3a8a;
+      margin: 22px 0 6px 0;
+      padding: 10px 8px;
+      border: 1.5px solid #1e3a5f;
       text-align: right;
-      font-size: 20px;
-      font-weight: bold;
+      color: #1e3a5f;
+      font-size: 18px;
+      font-weight: 700;
       page-break-inside: avoid;
     }
     .stamp {
       font-size: 10px;
-      opacity: 0.6;
+      color: #475569;
       text-align: right;
-      margin-top: 12px;
+      margin-top: 14px;
     }
   `.trim();
 
@@ -182,8 +181,8 @@ export function buildListaHtml(input: ListaPdfInput): string {
         <span class="name">${escape(g.title)}</span>
         ${g.totalLabel ? `<span class="group-total-inline">→ ${escape(g.totalLabel)}</span>` : ''}
       </h2>
-      ${g.lines.map((l, i) => `
-        <div class="item ${i % 2 === 0 ? 'rot-a' : 'rot-b'}">
+      ${g.lines.map((l) => `
+        <div class="item">
           <span class="check"></span>
           ${l.qty ? `<span class="qty">${escape(l.qty)}</span>` : ''}
           <span class="name">${escape(displayProductName(l.productName) || l.productName)}${l.categoryLabel ? ` <span class="cat">(${escape(l.categoryLabel)})</span>` : ''}</span>
