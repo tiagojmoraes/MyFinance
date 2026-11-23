@@ -1,5 +1,5 @@
 /**
- * WishlistService (v69) — PROGRAMAÇÃO DE COMPRA.
+ * WishlistService (v17) — PROGRAMAÇÃO DE COMPRA (fonte única: month_ledger_wishlist).
  *
  * METODOLOGIA DO USUÁRIO (hierarquia — tudo concorre):
  *  1) ORÇAMENTO — limite restante após gastos/compromissos, abatido primeiro.
@@ -8,6 +8,12 @@
  *     não cabe, passa para o mês seguinte (e as de baixo nem começam).
  *  3) POUPANÇA MENSAL — transferência programada, abatida após as compras.
  *  4) POUPANÇA "FECHAMENTO DO MÊS" — recebe a sobra positiva final.
+ *
+ * v17 — `getMethodology` e `getProjection` LÊEM a cascade já persistida
+ * pelo `MonthLedgerService` em `month_ledger_wishlist` (e a linha do mês em
+ * `month_ledger`). A cascata é SEMPRE executada uma única vez por mês,
+ * dentro do livro-razão — o WishlistService virou um leitor agregado,
+ * não recomputa nada em memória.
  *
  * RESERVA ("Reservar"): transfere dinheiro REAL de uma conta do saldo para a
  * caixinha "Reserva · Programação de Compra" — conta criada automaticamente e
@@ -29,7 +35,6 @@ import { TransactionService } from './TransactionService';
 import { BalanceService } from './BalanceService';
 import type { BudgetMonthSummary } from './BudgetService';
 import type { SavingsMonthOverview } from './SavingsService';
-import { availableForWishlistAtMonthEnd } from '../lib/monthEndBalance';
 import { VersionedCache } from '../lib/versionedCache';
 
 export type WishlistClass = 'PRIORIDADE' | 'NECESSARIO' | 'DESEJO';
@@ -171,7 +176,10 @@ export function projectionMonthPlan(
  * callback NÃO é informado, o saldo é calculado pelo `BalanceService`
  * (normal) e Orçamento/Poupança são null (capacidade bruta).
  *
- * Útil para a tela passar resumos cacheados ou permitir overrides em teste.
+ * v17 — `WishlistProjectionFetcher` ficou sem uso prático (a cascade
+ * roda toda dentro do `MonthLedgerService`). Continua exportada apenas
+ * para compat de tipos em testes legados; o `getProjection` novo não a
+ * consome.
  */
 export type WishlistProjectionFetcher = (
   month: string
@@ -190,12 +198,26 @@ export class WishlistService {
   // chamada usa a MESMA lista em vez de reler tudo.
   private listOpenCache = new VersionedCache<WishlistClassView[]>();
 
+  /**
+   * v17 — livro-razão mensal: o `WishlistService` lê o cascade já
+   * persistido pelo `MonthLedgerService` em vez de recomputar a cascata em
+   * memória. A referência é preenchida por setter (`setMonthLedger`) em
+   * `services/index.ts` (ciclo: monthLedger também usa este serviço).
+   * NUNCA null em runtime — só omitir nos testes legados.
+   */
+  private monthLedger: import('./MonthLedgerService').MonthLedgerService | null = null;
+
   constructor(
     private db: DbDriver,
     private transactions: TransactionService,
     private balance?: BalanceService
   ) {
     this.balance = balance ?? new BalanceService(db);
+  }
+
+  /** v17 — late-binding (evita ciclo de construção). */
+  setMonthLedger(ml: import('./MonthLedgerService').MonthLedgerService): void {
+    this.monthLedger = ml;
   }
 
   // ------------------------------------------------------------ cadastro ----
@@ -435,58 +457,71 @@ export class WishlistService {
   // ------------------------------------------------------- metodologia ----
 
   /**
-   * Metodologia 5.2 do mês visto — alimenta a tela da Programação de Compra E o
-   * card de Orçamento no Fluxo (visibilidade da hierarquia):
-   *  · sobra do mês = saldo do dia previsto no último lançamento (nunca negativa);
-   *  · Orçamento restante é abatido primeiro;
-   *  · a sobra vai para a Programação de Compra na ordem
-   *    Prioridade > Necessário > Desejo (classificação que não cabe passa
-   *    para o mês seguinte; as de baixo nem começam);
-   *  · Poupança Mensal é abatida depois das compras; o saldo positivo restante
-   *    fica para a Poupança "Fechamento do Mês".
+   * v17 — Metodologia do mês visto. FONTE ÚNICA: lê o cascade JÁ
+   * PERSISTIDO em `month_ledger_wishlist` via `MonthLedgerService`. Não
+   * recomputa nada em memória: a ordem (P → N → D), o rateio proporcional
+   * e a propagação de carry são responsabilidade exclusiva do livro-razão.
+   *
+   * Para o BACKWARD COMPAT (testes legados), `opts` é aceito mas TODAS as
+   * opções legadas viraram no-ops: o saldo "antes da hierarquia" vem
+   * direto do livro (persistido em `balance_before_prev_cents`).
    */
   async getMethodology(
     month: string,
-    opts?: {
+    _opts?: {
       budgetSummary?: BudgetMonthSummary | null;
       savingsOverview?: SavingsMonthOverview | null;
-      saldoPrevistoAjustadoFimCents?: number;
-      // v98 — `dataVersion` opcional: quando a tela do Fluxo passa, o saldo
-      // por dia usa o cache (e fica cache-local para esta chamada mesmo).
+      // v17 — REMOVIDO: o override `saldoPrevistoAjustadoFimCents`. A fonte
+      // é agora o livro-razão (balanceBeforePrevCents persistido no chain).
       dataVersion?: number;
     }
   ): Promise<WishlistMethodology> {
-    // (1) sobra do mês — saldo previsto no último lançamento do mês.
-    let saldoFim = opts?.saldoPrevistoAjustadoFimCents;
-    try {
-      const lastActivityDate = await this.balance!.getLastActivityDate(month);
-      const targetDate = lastActivityDate ?? `${month}-${String(lastDayNumberOf(month)).padStart(2, '0')}`;
-      const dual = await this.balance!.getDailyBalancesDual(month, opts?.dataVersion);
-      saldoFim ??= dual.previsto[targetDate] ?? 0;
-    } catch {
-      saldoFim ??= 0;
+    const ml = this.monthLedger;
+    if (!ml) {
+      // Sem livro-razão ligado (testes legados): comportamento mínimo.
+      return {
+        month,
+        sobraCents: 0,
+        budgetedCents: null,
+        poupancaMensalCents: null,
+        capacityCents: 0,
+        classes: WISHLIST_CLASSES.map((cls) => ({
+          cls,
+          label: CLASS_LABELS[cls],
+          totalCents: 0,
+          itemCount: 0,
+          startMonth: 0,
+          endMonth: 0,
+        })),
+        monthsPrioridade: null,
+        monthsTotal: null,
+        messagePrioridade: null,
+        messageTotal: 'Livro-razão indisponível — abra o Fluxo para carregar o cálculo.',
+      };
     }
 
-    // (2) Orçamento é o primeiro abatimento; a Poupança Mensal vem depois das compras.
-    const budgetSummary = opts?.budgetSummary === undefined ? null : opts.budgetSummary;
-    const savingsOverview = opts?.savingsOverview === undefined ? null : opts.savingsOverview;
-    const budgetedCents = budgetSummary ? budgetSummary.budgetedCents : null;
-    const poupancaMensalCents = savingsOverview
-      ? savingsOverview.entries.filter((e) => e.kind === 'MONTHLY').reduce((a, b) => a + b.amountCents, 0)
+    const ledgerRow = await ml.getMonthLedgerSummary(month);
+    const entries = await ml.getMonthWishlistEntries(month);
+    // views vem do listOpen (mantém o cache e os percentuais por item).
+    const views = await this.listOpen();
+
+    const balancePrev = ledgerRow?.balanceBeforePrevCents ?? 0;
+    const budgetRemainingRaw = ledgerRow?.budgetRemainingCents ?? 0;
+    const budgetRemaining = Math.max(0, budgetRemainingRaw);
+    // Capacidade = max(0, balancePrev − orçamento restante). Mesma fórmula
+    // usada pelo `computeMonth` do MonthLedgerService.
+    const capacity = Math.max(0, balancePrev - budgetRemaining);
+
+    // (1) budgeted / poupanca mensal a partir do ledger + resumo das telas.
+    const budgetedCents = ledgerRow != null && budgetRemaining >= 0
+      ? balancePrev + budgetRemaining // reconstrução simples: orçado = balancePrev + budgetRemaining (orçado − gasto)
       : null;
+    // As entries individualmente não dizem o TOTAL — para o cabeçalho do
+    // card, basta o valor persistido `savings_monthly_cents` do row.
+    const poupancaMensalCents = ledgerRow?.savingsMonthlyCents ?? null;
 
-    const sobra = availableForWishlistAtMonthEnd(
-      saldoFim,
-      budgetSummary?.remainingCents ?? 0
-    );
-    const capacity = sobra;
-
-    // (3) fila de compra: Prioridade > Necessário > Desejo — cada classificação
-    //     consome a capacidade mensal INTEIRA antes de a seguinte começar;
-    //     a classificação que não cabe no mês passa para o mês seguinte
-    //     (ex.: sobra 1.500, Prioridade 3.000 → 2 meses; Necessário e Desejo
-    //     nem começam neste mês).
-    const views = await this.listOpen(opts?.dataVersion);
+    // (2) totais por classe a partir do listOpen (sempre completo, deriva
+    // do `target_cents` agregado da classe).
     let fimAcumulado = 0;
     const classes = views.map((c) => {
       const totalCents = c.totalCents;
@@ -501,6 +536,10 @@ export class WishlistService {
       }
       return { cls: c.cls, label: c.label, totalCents, itemCount, startMonth, endMonth };
     });
+
+    // (3) entries agrupadas por classe para mostrar o "cabe deste mês" se
+    // o card precisar no futuro (hoje o card consulta projectionMonthPlan).
+    void entries; // consumido pelo getProjection; aqui só exibimos totais
 
     const prioridade = classes.find((c) => c.cls === 'PRIORIDADE');
     const mesesPrioridade = prioridade && prioridade.itemCount > 0 ? prioridade.endMonth || null : null;
@@ -520,7 +559,7 @@ export class WishlistService {
 
     return {
       month,
-      sobraCents: sobra,
+      sobraCents: capacity,
       budgetedCents,
       poupancaMensalCents,
       capacityCents: capacity,
@@ -532,185 +571,105 @@ export class WishlistService {
     };
   }
 
-  /** v90/v95 — Projeção MÊS A MÊS da Programação de Compra em cascata.
+  /** v17 — Projeção MÊS A MÊS da Programação de Compra em cascata.
    *
-   *  v90: SALDO PREVISTO REAL do fim de cada mês é consultado (por padrão via
-   *       `BalanceService.getDailyBalancesDual(m)` — ou via `opts.fetcher`,
-   *       que é o caminho do Fluxo/tela ou de testes);
-   *  v95: SÓ A FALTA segue para o mês seguinte. O que SOBRA de dinheiro
-   *       (capacidade não usada na cascata) NÃO carrega adiante — cada mês
-   *       usa a PRÓPRIA disponibilidade (capacity = max(0, saldoPrevistoFim
-   *       − orçamentoRestante)). A previsão, portanto, não se reflete
-   *       automaticamente para os meses seguintes: o mês seguinte só recebe
-   *       baixa se o valor planejado exceder a disponibilidade do mês atual
-   *       e sobrar uma **parcela do plano** (regra do usuário);
-   *  · na modalidade POUPANÇA "Fechamento do Mês" (após `closingSince`), o
-   *    saldo positivo daquele mês fecha na poupança (a cascata, de qualquer
-   *    forma, só continua até a FALTA zerar);
-   *  · a reserva de valor (v87) é uma transferência real — o saldo previsto
-   *    JÁ carrega sua saída do escopo, então a falta inicial é
-   *    `target − reserved`.
+   * FONTE ÚNICA: o cascade JÁ EXECUTADO para cada mês está em
+   * `month_ledger_wishlist`. Aqui lemos as entries por mês (a partir do
+   * mês corrente) e devolvemos a estrutura `WishlistProjection` que a UI
+   * usa.
    *
-   *  A cascade é SEMPRE nesta ordem — Prioridade → Necessário → Desejo — e
-   *  vale a cada mês. Como `listOpen()` é relido a cada chamada (dataVersion
-   *  invalida o cache no Fluxo), se uma nova Prioridade for cadastrada
-   *  durante a fase de Necessário/Desejo, a simulação REFEITA automaticamente
-   *  volta a respeitar a ordem. Limite: 12 meses.
-   *
-   *  Compat: `opts.saldoPrevistoAjustadoFimCents` continua valendo como
-   *  override do saldo do PRIMEIRO mês (startMonth) — a tela do Fluxo e os
-   *  testes existentes contam com isso. `opts.fetcher` em conjunto permite
-   *  também lookahead sem chamadas extras, e sobrepõe o cálculo padrão.
+   * Removido em v17:
+   *  · `saldoPrevistoAjustadoFimCents` (override) — o livro-razão tem a
+   *    verdade;
+   *  · o `fetcher` (caminho síncrono paralelo) — o `MonthLedgerService`
+   *    já calculou via `computeMonth`;
+   *  · o `startMonth` da projeção era "hoje"; agora o ponto de partida é
+   *    simplesmente o mês corrente (lido de todaySP() no início).
    */
   async getProjection(
     month: string,
-    opts?: {
+    _opts?: {
       budgetSummary?: BudgetMonthSummary | null;
       savingsOverview?: SavingsMonthOverview | null;
-      saldoPrevistoAjustadoFimCents?: number;
-      /** v90: recebe o mês simulado e devolve o saldo + resumos daquele mês;
-       *  se faltar para algum mês, o fallback é o cálculo direto via services. */
-      fetcher?: WishlistProjectionFetcher;
-      // v98 — `dataVersion` opcional: passa para `listOpen` e para o
-      // `getDailyBalancesDual` do fallback (mesma versão = mesmo cache).
       dataVersion?: number;
     }
   ): Promise<WishlistProjection> {
-    const ordem: WishlistClass[] = ['PRIORIDADE', 'NECESSARIO', 'DESEJO'];
-    const labelsMap: Record<string, string> = Object.fromEntries(
-      ordem.map((c) => [c, CLASS_LABELS[c]])
-    );
-
-    // 1. falta inicial POR CLASSE (target − reserved).
-    const views = await this.listOpen(opts?.dataVersion);
-    const faltaInicial: Record<string, number> = {};
-    let totalFaltaInicial = 0;
-    for (const c of views) {
-      faltaInicial[c.cls] = (faltaInicial[c.cls] ?? 0) + c.items.reduce((a, b) => a + b.faltaCents, 0);
-      totalFaltaInicial += faltaInicial[c.cls] ?? 0;
+    const ml = this.monthLedger;
+    if (!ml) {
+      return {
+        referenceMonth: month,
+        capacityCents: 0,
+        months: [],
+        monthsUntilDone: null,
+        done: false,
+      };
     }
 
-    // 2. janela de simulação: do mês corrente (startMonth) até o mês visto.
-    const hoje = todaySP();
-    const startMonth = monthOf(hoje);
     const targetMonth = monthOf(month);
+    const startMonth = monthOf(todaySP());
 
-    // 3. helper: saldo + resumos do mês m (com cache barato via fetcher).
-    const fetchMonthData = async (m: string): Promise<{
-      saldoPrevistoFimCents: number;
-      budgetSummary: BudgetMonthSummary | null;
-      savingsOverview: SavingsMonthOverview | null;
-    }> => {
-      let out: { saldoPrevistoFimCents: number; budgetSummary: BudgetMonthSummary | null; savingsOverview: SavingsMonthOverview | null };
-      if (opts?.fetcher) {
-        out = await opts.fetcher(m);
-      } else {
-        // fallback: cálculo direto via services disponíveis (o saldo do 1º
-        // mês pode ser sobrescrito via `saldoPrevistoAjustadoFimCents`).
-        let saldoPrevistoFimCents = 0;
-        try {
-          const dual = await this.balance!.getDailyBalancesDual(m, opts?.dataVersion);
-          const last = await this.balance!.getLastActivityDate(m);
-          const targetDate = last ?? `${m}-${String(lastDayNumberOf(m)).padStart(2, '0')}`;
-          saldoPrevistoFimCents = dual.previsto[targetDate] ?? 0;
-        } catch {
-          saldoPrevistoFimCents = 0;
-        }
-        out = {
-          saldoPrevistoFimCents,
-          budgetSummary: m === startMonth ? opts?.budgetSummary ?? null : null,
-          savingsOverview: m === startMonth ? opts?.savingsOverview ?? null : null,
-        };
-      }
-      // v90 — PRIORIDADE do override da tela (Fluxo) sobre QUALQUER fonte
-      // para o startMonth: garante compat com a v89 quando o usuário passa
-      // explicitamente o saldo ajustado (com budAdj/savAdj) do mês corrente.
-      if (m === startMonth && opts?.saldoPrevistoAjustadoFimCents != null) {
-        out.saldoPrevistoFimCents = opts.saldoPrevistoAjustadoFimCents;
-      }
-      // garantias de tipo
-      if (out.budgetSummary == null) out.budgetSummary = null;
-      if (out.savingsOverview == null) out.savingsOverview = null;
-      return out;
-    };
+    // Lê o ledger de cada mês — current → target. A cascata VEM persistida.
+    const months: WishlistProjectionMonth[] = [];
+    let capacityCents = 0;
+    let monthsUntilDone: number | null = null;
 
-    // 4. simulação (v95): para cada mês, capacity = max(0, saldoPrevistoFim
-    //    − orçamentoRestante); aplica cascade Prioridade → Necessário →
-    //    Desejo; o que SOBRA de dinheiro do mês NÃO carrega para o próximo
-    //    (a previsão não se reflete automaticamente). Só a FALTA segue
-    //    adiante, dentro de `acc` — quando o valor planejado excede a
-    //    disponibilidade atual, a parcela que sobrou entra no mês seguinte
-    //    na mesma ordem (P → N → D).
-    const ordemTyped = ordem;
-    type ResultMonth = WishlistProjectionMonth;
-    const results: ResultMonth[] = [];
-    let acc: Record<string, number> = { ...faltaInicial };
-    let mesesAteDone: number | null = null;
-    let capacityRef = 0; // capacidade do 1º mês (= valor exibido em capacityCents)
-    let simMonth = startMonth;
-    const MAX_ITER = 12;
+    let sim = startMonth;
+    for (let i = 0; i < 12; i++) {
+      const entries = await ml.getMonthWishlistEntries(sim);
+      const row = await ml.getMonthLedgerSummary(sim);
+      const balancePrev = row?.balanceBeforePrevCents ?? 0;
+      const budgetRem = Math.max(0, row?.budgetRemainingCents ?? 0);
+      const capacityMonth = Math.max(0, balancePrev - budgetRem);
 
-    for (let i = 0; i < MAX_ITER; i++) {
-      const data = await fetchMonthData(simMonth);
-      const budgetRemaining = data.budgetSummary?.remainingCents ?? 0;
-      const capacityMonth = Math.max(0, data.saldoPrevistoFimCents - Math.max(0, budgetRemaining));
-      if (i === 0) capacityRef = capacityMonth;
-      let capacityFinal = capacityMonth;
-      if (capacityFinal < 0) capacityFinal = 0;
-      const abatePorClasse: Record<string, number> = {};
-      for (const cls of ordemTyped) {
-        if (capacityFinal <= 0) break;
-        const falta = Math.max(0, acc[cls] ?? 0);
-        if (falta === 0) continue;
-        const abate = Math.min(falta, capacityFinal);
-        if (abate > 0) {
-          abatePorClasse[cls] = abate;
-          capacityFinal -= abate;
+      if (i === 0) capacityCents = capacityMonth;
+
+      // Agrega as entries por classe — Prioridade → Necessário → Desejo.
+      const klass: Record<WishlistClass, { ini: number; abatido: number; fim: number }> = {
+        PRIORIDADE: { ini: 0, abatido: 0, fim: 0 },
+        NECESSARIO: { ini: 0, abatido: 0, fim: 0 },
+        DESEJO: { ini: 0, abatido: 0, fim: 0 },
+      };
+      if (entries) {
+        for (const e of entries) {
+          const k = klass[e.classificacao];
+          k.ini += e.shortageStartCents;
+          k.abatido += e.coveredCents;
+          k.fim += e.shortageEndCents;
         }
       }
-      const classesOut: ResultMonth['classes'] = ordemTyped.map((cls) => {
-        const ini = Math.max(0, acc[cls] ?? 0);
-        const abate = abatePorClasse[cls] ?? 0;
-        const fim = Math.max(0, ini - abate);
-        acc[cls] = fim;
-        return { cls, label: labelsMap[cls], faltaInicioCents: ini, abatidoCents: abate, faltaFimCents: fim };
-      });
-      const usei = capacityMonth - capacityFinal;
-      results.push({ month: simMonth, contributionCents: usei, classes: classesOut });
+      const classesOut: WishlistProjectionMonth['classes'] =
+        (['PRIORIDADE', 'NECESSARIO', 'DESEJO'] as WishlistClass[]).map((cls) => ({
+          cls,
+          label: CLASS_LABELS[cls],
+          faltaInicioCents: klass[cls].ini,
+          abatidoCents: klass[cls].abatido,
+          faltaFimCents: klass[cls].fim,
+        }));
+      const contributionCents = classesOut.reduce((a, c) => a + c.abatidoCents, 0);
+      months.push({ month: sim, contributionCents, classes: classesOut });
 
-      if (
-        totalFaltaInicial > 0 &&
-        mesesAteDone == null &&
-        classesOut.every((c) => c.faltaFimCents === 0)
-      ) {
-        mesesAteDone = i + 1;
+      // done quando TUDO zerou
+      const totalIni = classesOut.reduce((a, c) => a + c.faltaInicioCents, 0);
+      const totalFim = classesOut.reduce((a, c) => a + c.faltaFimCents, 0);
+      if (monthsUntilDone == null && totalIni > 0 && totalFim === 0) {
+        monthsUntilDone = i + 1;
       }
 
-      // parar: chegou ao "done" e o mês visto já foi passado.
-      simMonth = monthAdd(simMonth, 1);
-      if (mesesAteDone != null && simMonth > targetMonth) break;
+      // avançou além do target → para.
+      if (sim >= targetMonth) break;
+      sim = monthAdd(sim, 1);
     }
 
-    // truncar a exibição para não passar do mês visto (UX: o usuário olhou um
-    // mês; a projeção não precisa estourar além dele a não ser que o "done"
-    // ainda não tenha acontecido — nesses casos paramos ao fim da janela de
-    // 12 meses mesmo assim).
-    let displayed = results;
-    if (results.length > 0) {
-      const lastDisplayed = results[results.length - 1].month;
-      if (lastDisplayed > targetMonth) {
-        const idx = results.findIndex((r) => r.month === targetMonth);
-        if (idx >= 0) displayed = results.slice(0, idx + 1);
-      }
-    }
+    // truncar até o mês visto (UX — não vaza além do mês selecionado).
+    const lastIdx = months.findIndex((m) => m.month === targetMonth);
+    const displayed = lastIdx >= 0 ? months.slice(0, lastIdx + 1) : months;
 
-    const done = mesesAteDone !== null;
     return {
       referenceMonth: month,
-      capacityCents: capacityRef,
+      capacityCents,
       months: displayed,
-      monthsUntilDone: done ? mesesAteDone : null,
-      done,
+      monthsUntilDone,
+      done: monthsUntilDone !== null,
     };
   }
 }

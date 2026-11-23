@@ -1,5 +1,5 @@
 /**
- * v16 — MonthLedgerService.
+ * v17 — MonthLedgerService.
  *
  * Carrega e mantém o livro-razão mensal em SQLite (`month_ledger`,
  * `month_ledger_wishlist`). A fonte da verdade continuam sendo os
@@ -10,13 +10,23 @@
  * Regras:
  * 1. marca d'água `ledger_dirty_from` em app_settings: lines abaixo da
  *    marca são potencialmente sujas. Tudo válido por padrão mesmo.
- * 2. TRIGGERS (criados pela migration 62) baixam a marca automaticamente
- *    quando alguma tabela muda.
+ * 2. TRIGGERS (criados pelas migrations 62 e 63) baixam a marca
+ *    automaticamente quando alguma tabela muda. A v17 também dispara
+ *    quando uma das chaves de módulo (orcamentos/poupanca/programação)
+ *    é gravada em app_settings.
  * 3. Ao abrir o livro em m, se `dirty_from > m`: devolve cache.
- *    Senão: recalcula de `dirty_from` até m em uma transação.
+ *    Senão: recalcula de `max(dirty_from, m0)` até m em uma transação.
  * 4. Virada de mês: `ledger_today_month` muda → marca = mês anterior.
  * 5. `LEDGER_RULES_VERSION` mudado → marca = '0000-00'.
  * 6. Backup restore → marca = '0000-00' (no BackupService).
+ * 7. v17 — após `recalcRange` a marca SOBE para `target + 1` mesmo
+ *    quando estava em '0000-00' (antes ficava presa e recalculava tudo
+ *    a cada leitura enquanto o usuário não tocasse em outra coisa).
+ *    A regra do livro é: tudo abaixo da marca é válido.
+ * 8. v17 — `computeMonth` é ENCADEADO: o saldo de Previsto/Efetivado
+ *    no dia-alvo é `opening + (dual − opening)` + budAdj + savAdj, e a
+ *    capacidade da Programação vem DEPOIS do orçamento. Sem corrente
+ *    de abertura duplicada.
  */
 
 import type { DbDriver } from '../db/types';
@@ -85,6 +95,15 @@ export interface GetMonthOpts {
 
 interface BalanceScope {
   scopeIds: string[];
+}
+
+interface ComputeMonthCtx {
+  todayMonth: Ym;
+  scope: BalanceScope;
+  openingPrev: number;
+  openingEfet: number;
+  closingActive: boolean;
+  closingSinceMonth: Ym | null;
 }
 
 export class MonthLedgerService {
@@ -159,11 +178,9 @@ export class MonthLedgerService {
     const todayMonth = monthOf(today);
     const prevTodayMonth = (await this.getSetting('todayMonth')) || '';
     if (prevTodayMonth && prevTodayMonth !== todayMonth) {
-      // Virada de mês: programação só vale do mês corrente em diante —
-      // tudo até o mês anterior fica intacto, mas a partir do novo
-      // mês corrente recalcula. Como a programação começa do mês novo,
-      // basta baixar a marca para o MÊS ANTERIOR (qualquer coisa acima
-      // do que mudou vai ser revisada).
+      // Virada de mês: a programação começa do mês novo, basta baixar
+      // a marca para o MÊS ANTERIOR (qualquer coisa acima do que mudou
+      // vai ser revisada).
       const prev = monthAdd(prevTodayMonth, -1);
       await this.setSetting('dirtyFrom', prev);
       this.memCache.clear();
@@ -217,7 +234,21 @@ export class MonthLedgerService {
       return null;
     }
 
-    await this.recalcRange(fromMonth, target, opts);
+    // v17: usa o dual da ABERTURA do fromMonth quando possível (evita um
+    // getDailyBalancesDual extra só para descobrir openingPrev/openingEfet).
+    const initialDual =
+      fromMonth === m0 ? await this.balance.getDailyBalancesDual(fromMonth, undefined) : null;
+    await this.recalcRange(
+      fromMonth,
+      target,
+      opts,
+      initialDual
+        ? {
+            openingPrev: initialDual.openingPrevisto ?? 0,
+            openingEfet: initialDual.openingEfetivado ?? 0,
+          }
+        : null
+    );
     const row = await this.readRow(target);
     if (row) this.memCache.set(target, row);
     return row;
@@ -296,9 +327,11 @@ export class MonthLedgerService {
   }
 
   /**
-   * Primeiro mês com alguma "atividade de ledger": primeira transação,
-   * primeiro orçamento ativo, primeiro plano de poupança ativo, primeiro
-   * item aberto OU 24 meses atrás do mês atual (o que for mais tarde).
+   * v17 — Primeiro mês com alguma "atividade de ledger": primeira
+   * transação, primeiro orçamento ativo, primeiro plano de poupança
+   * ativo, primeiro item aberto OU 24 meses atrás do mês atual (o que
+   * for mais tarde). Retorna `null` se NENHUM módulo está ativo — o
+   * Fluxo usa o saldo bruto do BalanceService (legado) nesse caso.
    */
   private async computeM0(todayMonth: Ym): Promise<Ym | null> {
     const minTx = safeMonthOf(
@@ -335,11 +368,18 @@ export class MonthLedgerService {
   /**
    * Recalcula em cadeia do mês `fromMonth` até `target`. Assume `fromMonth`
    * ≤ `target`. Persiste cada mês em SQLite. Tudo dentro de uma transação.
+   *
+   * v17: quando `initialDual` é passado (caso do primeiro mês com m0),
+   * reaproveitamos o `dual` que já foi aberto por `getMonthLedgerSummary`
+   * para descobrir o opening. Sem isso, o `computeMonth` do fromMonth
+   * chamaria `getDailyBalancesDual` duas vezes (uma para opening, uma
+   * para balancePrev).
    */
   private async recalcRange(
     fromMonth: Ym,
     target: Ym,
-    _opts: GetMonthOpts
+    _opts: GetMonthOpts,
+    initialOpening: { openingPrev: number; openingEfet: number } | null
   ): Promise<void> {
     const todayMonth = monthOf(todaySP());
     const scope = await this.getScope();
@@ -348,21 +388,23 @@ export class MonthLedgerService {
     const closingSinceMonth = closingPlan?.created_at ? safeMonthOf(closingPlan.created_at) : null;
     const closingActive = !!closingPlan;
 
-    // Abertura inicial: se houver linha gravada do mês ANTERIOR, o
-    // opening vem do closing dessa linha (chain já líquido). Senão, é o
-    // primeiro da chain — usa o `dual opening` do BalanceService (a tela
-    // do m0 fica IDÊNTICA à de hoje antes de m0, conforme a regra).
-    let openingPrev = 0;
-    let openingEfet = 0;
-    const prev = monthAdd(fromMonth, -1);
-    const prevRow = await this.readRow(prev);
-    if (prevRow) {
-      openingPrev = prevRow.closingPrevCents;
-      openingEfet = prevRow.closingEfetCents;
-    } else {
-      const dual = await this.balance.getDailyBalancesDual(fromMonth, undefined);
-      openingPrev = dual.openingPrevisto ?? 0;
-      openingEfet = dual.openingEfetivado ?? 0;
+    // Cache do `getDailyBalancesDual` por mês do loop: o primeiro mês usa
+    // o dual já aberto (parâmetro); os demais abrem uma vez por mês dentro
+    // de `computeMonth`. Aqui só guardamos o dual do fromMonth para passar
+    // adiante — o da ABERTURA, não o do balanceDaily do próprio mês.
+    let openingPrev = initialOpening?.openingPrev ?? 0;
+    let openingEfet = initialOpening?.openingEfet ?? 0;
+    if (!initialOpening) {
+      const prev = monthAdd(fromMonth, -1);
+      const prevRow = await this.readRow(prev);
+      if (prevRow) {
+        openingPrev = prevRow.closingPrevCents;
+        openingEfet = prevRow.closingEfetCents;
+      } else {
+        const dual = await this.balance.getDailyBalancesDual(fromMonth, undefined);
+        openingPrev = dual.openingPrevisto ?? 0;
+        openingEfet = dual.openingEfetivado ?? 0;
+      }
     }
 
     await this.db.transactionAsync(async () => {
@@ -388,24 +430,15 @@ export class MonthLedgerService {
       }
     });
 
-    // Avança a marca d'água: tudo abaixo de m(target) + 1 está válido.
+    // v17 — MARCA D'ÁGUA sempre sobe para target + 1: o livro é válido
+    // para meses < marca. A regra anterior (`if (current !== DIRTY_ALL`)
+    // deixava a marca presa em '0000-00' e o Fluxo recalculava em cada
+    // leitura. Como o `recalcRange` sempre começa de `max(m0, dirtyFrom)`
+    // e percorre até `target`, qualquer mês entre m0 e target AGORA está
+    // válido — a marca pode subir livremente.
     if (target >= fromMonth) {
       const nextDirty = monthAdd(target, 1);
-      // Só piora (min com o que já tem).
-      const current = (await this.getSetting('dirtyFrom')) || DIRTY_ALL;
-      const next = minDirty(current, nextDirty);
-      // MAS só podemos avançar se ainda há linhas prontas: o `current` pode
-      // ser '0000-00' ou mês MUITO anterior; aqui, depois do recalc, podemos
-      // SUBIR a marca para `target+1` desde que tenhamos certeza que tudo
-      // entre m0..target está gravado. Seria perigoso ir direto para
-      // target+1 sem outra garantia, então só subimos SE já havia cache
-      // válido OU se neste ciclo já gravamos tudo de m0..target. Para
-      // segurança, suba somente se `current` é um mês específico (não
-      // '0000-00') — caso contrário, mantenha '0000-00' para forçar
-      // recálculo quando o usuário navegar para ANTES de target.
-      if (current !== DIRTY_ALL) {
-        await this.setSetting('dirtyFrom', next);
-      }
+      await this.setSetting('dirtyFrom', nextDirty);
     }
     // Limpa memCache das entradas regravadas.
     for (let m = fromMonth; m <= target; m = monthAdd(m, 1)) {
@@ -468,17 +501,10 @@ export class MonthLedgerService {
   /** Calcula UM mês (puro em relação à escrita). */
   private async computeMonth(
     month: Ym,
-    ctx: {
-      todayMonth: Ym;
-      scope: BalanceScope;
-      openingPrev: number;
-      openingEfet: number;
-      closingActive: boolean;
-      closingSinceMonth: Ym | null;
-    }
+    ctx: ComputeMonthCtx
   ): Promise<{ row: MonthLedgerRow; wishlist: WishItemResult[] }> {
     const isCurrentOrFuture = month >= ctx.todayMonth;
-    // 1) dual + last activity
+    // 1) dual + last activity (UMA chamada por mês).
     const dual = await this.balance.getDailyBalancesDual(month, undefined);
     const lastActivity = await this.balance.getLastActivityDate(month);
     const lastDay = (() => {
@@ -487,7 +513,7 @@ export class MonthLedgerService {
     })();
     const targetDate: Ymd = lastActivity ?? `${month}-${String(lastDay).padStart(2, '0')}`;
 
-    // 2) orçamentos — quando budgetsAtivado estiver on, summary + flux adjust
+    // 2) orçamentos — summary + adjust.
     const budgetsOn = await this.settings.getBool('orcamentos_ativado');
     let budgetSummary = null;
     let budgetAdjust: { previsto: Record<string, number>; efetivado: Record<string, number> } | null = null;
@@ -496,7 +522,7 @@ export class MonthLedgerService {
       budgetAdjust = await this.budgets.getMonthFluxAdjust(month, ctx.scope.scopeIds, undefined);
     }
 
-    // 3) poupança — savAdj + overview (entries MONTHLY)
+    // 3) poupança — savAdj + overview (entries MONTHLY).
     const savingsOn = await this.settings.getBool('poupanca_ativado');
     const savingsAdjust = savingsOn
       ? await this.savings.getMonthFluxAdjust(month, ctx.scope.scopeIds, undefined)
@@ -505,30 +531,46 @@ export class MonthLedgerService {
       ? await this.savings.getMonthOverview(month, undefined)
       : null;
 
-    // 4) saldo antes da hierarquia (no dia-alvo): convenção do código legado
+    // 4) v17 — ENCADEADO: `opening + (dual.alvo − dual.opening) + ajustes`.
+    // No primeiro mês da cadeia `opening == dual.opening`, então a fórmula
+    // recai no comportamento v16 (apenas os ajustes somam). Nos meses
+    // posteriores a abertura é o `closing` do mês anterior — a carga bate
+    // automaticamente.
+    const dualOpeningPrev = dual.openingPrevisto ?? 0;
+    const dualOpeningEfet = dual.openingEfetivado ?? 0;
     const balancePrev =
-      (dual.previsto[targetDate] ?? 0) +
+      ctx.openingPrev +
+      ((dual.previsto[targetDate] ?? 0) - dualOpeningPrev) +
       (budgetAdjust?.previsto[targetDate] ?? 0) +
-      (savingsAdjust?.previsto[targetDate] ?? 0) +
       (budgetAdjust?.efetivado[targetDate] ?? 0) +
+      (savingsAdjust?.previsto[targetDate] ?? 0) +
       (savingsAdjust?.efetivado[targetDate] ?? 0);
     const balanceEfet =
-      (dual.efetivado[targetDate] ?? 0) +
+      ctx.openingEfet +
+      ((dual.efetivado[targetDate] ?? 0) - dualOpeningEfet) +
       (budgetAdjust?.efetivado[targetDate] ?? 0) +
       (savingsAdjust?.efetivado[targetDate] ?? 0);
 
-    // 5) cascade da wishlist (P → N → D) — só do mês corrente em diante
+    // 5) v17 — capacidade da cascata calculada DEPOIS do orçamento e do
+    // saldo. O orçamento é subtraído POR INTEIRO do saldo previsto; a
+    // Programação só recebe o que SOBRAR do saldo. Sem isso a cascade
+    // poderia querer alocar além da disponibilidade real.
+    const budgetRemainingRaw = budgetSummary?.remainingCents ?? 0;
+    const budgetRemaining = Math.max(0, budgetRemainingRaw);
+    const wishlistCapacity = Math.max(0, balancePrev - budgetRemaining);
+
+    // 6) cascade da wishlist (P → N → D) — só do mês corrente em diante.
     let wishlistResults: WishItemResult[] = [];
     let wishlistTotal = 0;
     if (isCurrentOrFuture) {
-      wishlistResults = await this.cascadeWishlistForMonth(month, ctx);
+      wishlistResults = await this.cascadeWishlistForMonth(month, ctx, wishlistCapacity);
       wishlistTotal = wishlistResults.reduce((s, r) => s + r.coveredCents, 0);
     }
 
-    // 6) poupança mensal do mês: ENTRY MONTHLY > plano ativo (amount_cents)
+    // 7) poupança mensal do mês: ENTRY MONTHLY > plano ativo (amount_cents).
     const monthlySavings = await this.resolveMonthlySavings(month);
 
-    // 7) fechamento ativo: o regime começa em closingSinceMonth (se houver).
+    // 8) fechamento ativo.
     const regimeActive = ctx.closingActive && (
       !ctx.closingSinceMonth || month >= ctx.closingSinceMonth
     );
@@ -536,7 +578,7 @@ export class MonthLedgerService {
     const hier: ClosingHierarchyOutput = applyClosingHierarchy({
       balancePrevCents: balancePrev,
       balanceEfetCents: balanceEfet,
-      budgetRemainingCents: budgetSummary?.remainingCents ?? 0,
+      budgetRemainingCents: budgetRemainingRaw,
       wishlistTotalCents: wishlistTotal,
       monthlySavingsCents: monthlySavings,
       closingModeActive: regimeActive,
@@ -546,14 +588,13 @@ export class MonthLedgerService {
     const row: MonthLedgerRow = {
       month,
       // Opening_prev/efet — vem do chain (carry da iteração anterior ou
-      // do dual opening na primeira passada). É a abertura do mês já
-      // líquida (uma só fonte de verdade: o livro).
+      // do dual opening na primeira passada).
       openingPrevCents: ctx.openingPrev,
       openingEfetCents: ctx.openingEfet,
       targetDate,
       balanceBeforePrevCents: balancePrev,
       balanceBeforeEfetCents: balanceEfet,
-      budgetRemainingCents: budgetSummary?.remainingCents ?? 0,
+      budgetRemainingCents: budgetRemainingRaw,
       wishlistAllocatedCents: hier.wishlistAllocatedCents,
       savingsMonthlyCents: hier.savingsMonthlyCents,
       savingsClosingCents: hier.savingsClosingCents,
@@ -569,17 +610,17 @@ export class MonthLedgerService {
    * Cascade da wishlist para o mês m. Usa o carryover do ledger[m-1] quando
    * houver (sinaliza o que sobrou dos meses anteriores); senão usa a falta
    * fresca `max(0, target - reserved)` (primeira passagem / sem histórico).
+   *
+   * v17 (c): o carry é usado SEMPRE que existir — mesmo com valor 0. Antes
+   * a regra `carry != null && carry > 0` zerava o carry quando era 0, o
+   * que reativava items que já tinham sido totalmente cobertos no mês
+   * anterior (a falta fresca é max(0, target - reserved) e ignora o
+   * trabalho do mês anterior).
    */
   private async cascadeWishlistForMonth(
     month: Ym,
-    ctx: {
-      todayMonth: Ym;
-      scope: BalanceScope;
-      openingPrev: number;
-      openingEfet: number;
-      closingActive: boolean;
-      closingSinceMonth: Ym | null;
-    }
+    ctx: ComputeMonthCtx,
+    capacity: number
   ): Promise<WishItemResult[]> {
     const prev = monthAdd(month, -1);
     const prevAlloc = await this.readWishlistAlloc(prev);
@@ -591,9 +632,13 @@ export class MonthLedgerService {
     if (!wishOn) return [];
 
     const classes = await this.wishlist.listOpen(undefined);
-    // Para o mês corrente: usa a falta fresca (target - reserved).
-    // Para meses futuros (>current): usa o carryover (shortage_end do
-    // mês anterior) — se não houver carryover, usa a falta fresca mesmo.
+    if (classes.every((c) => c.itemCount === 0)) {
+      // sem itens abertos: nada a alocar.
+      return [];
+    }
+    // Para o mês corrente: usa a falta fresca (target - reserved). Para
+    // meses futuros (>current): usa o carryover (shortage_end do mês
+    // anterior) — se não houver carryover, usa a falta fresca.
     const items: WishItemRef[] = [];
     for (const cl of classes) {
       for (const item of cl.items) {
@@ -604,7 +649,7 @@ export class MonthLedgerService {
         const faltaInicio =
           month === ctx.todayMonth
             ? fresh
-            : (carry != null && carry > 0 ? carry : fresh);
+            : (carry != null ? carry : fresh);
         if (faltaInicio <= 0) continue;
         items.push({
           itemId: item.id,
@@ -614,23 +659,6 @@ export class MonthLedgerService {
       }
     }
     if (items.length === 0) return [];
-
-    // Capacidade do mês: abertura_prev (já líquida) - orcamento.
-    // ATENÇÃO: estamos recalculando DENTRO de computeMonth; aqui só temos
-    // o `opening_prev` passado via `ctx`. O valor `budgetRemaining` virá
-    // do BudgetService — mas para mantermos uma interface coesa, é
-    // resolvido pelo chamador. Pegamos do `reuse`... simplificamos:
-    // aqui calculamos a capacidade baseada em opening_prev — o budget
-    // restante é subtraído no applyClosingHierarchy (passo 5).
-    // Para que a COBERTURA seja estável, usamos
-    //   capacidade = max(0, opening_prev) — sem subtrair orçamento aqui
-    //   (o applyClosingHierarchy cuida).
-    // Isso preserva a regra: "cada classe esgota a capacidade antes da
-    // seguinte começar; só abate a falta que ENTRA no mês".
-    // Se a capacidade líquida (em applyClosing) for menor, a cascade já
-    // terá coberto um valor MAIOR do devido — corrigiríamos depois
-    // com o `min` em applyClosing.
-    const capacity = Math.max(0, ctx.openingPrev);
 
     return cascadeWishlist(items, capacity);
   }
@@ -665,17 +693,23 @@ export class MonthLedgerService {
   /**
    * Helper de leitura para o card de Programação de Compra (Fluxo):
    * entries do cascade do mês (ou null se mês anterior a m0 / sem dados).
+   * Caso o livro esteja sujo ou incompleto, dispara o recálculo automaticamente.
    */
   async getMonthWishlistEntries(month: Ym): Promise<MonthLedgerWishRow[] | null> {
     await this.syncDirty();
     const dirtyFrom = (await this.getSetting('dirtyFrom')) || DIRTY_ALL;
-    if (dirtyFrom > month) {
+    const todayMonth = monthOf(todaySP());
+    const m0 = await this.computeM0(todayMonth);
+    if (!m0) return null;
+
+    // Meses anteriores a m0: nada foi computado, sem rows.
+    if (month < m0) return null;
+
+    // Linha já cacheada em memória e marca acima do mês → resposta direta.
+    if (!this.memCache.has(month) && dirtyFrom > month) {
       return this.readWishlistAlloc(month);
     }
-    // Caso o cache esteja válido e o mês esteja na memória: nada a fazer.
-    if (this.memCache.has(month)) {
-      return this.readWishlistAlloc(month);
-    }
+
     // Garanta a linha do mês (e sua cascade) e devolva.
     await this.getMonthLedgerSummary(month);
     return this.readWishlistAlloc(month);

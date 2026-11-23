@@ -93,26 +93,6 @@ export default function AjustesScreen() {
   const [backups, setBackups] = React.useState<string[]>([]);
   const [schemaVersion, setSchemaVersion] = React.useState<number | null>(null);
   const [resetting, setResetting] = React.useState(false);
-  const [recalcBusy, setRecalcBusy] = React.useState(false);
-
-  /**
-   * v16 — Recalcular saldos: marca o livro-razão como sujo TOTAL
-   * (`ledger_dirty_from = '0000-00'`) e força `bump()` para que a próxima
-   * carga da tela (useDataEffect) reconstrua o livro em cadeia. O cálculo
-   * é feito em background; o usuário só vê o toast de sucesso.
-   */
-  const recalcLedger = async () => {
-    setRecalcBusy(true);
-    try {
-      await services.monthLedger.invalidateAll();
-      bump();
-      showToast('Recálculo iniciado — recarregue a tela do Fluxo para ver os novos saldos');
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), 'err');
-    } finally {
-      setRecalcBusy(false);
-    }
-  };
   /** v21 (bug 4): confirmação antes de LIMPAR tudo (exclusão em massa). */
   const [clearConfirmOpen, setClearConfirmOpen] = React.useState(false);
   /** v9: preferência — exibir saldo por dia nos agrupamentos do Fluxo. */
@@ -465,24 +445,6 @@ export default function AjustesScreen() {
         />
         <Text className="text-[11px] text-slate-500">
           Apaga TUDO na hora (lançamentos, contas, cartões, NFC-e, despensa). As categorias que você cadastrou continuam — o app não cria categoria nenhuma sozinho. Não dá para desfazer.
-        </Text>
-      </Group>
-
-      {/* v16 — Manutenção: recalcular o livro-razão (força uma nova passagem
-          da hierarquia encadeada mês a mês). Útil quando se desconfia de um
-          descompasso entre o saldo exibido no Fluxo e o estado real (edição
-          de lançamento antigo, mudança de categoria do orçamento, ajuste de
-          data, etc.). O processo roda em background e o app continua
-          usável. */}
-      <Group title="Manutenção" icon="🔧" defaultOpen>
-        <Button
-          label="🔄 Recalcular saldos"
-          variant="outline"
-          onPress={recalcLedger}
-          loading={recalcBusy}
-        />
-        <Text className="text-[11px] text-slate-500">
-          Refaz o cálculo encadeado do saldo por dia (Saldo do dia, Orçamento, Programação de Compra, Poupança Mensal, Fechamento do Mês) para TODOS os meses. Use se algum saldo parecer errado.
         </Text>
       </Group>
 

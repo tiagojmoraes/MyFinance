@@ -1,5 +1,5 @@
 /**
- * v16 — livro-razão mensal (month ledger).
+ * v17 — livro-razão mensal (month ledger).
  *
  * O saldo de cada dia do Fluxo passa a ser calculado em duas camadas:
  *   1) BASE (já existe hoje em BalanceService.getDailyBalancesDual): contas
@@ -12,9 +12,11 @@
  * Hierarquia, na ordem (regra preservada):
  *   a) Saldo sem poupança = Previsto + Efetivado no dia-alvo,
  *      já com budAdj/savAdj somados.
- *   b) − max(0, orçado − gasto) do mês. O restante volta COMO capacidade
- *      (não é consumo físico de dinheiro), então subtraímos apenas a parte
- *      que NÃO cabe — convenção do código legado.
+ *   b) Capacidade da Programação do mês = max(0, balancePrev − max(0,
+ *      orçado − gasto)). O orçamento é subtraído POR INTEIRO do saldo
+ *      previsto — não é consumo físico, é o que cabe no mês para a
+ *      cascata. O cascade (c) consome primeiro a Prioridade, depois
+ *      Necessário, depois Desejo.
  *   c) − Programação de Compra (cascade P → N → D), só para o mês
  *      corrente e os futuros (em passado a reserva já é transferência real).
  *   d) − Poupança mensal do mês, uma vez.

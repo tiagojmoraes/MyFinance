@@ -92,7 +92,7 @@
  *       o total planejado;
  *     · subcards expandidos mostram "Falta R$ …" (o que ainda falta pagar do
  *       grupo) e "cabe R$ …" (quanto daquele grupo cabe naquele mês).
- *  · v95 (Programação de Compra — REGRAS DO USUÁRIO):
+ *  · v17 (Programação de Compra — FONTE ÚNICA NO LIVRO-RAZÃO):
  *     · valor do cabeçalho = PLANO do mês visto (o que cabe/foi abatido na
  *       `projectionMonthPlan`), zerado em meses que não estão no plano —
  *       a previsão só vale para o mês planejado; no mês seguinte só baixa
@@ -101,8 +101,12 @@
  *       (`projectionMonthPlan.faltaInicioCents`), não a lista inteira — o
  *       plano não se reflete automaticamente nos outros meses;
  *     · botão do card renomeado para "Cadastrar / alterar programação ›";
- *     · `getProjection` recebe o mesmo `saldoPrevistoAjustadoFimCents` usado
- *       pelo `getMethodology` — a "disponibilidade do mês" bate nos dois.
+ *     · `getMethodology` e `getProjection` LEEM o cascade já persistido em
+ *       `month_ledger_wishlist` via `MonthLedgerService.getMonthWishlistEntries`
+ *       (a janela passa a ser `mês atual → mês visto`, lendo o livro
+ *       encadeado mês a mês: o `closing` de um mês é a abertura do seguinte).
+ *       Nada de override `saldoPrevistoAjustadoFimCents` nem do `startMonth`
+ *       como "hoje do dispositivo" — o livro-razão é a fonte única.
  *  · Mantém v11–v13: Fixo/Parcelado perpetuando nos meses seguintes; saldos do
  *    dia (Previsto/Efetivado); compras no CARTÃO estritamente na fatura;
  *    duplicar (segurar 3 s).
@@ -185,9 +189,11 @@ export default function FluxoScreen() {
     openingEfetivado?: number;
   }>({ efetivado: {}, previsto: {} });
   const [lastActivityDate, setLastActivityDate] = React.useState<string | null>(null);
-  // v16: linha do livro-razão do mês (Persistida em SQLite, encadeada).
+  // v17: linha do livro-razão do mês (Persistida em SQLite, encadeada).
   // Quando presente, é a fonte da verdade do saldo do dia Previsto/Efetivado
-  // e do `saldoPrevistoAjustadoFimCents` passado à Programação de Compra.
+  // E da cascata da Programação de Compra (lida via
+  // `MonthLedgerService.getMonthWishlistEntries` — não passa mais o
+  // `saldoPrevistoAjustadoFimCents` para a tela).
   const [monthLedgerRow, setMonthLedgerRow] = React.useState<import('../src/services/MonthLedgerService').MonthLedgerRow | null>(null);
   const [showDaily, setShowDaily] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
@@ -304,7 +310,6 @@ export default function FluxoScreen() {
       let budgetsFlag = false;
       let savingsFlag = false;
       let wishlistFlag = false;
-      let lastActivity: string | null = null;
       try {
         const [show, lastDate, bFlag, sFlag, wFlag] = await Promise.all([
           svc.settings.getBool(SETTING_KEYS.fluxoSaldoPorDia, false),
@@ -318,7 +323,6 @@ export default function FluxoScreen() {
         budgetsFlag = bFlag;
         savingsFlag = sFlag;
         wishlistFlag = wFlag;
-        lastActivity = lastDate;
         setShowDaily(show);
         setBudgetsOn(bFlag);
         setSavingsOn(sFlag);
@@ -421,40 +425,19 @@ export default function FluxoScreen() {
 
         if (wishlistFlag) {
           try {
-            // v16: o saldo previsto "antes da hierarquia" vem do LIVRO-RAZÃO
-            // (persistido mês a mês). Quando ainda não há linha gravada (mês
-            // anterior a m0 ou uma falha de cálculo), caímos para a fórmula
-            // legada — a tela do Fluxo não fica vazia.
-            const fallbackClosing = ((dual: DailyDual | null) => {
-              const endDate = lastActivity ?? `${month}-${String(lastDayNumberOf(month)).padStart(2, '0')}`;
-              const closingSince = sSum?.closingSinceMonth ?? null;
-              const closingForMonth = savingsFlag && closingSince != null && month >= closingSince;
-              const opening = closingForMonth ? Math.max(0, dual?.openingPrevisto ?? 0) : 0;
-              return (dual?.previsto[endDate] ?? 0)
-                - opening
-                + (ba?.previsto[endDate] ?? 0)
-                + (sa?.previsto[endDate] ?? 0)
-                + (ba?.efetivado[endDate] ?? 0)
-                + (sa?.efetivado[endDate] ?? 0);
-            })(dailyDual);
-            const saldoPrevistoAjustadoFimCents =
-              monthRow?.balanceBeforePrevCents ?? fallbackClosing;
+            // v17: a Programação de Compra LE DIRETAMENTE do
+            // `MonthLedgerService` (cascade persistida em
+            // `month_ledger_wishlist`). Não há mais cálculo em memória nem
+            // override de saldo — o livro é a fonte única.
+            void monthRow;
             const wm = await svc.wishlist.getMethodology(month, {
-              budgetSummary: bSum,
-              savingsOverview: sSum,
-              saldoPrevistoAjustadoFimCents,
               dataVersion,
             });
             if (!isCurrent()) return;
             setWishMethod(wm);
-            // v89/v95: projeção mês a mês (cascata) — cacheada por dataVersion
-            // no memo acima. v95: passa também `saldoPrevistoAjustadoFimCents`
-            // (a mesma disponibilidade que `getMethodology` usa) — assim a
-            // capacidade do mês corrente bate na cascata e no card.
+            // v17 — projeção mês a mês lê entries de `month_ledger_wishlist`
+            // para cada mês (do corrente até o visto).
             const wp = await svc.wishlist.getProjection(month, {
-              budgetSummary: bSum,
-              savingsOverview: sSum,
-              saldoPrevistoAjustadoFimCents,
               dataVersion,
             });
             if (!isCurrent()) return;

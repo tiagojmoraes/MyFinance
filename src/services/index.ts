@@ -129,9 +129,13 @@ export function buildServices(db: DbDriver): Omit<Services, 'ready'> {
   // v104: o serviço da LISTA DE COMPRA não depende de orçamento/transferência
   // (só lê do banco e persiste listas); fica no grafo principal.
   const shoppingList = new ShoppingListService(db);
-  // v16: livro-razão mensal (mantém a hierarquia encadeada em SQLite)
+  // v17: livro-razão mensal (mantém a hierarquia encadeada em SQLite).
   const monthLedger = new MonthLedgerService(db, settings, balance, budgets, savings, wishlist);
-  // v16: o Savings agora LÊ o livro-razão (computeMonthEndRemainderBefore-
+  // v17: late-binding — o WishlistService consulta o MonthLedgerService para
+  // a cascata persistida (getMonthWishlistEntries). Sem o setter, o ciclo
+  // de construção quebraria.
+  wishlist.setMonthLedger(monthLedger);
+  // v17: o Savings agora LÊ o livro-razão (computeMonthEndRemainderBefore-
   // Closing usa o ledger em vez de recalcular hierarquia).
   savings.hydrateLedger(monthLedger);
   return { db, balance, invoices, transactions, installments, recurrences, products, pantry, nfce, ofx, backup, categories, settings, budgets, savings, dashboard, search, bankMessages, wishlist, shoppingList, monthLedger };

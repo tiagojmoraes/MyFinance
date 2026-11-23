@@ -1041,6 +1041,113 @@ END;
         }
       },
     },
+    // -------------------------------------------------------------------------
+    // v17 — TRIGGERS REFINADOS (UPDATE usa MIN(OLD, NEW)) + app_settings gate:
+    //  · UPDATE em transactions / installments / installment_plans / invoices /
+    //    financial_moves passa a marcar o MENOR entre o mês OLD e o mês NEW.
+    //    A v16 só considerava o mês NEW, então editar a DATA de uma transação
+    //    antiga (mexer em lançamento do passado) não puxava a marca para trás
+    //    — o saldo do mês antigo ficava stale até invalidar manualmente.
+    //  · app_settings (AFT INSERT e AFT UPDATE) só dispara quando NEW.key está
+    //    entre (orcamentos_ativado, poupanca_ativado, wishlist_na_home) E no
+    //    UPDATE o valor mudou de fato. As chaves ledger_* ficam de fora para
+    //    não criar recursão (a própria MonthLedgerService altera
+    //    ledger_dirty_from/ledger_today_month/ledger_rules_version).
+    //  · v17: o `recalcRange` agora SEMPRE sobe a marca para target+1 (mesmo
+    //    vindo de '0000-00') — antes o `if (current !== DIRTY_ALL)` deixava a
+    //    marca presa e o Fluxo recalculava tudo a cada leitura enquanto o
+    //    usuário não tocasse em outra coisa.
+    // -------------------------------------------------------------------------
+    {
+      version: 63,
+      name: 'v17_triggers_min_appsettings',
+      sql: '',
+      fn: async (driver) => {
+        // 1) UPDATEs que precisam olhar TANTO OLD quanto NEW (a v16 só olhava
+        // NEW; aqui reescrevemos marcando o MENOR dos dois meses).
+        // Helper: corpo que considera NEW.month e OLD.month (com fallback caso
+        // uma das colunas seja NULL). Cada tabela tem suas colunas canônicas.
+        const twosidedUpdates: Array<{
+          triggerName: string;
+          newMonthExpr: string;  // expressão que produz 'YYYY-MM' para NEW (ou NULL)
+          oldMonthExpr: string;  // expressão que produz 'YYYY-MM' para OLD (ou NULL)
+        }> = [
+          {
+            triggerName: 'trg_ledger_dirty_transactions_update',
+            newMonthExpr: "substr(NEW.occurred_on,1,7)",
+            oldMonthExpr: "substr(OLD.occurred_on,1,7)",
+          },
+          {
+            triggerName: 'trg_ledger_dirty_installments_update',
+            newMonthExpr: "substr(NEW.due_date,1,7)",
+            oldMonthExpr: "substr(OLD.due_date,1,7)",
+          },
+          {
+            triggerName: 'trg_ledger_dirty_installment_plans_update',
+            newMonthExpr: "substr(NEW.first_due_date,1,7)",
+            oldMonthExpr: "substr(OLD.first_due_date,1,7)",
+          },
+          {
+            triggerName: 'trg_ledger_dirty_invoices_update',
+            newMonthExpr: "(CASE WHEN NEW.due_date IS NOT NULL THEN substr(NEW.due_date,1,7) WHEN NEW.period_end IS NOT NULL THEN substr(NEW.period_end,1,7) END)",
+            oldMonthExpr: "(CASE WHEN OLD.due_date IS NOT NULL THEN substr(OLD.due_date,1,7) WHEN OLD.period_end IS NOT NULL THEN substr(OLD.period_end,1,7) END)",
+          },
+          {
+            triggerName: 'trg_ledger_dirty_financial_moves_update',
+            newMonthExpr: "substr(NEW.effective_date,1,7)",
+            oldMonthExpr: "substr(OLD.effective_date,1,7)",
+          },
+        ];
+        for (const t of twosidedUpdates) {
+          await driver.execAsync(`DROP TRIGGER IF EXISTS ${t.triggerName};`);
+          await driver.execAsync(`
+CREATE TRIGGER ${t.triggerName}
+AFTER UPDATE ON ${t.triggerName.replace('trg_ledger_dirty_', '').replace('_update', '')}
+FOR EACH ROW
+BEGIN
+  UPDATE app_settings
+     SET value = CASE
+       WHEN value = '0000-00' THEN value
+       WHEN ${t.newMonthExpr} IS NOT NULL AND ${t.newMonthExpr} < value THEN ${t.newMonthExpr}
+       WHEN ${t.oldMonthExpr} IS NOT NULL AND ${t.oldMonthExpr} < value THEN ${t.oldMonthExpr}
+       ELSE value
+     END
+   WHERE key = 'ledger_dirty_from';
+END;
+          `);
+        }
+
+        // 2) app_settings — gate: SOMENTE as três chaves de módulo mudam o
+        // livro (orçamento/poupança/programação alteram a hierarquia inteira).
+        // As chaves ledger_* (atualizadas pela própria MonthLedgerService)
+        // ficam de fora para evitar recursão.
+        await driver.execAsync(`DROP TRIGGER IF EXISTS trg_ledger_dirty_appsettings_insert;`);
+        await driver.execAsync(`
+CREATE TRIGGER trg_ledger_dirty_appsettings_insert
+AFTER INSERT ON app_settings
+FOR EACH ROW
+WHEN NEW.key IN ('orcamentos_ativado','poupanca_ativado','wishlist_na_home')
+BEGIN
+  UPDATE app_settings
+     SET value = '0000-00'
+   WHERE key = 'ledger_dirty_from';
+END;
+        `);
+        await driver.execAsync(`DROP TRIGGER IF EXISTS trg_ledger_dirty_appsettings_update;`);
+        await driver.execAsync(`
+CREATE TRIGGER trg_ledger_dirty_appsettings_update
+AFTER UPDATE ON app_settings
+FOR EACH ROW
+WHEN NEW.key IN ('orcamentos_ativado','poupanca_ativado','wishlist_na_home')
+     AND COALESCE(OLD.value,'') <> COALESCE(NEW.value,'')
+BEGIN
+  UPDATE app_settings
+     SET value = '0000-00'
+   WHERE key = 'ledger_dirty_from';
+END;
+        `);
+      },
+    },
 ];
 
 /**
