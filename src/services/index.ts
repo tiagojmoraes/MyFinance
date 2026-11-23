@@ -23,6 +23,7 @@ import { SearchService } from './SearchService';
 import { BankMessageService } from './BankMessageService';
 import { WishlistService } from './WishlistService';
 import { ShoppingListService } from './ShoppingListService';
+import { MonthLedgerService } from './MonthLedgerService';
 
 /** Driver proxy que delega ao driver real assim que o bootstrap terminar. */
 class DeferredDriver implements DbDriver {
@@ -85,6 +86,11 @@ export interface Services {
   wishlist: WishlistService;
   /** v104: LISTAS DE COMPRA SALVAS — múltiplas, com quantidade por item. */
   shoppingList: ShoppingListService;
+  /** v16: livro-razão mensal encadeado (Saldo do dia, Orçamento, Programação
+   *  de Compra, Poupança mensal e Fechamento do Mês passam a ser VIVOS e
+   *  ENCADEADOS — o resultado de cada mês persiste e é a abertura do
+   *  mês seguinte). */
+  monthLedger: MonthLedgerService;
   ready: Promise<void>;
 }
 
@@ -123,7 +129,12 @@ export function buildServices(db: DbDriver): Omit<Services, 'ready'> {
   // v104: o serviço da LISTA DE COMPRA não depende de orçamento/transferência
   // (só lê do banco e persiste listas); fica no grafo principal.
   const shoppingList = new ShoppingListService(db);
-  return { db, balance, invoices, transactions, installments, recurrences, products, pantry, nfce, ofx, backup, categories, settings, budgets, savings, dashboard, search, bankMessages, wishlist, shoppingList };
+  // v16: livro-razão mensal (mantém a hierarquia encadeada em SQLite)
+  const monthLedger = new MonthLedgerService(db, settings, balance, budgets, savings, wishlist);
+  // v16: o Savings agora LÊ o livro-razão (computeMonthEndRemainderBefore-
+  // Closing usa o ledger em vez de recalcular hierarquia).
+  savings.hydrateLedger(monthLedger);
+  return { db, balance, invoices, transactions, installments, recurrences, products, pantry, nfce, ofx, backup, categories, settings, budgets, savings, dashboard, search, bankMessages, wishlist, shoppingList, monthLedger };
 }
 
 let singleton: Services | null = null;

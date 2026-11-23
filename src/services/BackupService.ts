@@ -66,6 +66,13 @@ export class BackupService {
    *   3) só então tira um snapshot de segurança do banco atual (VACUUM INTO);
    *   4) fecha o banco, apaga o .db antigo (+ -wal/-shm) e troca o arquivo.
    * Qualquer falha antes do passo 4 deixa o banco do usuário intacto.
+   *
+   * v16: marca o livro-razão para recalcular do zero (`ledger_dirty_from =
+   * '0000-00'`) ANTES do swap. O month_ledger não sai no backup como
+   * export (é cache derivado), e qualquer pequena diferença de versão /
+   * timestamp / estado entre lançamentos e cache justifica o recálculo.
+   * Feito aqui porque o banco AINDA está aberto neste ponto (o swap
+   * só ocorre no passo 4).
    */
   async restoreFrom(sourceUri: string): Promise<RestoreResult> {
     if (!this.deps.copyFile) throw new Error('Filesystem não configurado para restore');
@@ -97,6 +104,21 @@ export class BackupService {
       } catch {
         // sem VACUUM INTO não há snapshot — a troca continua, mas avisa
         safetyCopy = undefined;
+      }
+
+      // v16 (livro-razão): marca para recálculo total ANTES de fechar o
+      // banco. O cache do ledger NÃO vai no backup (é derivativo) e a
+      // versão das regras pode ter mudado.
+      try {
+        await this.db.runAsync(
+          `INSERT INTO app_settings (key, value) VALUES ('ledger_dirty_from', '0000-00')
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+        );
+        await this.db.runAsync('DELETE FROM month_ledger_wishlist;');
+        await this.db.runAsync('DELETE FROM month_ledger;');
+      } catch {
+        // sem tabelas do livro (backup de versão < v16) — segue; a própria
+        // migração 62 ao reabrir vai seedar a chave com '0000-00' default.
       }
 
       // 4) troca do banco

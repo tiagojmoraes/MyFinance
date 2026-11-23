@@ -880,6 +880,167 @@ CREATE INDEX IF NOT EXISTS idx_shopping_list_items_list
         }
       },
     },
+    // -------------------------------------------------------------------------
+    // v16 — livro-razão mensal (month_ledger): cada mês vira uma linha com o
+    // fechamento líquido do Previsto/Efetivado. O saldo de um mês passa a ser
+    // a abertura do mês seguinte; a hierarquia (orçamento → programação →
+    // poupança mensal → fechamento) é aplicada uma única vez por mês e o
+    // resultado persiste. Os triggers nas tabelas de origem INVALIDAM o livro
+    // (ledger_dirty_from) sempre que algo muda; a próxima leitura recalcula
+    // só do mês alterado para frente. As tabelas month_ledger* NÃO entram
+    // no BackupService (são cache reconstruível); a constante
+    // LEDGER_RULES_VERSION no código invalida caches antigos após upgrade.
+    // -------------------------------------------------------------------------
+    {
+      version: 62,
+      name: 'v16_month_ledger',
+      sql: '',
+      fn: async (driver) => {
+        // 1) tabelas
+        await driver.execAsync(`
+CREATE TABLE IF NOT EXISTS month_ledger (
+  month TEXT PRIMARY KEY NOT NULL,
+  opening_prev_cents INTEGER NOT NULL,
+  opening_efet_cents INTEGER NOT NULL,
+  target_date TEXT NOT NULL,
+  balance_before_prev_cents INTEGER NOT NULL,
+  balance_before_efet_cents INTEGER NOT NULL,
+  budget_remaining_cents INTEGER NOT NULL,
+  wishlist_allocated_cents INTEGER NOT NULL,
+  savings_monthly_cents INTEGER NOT NULL,
+  savings_closing_cents INTEGER NOT NULL,
+  closing_prev_cents INTEGER NOT NULL,
+  closing_efet_cents INTEGER NOT NULL,
+  rules_version INTEGER NOT NULL,
+  computed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS month_ledger_wishlist (
+  month TEXT NOT NULL REFERENCES month_ledger(month) ON DELETE CASCADE,
+  item_id TEXT NOT NULL,
+  classificacao TEXT NOT NULL CHECK (classificacao IN ('PRIORIDADE','NECESSARIO','DESEJO')),
+  shortage_start_cents INTEGER NOT NULL,
+  covered_cents INTEGER NOT NULL,
+  shortage_end_cents INTEGER NOT NULL,
+  PRIMARY KEY (month, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_month_ledger_wishlist_month
+  ON month_ledger_wishlist(month);
+        `);
+
+        // 2) chaves de controle em app_settings (key-value); INSERT OR IGNORE
+        // é idempotente
+        await driver.execAsync(`
+INSERT OR IGNORE INTO app_settings (key, value) VALUES ('ledger_dirty_from', '0000-00');
+INSERT OR IGNORE INTO app_settings (key, value) VALUES ('ledger_today_month', '');
+INSERT OR IGNORE INTO app_settings (key, value) VALUES ('ledger_rules_version', '1');
+        `);
+
+        // 3) triggers — baixam a marca d'água com MIN até o mês da mudança.
+        // Para tabelas SEM coluna de mês (budgets, accounts, savings_plans,
+        // wishlist_items, invoice_items, categories, cards, products_catalog,
+        // shopping_lists, shopping_list_items), a invalidação vai inteira
+        // para '0000-00' (recalcular tudo é o caminho seguro).
+
+        // helper de SQL inline para atualização da marca — note que
+        // '0000-00' é o chão (tudo precisa recalcular) e '9999-12' é o
+        // teto (nada precisa recalcular). Comparação lexicográfica funciona
+        // porque o formato é sempre 'YYYY-MM'.
+        const dirtyUpd = (colExpr: string) => `
+  UPDATE app_settings
+  SET value = CASE
+    WHEN value = '0000-00' THEN value
+    WHEN ${colExpr} IS NOT NULL AND ${colExpr} < value THEN ${colExpr}
+    ELSE value
+  END
+  WHERE key = 'ledger_dirty_from';
+`;
+        const dirtySetZero = `
+  UPDATE app_settings SET value = '0000-00' WHERE key = 'ledger_dirty_from';
+`;
+
+        // 3a) tabelas COM coluna de mês
+        const withDate: Array<{
+          table: string;
+          col: string;          // nome da coluna YYYY-MM-DD (ou YYYY-MM)
+          op: 'INS' | 'UPD' | 'DEL';
+          monthExpr?: string;   // expressão que produz 'YYYY-MM' (default = substr(col,1,7))
+        }> = [
+          { table: 'transactions',        col: 'occurred_on',  op: 'INS', monthExpr: "substr(NEW.occurred_on,1,7)" },
+          { table: 'transactions',        col: 'occurred_on',  op: 'UPD', monthExpr: "substr(NEW.occurred_on,1,7)" },
+          { table: 'transactions',        col: 'occurred_on',  op: 'DEL', monthExpr: "substr(OLD.occurred_on,1,7)" },
+          { table: 'installments',        col: 'due_date',     op: 'INS', monthExpr: "substr(NEW.due_date,1,7)" },
+          { table: 'installments',        col: 'due_date',     op: 'UPD', monthExpr: "substr(NEW.due_date,1,7)" },
+          { table: 'installments',        col: 'due_date',     op: 'DEL', monthExpr: "substr(OLD.due_date,1,7)" },
+          { table: 'installment_plans',   col: 'first_due_date', op: 'INS', monthExpr: "substr(NEW.first_due_date,1,7)" },
+          { table: 'installment_plans',   col: 'first_due_date', op: 'UPD', monthExpr: "substr(NEW.first_due_date,1,7)" },
+          { table: 'installment_plans',   col: 'first_due_date', op: 'DEL', monthExpr: "substr(OLD.first_due_date,1,7)" },
+          // invoices: due_date é a coluna canônica; se NULL usa period_end
+          { table: 'invoices',            col: 'due_date',     op: 'INS', monthExpr: "(CASE WHEN NEW.due_date IS NOT NULL THEN substr(NEW.due_date,1,7) WHEN NEW.period_end IS NOT NULL THEN substr(NEW.period_end,1,7) END)" },
+          { table: 'invoices',            col: 'due_date',     op: 'UPD', monthExpr: "(CASE WHEN NEW.due_date IS NOT NULL THEN substr(NEW.due_date,1,7) WHEN NEW.period_end IS NOT NULL THEN substr(NEW.period_end,1,7) WHEN OLD.due_date IS NOT NULL THEN substr(OLD.due_date,1,7) WHEN OLD.period_end IS NOT NULL THEN substr(OLD.period_end,1,7) END)" },
+          { table: 'invoices',            col: 'due_date',     op: 'DEL', monthExpr: "(CASE WHEN OLD.due_date IS NOT NULL THEN substr(OLD.due_date,1,7) WHEN OLD.period_end IS NOT NULL THEN substr(OLD.period_end,1,7) END)" },
+          // invoice_payments: paid_on é a coluna
+          { table: 'invoice_payments',    col: 'paid_on',      op: 'INS', monthExpr: "(CASE WHEN NEW.paid_on IS NOT NULL THEN substr(NEW.paid_on,1,7) ELSE '9999-12' END)" },
+          { table: 'invoice_payments',    col: 'paid_on',      op: 'UPD', monthExpr: "(CASE WHEN NEW.paid_on IS NOT NULL THEN substr(NEW.paid_on,1,7) WHEN OLD.paid_on IS NOT NULL THEN substr(OLD.paid_on,1,7) ELSE '9999-12' END)" },
+          { table: 'invoice_payments',    col: 'paid_on',      op: 'DEL', monthExpr: "(CASE WHEN OLD.paid_on IS NOT NULL THEN substr(OLD.paid_on,1,7) ELSE '9999-12' END)" },
+          // financial_moves: effective_date
+          { table: 'financial_moves',     col: 'effective_date', op: 'INS', monthExpr: "substr(NEW.effective_date,1,7)" },
+          { table: 'financial_moves',     col: 'effective_date', op: 'UPD', monthExpr: "substr(NEW.effective_date,1,7)" },
+          { table: 'financial_moves',     col: 'effective_date', op: 'DEL', monthExpr: "substr(OLD.effective_date,1,7)" },
+          // recurrence_rules: start_date
+          { table: 'recurrence_rules',    col: 'start_date',   op: 'INS', monthExpr: "substr(NEW.start_date,1,7)" },
+          { table: 'recurrence_rules',    col: 'start_date',   op: 'UPD', monthExpr: "(CASE WHEN substr(NEW.start_date,1,7) <= substr(OLD.start_date,1,7) THEN substr(NEW.start_date,1,7) ELSE substr(OLD.start_date,1,7) END)" },
+          { table: 'recurrence_rules',    col: 'start_date',   op: 'DEL', monthExpr: "substr(OLD.start_date,1,7)" },
+          // recurrence_exclusions: occurred_month já é 'YYYY-MM'
+          { table: 'recurrence_exclusions', col: 'occurred_month', op: 'INS', monthExpr: "NEW.occurred_month" },
+          { table: 'recurrence_exclusions', col: 'occurred_month', op: 'UPD', monthExpr: "(CASE WHEN NEW.occurred_month <= OLD.occurred_month THEN NEW.occurred_month ELSE OLD.occurred_month END)" },
+          { table: 'recurrence_exclusions', col: 'occurred_month', op: 'DEL', monthExpr: "OLD.occurred_month" },
+          // savings_entries: month já é 'YYYY-MM'
+          { table: 'savings_entries',     col: 'month',        op: 'INS', monthExpr: "NEW.month" },
+          { table: 'savings_entries',     col: 'month',        op: 'UPD', monthExpr: "(CASE WHEN NEW.month <= OLD.month THEN NEW.month ELSE OLD.month END)" },
+          { table: 'savings_entries',     col: 'month',        op: 'DEL', monthExpr: "OLD.month" },
+          // wishlist_reserves: created_at (ISO 8601) → substring 0..7
+          { table: 'wishlist_reserves',   col: 'created_at',   op: 'INS', monthExpr: "substr(NEW.created_at,1,7)" },
+          { table: 'wishlist_reserves',   col: 'created_at',   op: 'UPD', monthExpr: "(CASE WHEN substr(NEW.created_at,1,7) <= substr(OLD.created_at,1,7) THEN substr(NEW.created_at,1,7) ELSE substr(OLD.created_at,1,7) END)" },
+          { table: 'wishlist_reserves',   col: 'created_at',   op: 'DEL', monthExpr: "substr(OLD.created_at,1,7)" },
+          // bank_messages: tx_date é o canônico; cai em received_at
+          { table: 'bank_messages',       col: 'tx_date',      op: 'INS', monthExpr: "(CASE WHEN NEW.tx_date IS NOT NULL THEN substr(NEW.tx_date,1,7) ELSE substr(NEW.received_at,1,7) END)" },
+          { table: 'bank_messages',       col: 'tx_date',      op: 'UPD', monthExpr: "(CASE WHEN NEW.tx_date IS NOT NULL THEN substr(NEW.tx_date,1,7) WHEN OLD.tx_date IS NOT NULL THEN substr(OLD.tx_date,1,7) ELSE substr(NEW.received_at,1,7) END)" },
+          { table: 'bank_messages',       col: 'tx_date',      op: 'DEL', monthExpr: "(CASE WHEN OLD.tx_date IS NOT NULL THEN substr(OLD.tx_date,1,7) ELSE substr(OLD.received_at,1,7) END)" },
+        ];
+
+        for (const t of withDate) {
+          const action = t.op === 'INS' ? 'INSERT' : t.op === 'UPD' ? 'UPDATE' : 'DELETE';
+          const expr = t.monthExpr!;
+          const updSql = dirtyUpd(expr);
+          await driver.execAsync(`
+CREATE TRIGGER IF NOT EXISTS trg_ledger_dirty_${t.table}_${t.op.toLowerCase()}
+AFTER ${action} ON ${t.table}
+FOR EACH ROW
+BEGIN
+${updSql}
+END;
+          `);
+        }
+
+        // 3b) tabelas SEM coluna de mês — invalidar tudo
+        const noDate: string[] = [
+          'budgets', 'savings_plans', 'wishlist_items', 'invoice_items',
+          'accounts', 'categories', 'cards',
+        ];
+        for (const tbl of noDate) {
+          for (const op of ['INSERT', 'UPDATE', 'DELETE'] as const) {
+            await driver.execAsync(`
+CREATE TRIGGER IF NOT EXISTS trg_ledger_dirty_${tbl}_${op.toLowerCase()}
+AFTER ${op} ON ${tbl}
+FOR EACH ROW
+BEGIN
+${dirtySetZero}
+END;
+            `);
+          }
+        }
+      },
+    },
 ];
 
 /**

@@ -114,6 +114,8 @@ export class SavingsService {
   private budgets: BudgetService;
   private wishlist: WishlistService;
   private settings: SettingsService;
+  /** v16: livro-razão mensal (injetado opcionalmente pelo grafo principal). */
+  private monthLedger: import('./MonthLedgerService').MonthLedgerService | undefined;
   // v98 — DESEMPENHO DO FLUXO: memo por mês + `dataVersion` opcional.
   private overviewCache = new VersionedCache<SavingsMonthOverview>();
   private adjustCache = new VersionedCache<{ previsto: Record<string, number>; efetivado: Record<string, number> }>();
@@ -123,12 +125,25 @@ export class SavingsService {
   constructor(
     private db: DbDriver,
     private transactions: TransactionService,
-    balance?: BalanceService
+    balance?: BalanceService,
+    /** v16: livro-razão — fonte da "sobra antes do fechamento" do mês. */
+    monthLedger?: import('./MonthLedgerService').MonthLedgerService
   ) {
     this.balance = balance ?? new BalanceService(db);
     this.budgets = new BudgetService(db);
     this.wishlist = new WishlistService(db, transactions, this.balance);
     this.settings = new SettingsService(db);
+    this.monthLedger = monthLedger;
+  }
+
+  /**
+   * v16: injeta o livro-razão DEPOIS da construção (evita ciclo no grafo
+   * de serviços: MonthLedgerService depende de Savings, Savings depende
+   * de MonthLedger). Quando ausente, `computeMonthEndRemainderBefore-
+   * Closing` cai para o cálculo legado (compat com testes puros).
+   */
+  hydrateLedger(ml: import('./MonthLedgerService').MonthLedgerService): void {
+    this.monthLedger = ml;
   }
 
   // ------------------------------------------------------------- planos ----
@@ -400,6 +415,45 @@ export class SavingsService {
     closingTransactionId?: string,
     dataVersion?: number
   ): Promise<number> {
+    // v16: o livro-razão (MonthLedgerService) já computa a hierarquia
+    // uma vez por mês e persiste o resultado. Aqui só LEMOS:
+    //   balance_before_prev_cents = saldo antes da hierarquia (lado Previsto)
+    //   budget_remaining_cents    = orçado − gasto (consumo da capacidade)
+    //   wishlist_allocated_cents   = quanto a Programação cobriu no mês
+    //   savings_monthly_cents      = poupança mensal debitada
+    // → resto = balance_before_prev - budget_remaining - wishlist_allocated - monthly_savings
+    const ledgerRow = this.monthLedger
+      ? await this.monthLedger.getMonthLedgerSummary(month)
+      : null;
+    if (ledgerRow) {
+      // O `closingTransferRestore` continua sendo calculado fora do ledger:
+      // é uma transferência REAL (que ABATEU o saldo_base) e precisa ser
+      // somada de volta para que a sugestão reflita o saldo "como se a
+      // transferência não tivesse acontecido".
+      let closingTransferRestore = 0;
+      const savingsOn = await this.settings.getBool(SETTING_KEYS.poupancaAtivado, false);
+      if (!savingsOn && closingTransactionId) {
+        const impact = await this.db.getFirstAsync<{ net: number }>(
+          `SELECT COALESCE(SUM(CASE WHEN fm.direction = 'CREDIT' THEN fm.amount_cents ELSE -fm.amount_cents END), 0) AS net
+             FROM financial_moves fm
+            WHERE fm.transaction_id = ? AND fm.account_id IN (
+              SELECT id FROM accounts WHERE include_in_general_balance = 1 AND archived_at IS NULL
+            )`,
+          [closingTransactionId]
+        );
+        closingTransferRestore = Math.abs(Math.min(0, impact?.net ?? 0));
+      }
+      // saldo_antes_da_hierarquia + reposição da transferência
+      const balanceCents = ledgerRow.balanceBeforePrevCents + closingTransferRestore;
+      return remainderAfterWishlistAtMonthEnd({
+        balanceCents,
+        budgetRemainingCents: ledgerRow.budgetRemainingCents,
+        monthlySavingsCents: ledgerRow.savingsMonthlyCents,
+        wishlistOutstandingCents: ledgerRow.wishlistAllocatedCents,
+      });
+    }
+
+    // Fallback (testes ou versões pré-livro): mesma lógica legada.
     const [budgetsOn, savingsOn, wishlistOn, dual] = await Promise.all([
       this.settings.getBool(SETTING_KEYS.budgetsAtivado, false),
       this.settings.getBool(SETTING_KEYS.poupancaAtivado, false),

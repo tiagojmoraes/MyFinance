@@ -31,6 +31,14 @@ export async function clearAllUserData(db: DbDriver): Promise<void> {
       for (const table of tables) {
         await db.execAsync(`DELETE FROM "${table.name.replace(/"/g, '""')}";`);
       }
+      // v16: marca o livro-razão para recálculo total — todas as linhas
+      // persistidas foram apagadas junto com os lançamentos.
+      await db.execAsync(
+        `INSERT INTO app_settings (key, value) VALUES ('ledger_dirty_from', '0000-00')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+      );
+      await db.execAsync('DELETE FROM month_ledger_wishlist;');
+      await db.execAsync('DELETE FROM month_ledger;');
     });
   } finally {
     await db.execAsync('PRAGMA foreign_keys = ON;');
@@ -76,6 +84,15 @@ export async function clearLancamentos(db: DbDriver): Promise<void> {
       await db.execAsync(`UPDATE bank_messages SET transaction_id = NULL, status = 'NEW' WHERE status != 'DESCARTADA';`);
     }
     await db.execAsync(CLEAR_MOVEMENTS_SQL);
+    // v16: lançamentos, poupança e reservas sumiram → o livro-razão é
+    // derivado e precisa ser refeito. Mantém a chave em app_settings
+    // para o próximo getMonthLedgerSummary recalcular tudo na hora.
+    await db.execAsync(
+      `INSERT INTO app_settings (key, value) VALUES ('ledger_dirty_from', '0000-00')
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    );
+    await db.execAsync('DELETE FROM month_ledger_wishlist;');
+    await db.execAsync('DELETE FROM month_ledger;');
   });
 }
 

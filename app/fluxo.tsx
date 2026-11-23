@@ -121,11 +121,7 @@ import { MonthScroller } from '../src/components/MonthScroller';
 import { useDataEffect } from '../src/components/useDataEffect';
 import { formatBRL } from '../src/lib/money';
 import { orcadoPrevistoGastoLinha, orcadoGastoLinha } from '../src/lib/fluxoFormat'; // v69: linha única com % por movimento | v94: sem Previsto
-import {
-  applyMonthEndBalanceHierarchy,
-  mergeDailyAdjust,
-  removeClosingMonthOpening,
-} from '../src/lib/monthEndBalance';
+import { mergeDailyAdjust } from '../src/lib/monthEndBalance';
 import { sourceLabel } from '../src/lib/text';
 import { todaySP, monthOf, ymdToBr, partsOf, lastDayNumberOf } from '../src/lib/dates';
 import {
@@ -186,8 +182,13 @@ export default function FluxoScreen() {
     efetivado: Record<string, number>;
     previsto: Record<string, number>;
     openingPrevisto?: number;
+    openingEfetivado?: number;
   }>({ efetivado: {}, previsto: {} });
   const [lastActivityDate, setLastActivityDate] = React.useState<string | null>(null);
+  // v16: linha do livro-razão do mês (Persistida em SQLite, encadeada).
+  // Quando presente, é a fonte da verdade do saldo do dia Previsto/Efetivado
+  // e do `saldoPrevistoAjustadoFimCents` passado à Programação de Compra.
+  const [monthLedgerRow, setMonthLedgerRow] = React.useState<import('../src/services/MonthLedgerService').MonthLedgerRow | null>(null);
   const [showDaily, setShowDaily] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   // v7.1: grupos consolidados
@@ -346,6 +347,23 @@ export default function FluxoScreen() {
       }
       perf.lap('saldo do dia');
 
+      // v16 — LIVRO-RAZÃO: a linha do mês (Persistida em SQLite, encadeada
+      // com o mês anterior) entra no state para uso no `dailyShown` e no
+      // saldo passado à Programação de Compra.
+      let monthRow: import('../src/services/MonthLedgerService').MonthLedgerRow | null = null;
+      try {
+        if (showDailyFlag || wishlistFlag || budgetsFlag || savingsFlag) {
+          monthRow = await svc.monthLedger.getMonthLedgerSummary(month);
+          if (!isCurrent()) return;
+          setMonthLedgerRow(monthRow);
+        } else {
+          setMonthLedgerRow(null);
+        }
+      } catch (err) {
+        console.warn('[Fluxo] livro-razão falhou:', err);
+      }
+      perf.lap('livro-razão');
+
       // v42 - cards de ORÇAMENTO e POUPANÇA (só quando a flag está ligada em Ajustes)
       try {
         const [bSum, sSum] = await Promise.all([
@@ -403,19 +421,24 @@ export default function FluxoScreen() {
 
         if (wishlistFlag) {
           try {
-            // v86: reaproveita o saldo já calculado acima (mesmo cache/dataVersion).
-            const dual = dailyDual ?? (await svc.balance.getDailyBalancesDual(month, dataVersion));
-            const endDate = lastActivity ?? `${month}-${String(lastDayNumberOf(month)).padStart(2, '0')}`;
-            const closingSince = sSum?.closingSinceMonth ?? null;
-            const closingForMonth = savingsFlag && closingSince != null && month >= closingSince;
-            const opening = closingForMonth ? Math.max(0, dual.openingPrevisto ?? 0) : 0;
+            // v16: o saldo previsto "antes da hierarquia" vem do LIVRO-RAZÃO
+            // (persistido mês a mês). Quando ainda não há linha gravada (mês
+            // anterior a m0 ou uma falha de cálculo), caímos para a fórmula
+            // legada — a tela do Fluxo não fica vazia.
+            const fallbackClosing = ((dual: DailyDual | null) => {
+              const endDate = lastActivity ?? `${month}-${String(lastDayNumberOf(month)).padStart(2, '0')}`;
+              const closingSince = sSum?.closingSinceMonth ?? null;
+              const closingForMonth = savingsFlag && closingSince != null && month >= closingSince;
+              const opening = closingForMonth ? Math.max(0, dual?.openingPrevisto ?? 0) : 0;
+              return (dual?.previsto[endDate] ?? 0)
+                - opening
+                + (ba?.previsto[endDate] ?? 0)
+                + (sa?.previsto[endDate] ?? 0)
+                + (ba?.efetivado[endDate] ?? 0)
+                + (sa?.efetivado[endDate] ?? 0);
+            })(dailyDual);
             const saldoPrevistoAjustadoFimCents =
-              (dual.previsto[endDate] ?? 0)
-              - opening
-              + (ba?.previsto[endDate] ?? 0)
-              + (sa?.previsto[endDate] ?? 0)
-              + (ba?.efetivado[endDate] ?? 0)
-              + (sa?.efetivado[endDate] ?? 0);
+              monthRow?.balanceBeforePrevCents ?? fallbackClosing;
             const wm = await svc.wishlist.getMethodology(month, {
               budgetSummary: bSum,
               savingsOverview: sSum,
@@ -561,50 +584,42 @@ export default function FluxoScreen() {
   }, [txs, groupMonths, invoicesDue, accountInst]);
 
   // ---------- Saldo do dia com hierarquia mensal (memoizado) ----------
-  // No último lançamento: Orçamento → Programação de Compras → Poupança Mensal →
-  // Fechamento do Mês. Os demais dias mantêm os ajustes diários existentes.
+  // v16 — livro-razão: a abertura do mês vem do closing do mês anterior
+  // (persistido em `month_ledger`), e o saldo do dia-alvo vem do closing
+  // do próprio mês (depois de orçamento → programação → poupança → fechamento).
+  // Os dias do mês são construídos em cima da nova abertura + budAdj diário.
   const dailyShown = React.useMemo(() => {
-    let prev: Record<string, number> = { ...dailyBal.previsto };
-    const efet: Record<string, number> = { ...dailyBal.efetivado };
-    // v70 (BUG 1.3) — Fechamento do Mês: o saldo carregado (abertura) foi
-    // retido para a poupança — o previsto do mês passa a contar só com os
-    // movimentos DE DENTRO do mês visto (abertura zerada; nunca negativa —
-    // abertura negativa é dívida real e continua entrando).
-    prev = removeClosingMonthOpening(prev, dailyBal.openingPrevisto ?? 0, closingRegendo);
-    // v89 (BUG do usuário — "lançar Poupança com dia anterior não recalcula
-    // / meses subsequentes errados"): o Saldo do dia EXIBIDO NÃO compensa mais
-    // a POUPANÇA (savAdj). A transferência efetivada/previsa diminui o saldo,
-    // como qualquer despesa. A compensação continua SÓ para os cálculos
-    // internos de "sobra" (fechamento/wishlist) — vai junto no hierarchy abaixo.
-    //
-    // v95: a Programação de Compra abate SÓ a falta que ENTRA neste mês
-    // (`wishMonthPlan.faltaInicioCents`), não a lista inteira — a previsão
-    // não se reflete automaticamente para os outros meses.
-    prev = mergeDailyAdjust(prev, budAdj?.previsto);
-    const efetMerged = mergeDailyAdjust(efet, budAdj?.efetivado);
-    if (lastActivityDate != null && prev[lastActivityDate] != null) {
-      const monthlySavingsCents = savingsOn
-        ? (savingsSum?.entries ?? [])
-            .filter((entry) => entry.kind === 'MONTHLY')
-            .reduce((sum, entry) => sum + entry.amountCents, 0)
-        : 0;
-      const wishlistOutstandingCents = wishlistOn ? wishMonthPlan.faltaInicioCents : 0;
-      prev[lastActivityDate] = applyMonthEndBalanceHierarchy({
-        // Normalize movements already represented by the base balance before
-        // reserving the full monthly budget and savings commitments.
-        balanceCents: prev[lastActivityDate]
-          + (budAdj?.efetivado[lastActivityDate] ?? 0)
-          + (savAdj?.efetivado[lastActivityDate] ?? 0),
-        budgetRemainingCents: budgetsOn ? budgetSum?.remainingCents ?? 0 : 0,
-        monthlySavingsCents,
-        wishlistOutstandingCents,
-        closingMode: closingRegendo,
-      });
+    const basePrev: Record<string, number> = { ...dailyBal.previsto };
+    const baseEfet: Record<string, number> = { ...dailyBal.efetivado };
+    // 1) abertura nova (do ledger): diferença entre a abertura do ledger
+    //    (que JÁ carrega o saldo líquido do mês anterior) e a abertura
+    //    bruta do dual. O sinal é aplicado a TODOS os dias do mês.
+    const openPrevDelta = (monthLedgerRow?.openingPrevCents ?? 0)
+      - (dailyBal.openingPrevisto ?? 0);
+    const openEfetDelta = (monthLedgerRow?.openingEfetCents ?? 0)
+      - (dailyBal.openingEfetivado ?? 0);
+    let prev: Record<string, number> = {};
+    let efet: Record<string, number> = {};
+    for (const ymd of Object.keys(basePrev)) {
+      prev[ymd] = (basePrev[ymd] ?? 0) + openPrevDelta;
     }
-    return { previsto: prev, efetivado: efetMerged };
+    for (const ymd of Object.keys(baseEfet)) {
+      efet[ymd] = (baseEfet[ymd] ?? 0) + openEfetDelta;
+    }
+    // 2) ajustes diários do Orçamento (cartão reserva da compra até a
+    //    véspera da fatura; fora do escopo reserva da data em diante).
+    prev = mergeDailyAdjust(prev, budAdj?.previsto);
+    efet = mergeDailyAdjust(efet, budAdj?.efetivado);
+    // 3) dia-alvo: a hierarquia completa já foi aplicada no livro —
+    //    o closing_prev/efet é o saldo exibido nesse dia.
+    if (monthLedgerRow && lastActivityDate
+        && monthLedgerRow.targetDate === lastActivityDate) {
+      prev[lastActivityDate] = monthLedgerRow.closingPrevCents;
+      efet[lastActivityDate] = monthLedgerRow.closingEfetCents;
+    }
+    return { previsto: prev, efetivado: efet };
   }, [
-    dailyBal, budAdj, savAdj, closingRegendo, month, lastActivityDate,
-    savingsOn, savingsSum, wishlistOn, wishMonthPlan, budgetsOn, budgetSum,
+    dailyBal, budAdj, monthLedgerRow, lastActivityDate, month,
   ]);
 
   const passesFilter = (e: Entry): boolean => {
