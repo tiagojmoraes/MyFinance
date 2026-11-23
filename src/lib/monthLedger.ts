@@ -31,7 +31,10 @@ import type { Ymd, Ym } from './dates';
 import { monthAdd, monthOf } from './dates';
 
 /** Versão das regras do livro. Bump invalidar tudo o cache do ledger. */
-export const LEDGER_RULES_VERSION = 1;
+/** v18 = 2: orçamento futuro passa a abater parcelas/faturas com vencimento
+ *  no mês (capacidade da Programação de Compras nos meses subsequentes).
+ *  Bump ZERA as linhas persistidas — todo o livro recalcula com a regra nova. */
+export const LEDGER_RULES_VERSION = 2;
 
 /** Marca d'água que significa "tudo sujo, recalcular do zero". */
 export const DIRTY_ALL = '0000-00';

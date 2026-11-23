@@ -1,5 +1,15 @@
 /**
- * v17 — MonthLedgerService.
+ * v18 — MonthLedgerService.
+ *
+ * v18: em MESSES FUTUROS o restante do orçamento abate TAMBÉM o compromisso
+ * já previsto daquele mês nas categorias orçadas (parcelas em conta com
+ * débito no mês + faturas com vencimento no mês —
+ * `BudgetService.getFutureDueCommitmentCents`). Antes só a fixa SIMPLE
+ * abatia: o orçamento futuro ficava praticamente inteiro por cima de um
+ * saldo que já descontou as pendências — a capacidade da Programação de
+ * Compras zerava (cabe = 0 mesmo com a falta viajando) e o closing ficava
+ * negativo, abrindo o mês seguinte com dívida fantasma no Saldo do dia.
+ * `LEDGER_RULES_VERSION` → 2 (livro recalcula do zero).
  *
  * Carrega e mantém o livro-razão mensal em SQLite (`month_ledger`,
  * `month_ledger_wishlist`). A fonte da verdade continuam sendo os
@@ -555,7 +565,21 @@ export class MonthLedgerService {
     // saldo. O orçamento é subtraído POR INTEIRO do saldo previsto; a
     // Programação só recebe o que SOBRAR do saldo. Sem isso a cascade
     // poderia querer alocar além da disponibilidade real.
-    const budgetRemainingRaw = budgetSummary?.remainingCents ?? 0;
+    // v18 — MESSES FUTUROS: o restante do orçamento abate TAMBÉM o
+    // compromisso já previsto daquele mês nas categorias orçadas (parcelas
+    // em conta com débito no mês + faturas com vencimento no mês — a fixa
+    // SIMPLE pendente já está no remainingCents). Antes, no mês futuro só a
+    // fixa abatia (a parcela conta no mês da COMPRA — âncora v72 — e a
+    // fatura não abatia nada): o orçamento ficava praticamente inteiro POR
+    // CIMA de um saldo que JÁ descontou as pendências — a capacidade da
+    // Programação zerava (cabe = 0 mesmo com a falta viajando do mês
+    // anterior) e o closing ficava negativo: a dívida fantasma abria o mês
+    // seguinte sem zerar o Saldo do dia Efetivado/Previsto.
+    let budgetRemainingRaw = budgetSummary?.remainingCents ?? 0;
+    if (budgetSummary && month > ctx.todayMonth) {
+      const dueCommitment = await this.budgets.getFutureDueCommitmentCents(month);
+      budgetRemainingRaw = Math.max(0, budgetSummary.remainingCents - dueCommitment);
+    }
     const budgetRemaining = Math.max(0, budgetRemainingRaw);
     const wishlistCapacity = Math.max(0, balancePrev - budgetRemaining);
 

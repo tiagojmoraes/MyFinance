@@ -406,6 +406,83 @@ export class BudgetService {
   }
 
   /**
+   * v18 — COMPROMISSO JÁ PREVISTO do mês nas categorias COM orçamento ativo,
+   * pelo VENCIMENTO (não pela âncora): parcelas EM CONTA com débito agendado
+   * no mês + faturas de cartão vencendo no mês (só a parte das categorias
+   * orçadas, limitada ao valor em aberto da fatura).
+   *
+   * A fixa SIMPLE pendente NÃO entra aqui — ela já abate o restante pelo
+   * `previstoCents` do summary (pela occurred_on). Parcelas de CARTÃO entram
+   * pelos invoice_items (via categoria da transação-âncora) — sem dupla
+   * contagem com a soma por vencimento de parcelas em conta.
+   *
+   * Uso: MESSES FUTUROS do livro-razão (MonthLedgerService.computeMonth).
+   * No mês futuro isso é o que JÁ SAIRÁ do saldo previsto (pendências do
+   * dual) e, sem abater, fica contado DUAS VEZES — dentro do saldo e dentro
+   * do restante do orçamento — esmagando a capacidade da Programação de
+   * Compras (cabe = 0 mesmo com a falta viajando) e deixando o closing
+   * negativo (a dívida fantasma abre o mês seguinte sem zerar o Saldo do
+   * dia). O mês corrente mantém a regra v72 da âncora.
+   */
+  async getFutureDueCommitmentCents(month: string): Promise<number> {
+    const budgets = (await this.list()).filter((b) => b.is_active === 1);
+    if (budgets.length === 0) return 0;
+    const ids = budgets.map((b) => b.category_id);
+    const marks = ids.map(() => '?').join(',');
+    const range = monthRange(month);
+
+    // 1) Parcelas EM CONTA (plano sem cartão) com débito agendado no mês —
+    //    mesma semântica do dual (installment PENDING + financial_moves
+    //    CONFIRMED pela effective_date; sinal pela direção: receita parcelada
+    //    DEVOLVE capacidade). SÓ planos com âncora ANTES do mês: a âncora
+    //    datada no próprio mês já contou o plano INTEIRO no gasto deste mês
+    //    (regra v72 da âncora) — abater de novo seria dupla contagem.
+    const parcelas = await this.db.getFirstAsync<{ total: number | null }>(
+      `SELECT COALESCE(SUM(CASE WHEN fm.direction = 'CREDIT' THEN -fm.amount_cents ELSE fm.amount_cents END), 0) AS total
+         FROM installments i
+         JOIN installment_plans p ON p.id = i.plan_id
+         JOIN transactions t ON t.id = p.original_transaction_id
+         JOIN financial_moves fm ON fm.installment_id = i.id
+        WHERE p.card_id IS NULL
+          AND i.status = 'PENDING'
+          AND fm.status = 'CONFIRMED'
+          AND fm.effective_date >= ? AND fm.effective_date < ?
+          AND t.occurred_on < ?
+          AND t.category_id IN (${marks})`,
+      [range.start, range.end, range.start, ...ids] as never
+    );
+
+    // 2) Faturas vencendo no mês: por fatura, a parte das categorias orçadas
+    //    limitada ao valor EM ABERTO (o dual desconta total − crédito
+    //    anterior − pago na data de vencimento). Só entra item cuja COMPRA
+    //    (à vista pela occurred_on; parcela pela âncora) é ANTERIOR ao mês —
+    //    compra dentro do próprio mês já está no previstoCents/spent deste
+    //    mês (sem contar duas vezes).
+    const faturas = await this.db.getFirstAsync<{ total: number | null }>(
+      `SELECT COALESCE(SUM(MIN(cat_due, open_due)), 0) AS total
+         FROM (
+           SELECT i.id,
+                  MAX(0, i.total_cents - i.credit_from_prev_cents - i.paid_cents) AS open_due,
+                  COALESCE(SUM(CASE
+                      WHEN COALESCE(t.category_id, t2.category_id) IN (${marks})
+                       AND (CASE WHEN ii.transaction_id IS NOT NULL THEN t.occurred_on ELSE t2.occurred_on END) < ?
+                      THEN ii.amount_cents ELSE 0 END), 0) AS cat_due
+             FROM invoices i
+             LEFT JOIN invoice_items ii ON ii.invoice_id = i.id
+             LEFT JOIN transactions t ON t.id = ii.transaction_id
+             LEFT JOIN installments ist ON ist.id = ii.installment_id
+             LEFT JOIN installment_plans pl ON pl.id = ist.plan_id
+             LEFT JOIN transactions t2 ON t2.id = pl.original_transaction_id
+            WHERE i.due_date >= ? AND i.due_date < ?
+              AND i.status != 'PAID'
+            GROUP BY i.id
+         )`,
+      [...ids, range.start, range.start, range.end] as never
+    );
+
+    return Math.max(0, parcelas?.total ?? 0) + Math.max(0, faturas?.total ?? 0);
+  }
+  /**
    * v68 — AJUSTE DIÁRIO do "Saldo do dia" pelo ORÇAMENTO (regra do usuário:
    * "Saldo do dia Previsto = do jeito que está + previsto no Orçamento").
    *
