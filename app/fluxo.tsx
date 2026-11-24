@@ -925,9 +925,12 @@ export default function FluxoScreen() {
     amountClass: string;
     onAlterar?: (() => void) | null;
     onExcluir?: (() => void) | null;
+    /** Liquidado (pago/recebido): card em cinza. */
+    settled?: boolean;
   }) => (
     <LancamentoRow
       key={a.key}
+      settled={a.settled}
       dashed={a.dashed}
       longPress={a.longPress}
       disabled={a.disabled}
@@ -963,6 +966,11 @@ export default function FluxoScreen() {
       dashed: opts.child,
       longPress: opts.child || isGroup(tx) ? null : () => duplicateTx(tx),
       disabled: tx.status === 'VOIDED',
+      settled:
+        tx.status === 'CONFIRMED' &&
+        (tx.type === 'INCOME' || tx.type === 'EXPENSE') &&
+        tx.kind === 'SIMPLE' &&
+        !tx.card_id,
       title: tx.description,
       voided: tx.status === 'VOIDED',
       subtitle:
@@ -1189,6 +1197,7 @@ export default function FluxoScreen() {
     return renderFlowCard({
       key: `inst-${inst.installmentId}`,
       dashed: opts.child,
+      settled: paid,
       title: inst.description,
       subtitle:
         `${ymdToBr(inst.dueDate)} · parcela em conta` +

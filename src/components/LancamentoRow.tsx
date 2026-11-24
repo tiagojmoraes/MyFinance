@@ -45,6 +45,8 @@ export interface LancamentoRowProps {
   footer?: React.ReactNode | null;
   /** v67 (BUG 3): quando definido, o rodapé só aparece se footerOpen. */
   footerOpen?: boolean;
+  /** Lançamento liquidado (pago/recebido): card inteiro em cinza. */
+  settled?: boolean;
 }
 
 export function LancamentoRowBase(a: LancamentoRowProps) {
@@ -58,7 +60,7 @@ export function LancamentoRowBase(a: LancamentoRowProps) {
       accessibilityLabel={a.longPress ? `Segurar para duplicar ${a.title}` : a.title}
       disabled={a.disabled}
     >
-      <Card className={`!py-3 ${a.dashed ? 'ml-3 border-dashed' : ''} ${a.borderClass ?? ''}`}>
+      <Card className={`!py-3 ${a.dashed ? 'ml-3 border-dashed' : ''} ${a.settled ? 'bg-slate-50 border-slate-200' : (a.borderClass ?? '')}`}>
         <View className="flex-row justify-between items-start gap-2">
           {a.arrow || a.icon ? (
             <Pressable
@@ -74,7 +76,7 @@ export function LancamentoRowBase(a: LancamentoRowProps) {
           ) : null}
           <Pressable onPress={a.onBodyPress ?? undefined} disabled={!a.onBodyPress} className="flex-1">
             {/* v10: descrição SEM truncamento — sempre legível por inteiro */}
-            <Text className={`font-semibold text-slate-900 ${a.voided ? 'line-through text-slate-400' : ''}`}>
+            <Text className={`font-semibold ${a.settled ? 'text-slate-400' : 'text-slate-900'} ${a.voided ? 'line-through text-slate-400' : ''}`}>
               {a.title}
             </Text>
             {/* v19: nos itens internos do consolidado o marcador fica ANTES da
@@ -83,17 +85,17 @@ export function LancamentoRowBase(a: LancamentoRowProps) {
             {a.subLeading ? (
               <View className="flex-row items-center gap-1.5 mt-0.5">
                 {a.subLeading}
-                <Text className="text-xs text-slate-500 flex-shrink">{a.subtitle}</Text>
+                <Text className={`text-xs flex-shrink ${a.settled ? 'text-slate-400' : 'text-slate-500'}`}>{a.subtitle}</Text>
               </View>
             ) : (
-              <Text className="text-xs text-slate-500 mt-0.5">{a.subtitle}</Text>
+              <Text className={`text-xs mt-0.5 ${a.settled ? 'text-slate-400' : 'text-slate-500'}`}>{a.subtitle}</Text>
             )}
             {a.chips ? (
               <View className="flex-row gap-1 mt-1 items-center flex-wrap">{a.chips}</View>
             ) : null}
           </Pressable>
           <View className="items-end gap-1">
-            <Text className={`font-bold ${a.amountClass ?? 'text-slate-900'}`}>{a.amount}</Text>
+            <Text className={`font-bold ${a.settled ? 'text-slate-400' : (a.amountClass ?? 'text-slate-900')}`}>{a.amount}</Text>
             {!a.disabled ? (
               <View className="flex-row gap-1">
                 {a.onAlterar ? (
