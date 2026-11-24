@@ -1148,6 +1148,29 @@ END;
         `);
       },
     },
+    // v24 (DESEMPENHO): repara os índices que as migrações v3 e v59 não criavam
+    // (o ALTER TABLE de coluna já existente derrubava o bloco antes do
+    // CREATE INDEX). Só CREATE INDEX IF NOT EXISTS, um por execAsync, sem ALTER.
+    // Sem idx_tx_parent a lista do Fluxo varria `transactions` inteira por linha.
+    {
+      version: 64,
+      name: 'v24_indices_faltantes_fluxo',
+      sql: '',
+      fn: async (driver) => {
+        const idx: Array<[string, string]> = [
+          ['idx_tx_parent', 'transactions(parent_transaction_id)'],
+          ['idx_tx_category', 'transactions(category_id)'],
+          ['idx_tx_kind_source', 'transactions(kind, source_system)'],
+          ['idx_inv_card_month', 'invoices(card_id, reference_month)'],
+          ['idx_inv_item_tx', 'invoice_items(transaction_id)'],
+          ['idx_inv_item_invoice', 'invoice_items(invoice_id)'],
+          ['idx_inst_plan_status', 'installments(plan_id, status)'],
+        ];
+        for (const [name, target] of idx) {
+          await driver.execAsync(`CREATE INDEX IF NOT EXISTS ${name} ON ${target};`);
+        }
+      },
+    },
 ];
 
 /**

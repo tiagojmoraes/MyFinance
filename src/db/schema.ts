@@ -370,6 +370,18 @@ CREATE TABLE IF NOT EXISTS wishlist_reserves (
 );
 CREATE INDEX IF NOT EXISTS idx_wishlist_reserves_item ON wishlist_reserves(item_id);
 CREATE INDEX IF NOT EXISTS idx_wishlist_reserves_dest ON wishlist_reserves(to_account_id);
+
+-- v24 (DESEMPENHO): índices que as migrações v3/v59 não chegavam a criar (o
+-- ALTER TABLE de coluna já existente no esquema base derrubava o bloco e o
+-- CREATE INDEX seguinte nunca rodava). Sem idx_tx_parent a lista do Fluxo
+-- varria a tabela inteira por linha (≈200 ms com 8,6 mil lançamentos).
+CREATE INDEX IF NOT EXISTS idx_tx_parent ON transactions(parent_transaction_id);
+CREATE INDEX IF NOT EXISTS idx_tx_category ON transactions(category_id);
+CREATE INDEX IF NOT EXISTS idx_tx_kind_source ON transactions(kind, source_system);
+CREATE INDEX IF NOT EXISTS idx_inv_card_month ON invoices(card_id, reference_month);
+CREATE INDEX IF NOT EXISTS idx_inv_item_tx ON invoice_items(transaction_id);
+CREATE INDEX IF NOT EXISTS idx_inv_item_invoice ON invoice_items(invoice_id);
+CREATE INDEX IF NOT EXISTS idx_inst_plan_status ON installments(plan_id, status);
 `;
 
 /**

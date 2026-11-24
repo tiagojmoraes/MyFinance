@@ -67,6 +67,9 @@ export default function RootLayout() {
               screenOptions={{
                 headerShown: false,
                 contentStyle: { backgroundColor: '#f1f5f9' },
+                // v24 (DESEMPENHO): o Stack mantém as telas anteriores montadas;
+                // congelar as que estão fora de foco evita re-render por baixo.
+                freezeOnBlur: true,
               }}
             >
           <Stack.Screen name="index" />

@@ -21,7 +21,7 @@ Fora do git: `.gitignore` (`node_modules/`, `.expo/`, `.jest-coverage/`, `dist/`
 
 ## 2. Produto e invariantes
 - Dinheiro em **centavos** (`*_cents`). Datas via `todaySP()`.
-- Banco: `src/db/migrations.ts` (`PRAGMA user_version`, esquema 54). Mudança de schema só por migração nova.
+- Banco: `src/db/migrations.ts` (`PRAGMA user_version`, esquema 64). Mudança de schema só por migração nova.
 - Categorias: o app não cria nenhuma; o usuário cadastra em Cadastro › Categorias.
 - Ações rápidas da Home (OFX, Despensa, Notificações do banco): vêm TODAS DESLIGADAS; liga em Ajustes › Preferencias (fica salvo).
 - Limpar tudo: só o botão "Começar do zero agora" (com confirmação) em Ajustes › Dados.
@@ -44,4 +44,4 @@ Fora do git: `.gitignore` (`node_modules/`, `.expo/`, `.jest-coverage/`, `dist/`
 - `typecheck` não prova comportamento: não afirme que tela funciona no aparelho.
 
 ## 5.1 Versões travadas
-`expo 58.0.23` (pin exato: teto do Expo Go 58.0.5 / core `58.0.x`; `expo@58.0.24+` exige core `58.1.0` que só existe em build própria) · `react-native 0.88.1` · `react 19.3.1` · `typescript ~5.9.3` · `jest ^29.7.0` (Jest 30 + TS 6 deu +4.196 erros TS em `test.each`; está em `expo.install.exclude`) · `react-native-gesture-handler ~3.3.0` (3.5 quebra) · `overrides` do `package.json` (reanimated/worklets/RN) sustentam o `npm install`. `query-string` foi removida: não reinstale.
+`expo ~58.0.26` (v24: app passa a rodar SÓ em APK/build própria — o Expo Go não abre mais, pois o core é `58.1.0`; teste pelo APK `npm run build:apk`) · `react-native 0.88.1` · `react 19.3.1` · `typescript ~5.9.3` · `jest ^29.7.0` (Jest 30 + TS 6 deu +4.196 erros TS em `test.each`; está em `expo.install.exclude`) · `react-native-gesture-handler ~3.3.0` (3.5 quebra) · `overrides` do `package.json` (reanimated/worklets/RN) sustentam o `npm install`. `query-string` foi removida: não reinstale.
