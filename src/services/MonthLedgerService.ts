@@ -119,6 +119,22 @@ interface ComputeMonthCtx {
 export class MonthLedgerService {
   /** cache em memória: chave 'YYYY-MM' → linha do ledger já carregada. */
   private memCache = new Map<Ym, MonthLedgerRow>();
+  /**
+   * v19.1 — GUARDA DE REENTRÂNCIA (bug "Fluxo preso no Carregando..."):
+   * com plano CLOSING ativo, `getMonthLedgerSummary` voltava a ser chamado
+   * DE DENTRO do próprio `recalcRange` (computeMonth → savings.getMonth-
+   * Overview → getClosingSuggestion → computeMonthEndRemainderBeforeClosing
+   * → este método). A marca `dirtyFrom` só sobe NO FIM do recálculo e o
+   * overview só se memoiza QUANDO termina (VersionedCache ignora versão
+   * undefined) — sem a guarda, cada re-entrada abria outro recalcRange
+   * (SAVEPOINT novo + dual novo): espiral infinita até o heap estourar.
+   * No aparelho o JS trava e o Fluxo fica no "Carregando..." para sempre,
+   * com os cards vazios ("Nenhum plano de poupança", R$ 0,00).
+   * Re-entrada devolve a melhor leitura disponível SEM recalcular: a linha
+   * já persistida do mês (null na primeira computação) — o Savings tem o
+   * fallback legado exatamente para esse null.
+   */
+  private recalcEmAndamento = false;
 
   constructor(
     private db: DbDriver,
@@ -211,6 +227,10 @@ export class MonthLedgerService {
     target: Ym,
     opts: GetMonthOpts = {}
   ): Promise<MonthLedgerRow | null> {
+    // v19.1 — re-entrada durante o recálculo do próprio livro: não recalcula
+    // (o resultado desta leitura ainda não existe — é justamente o que o
+    // recálculo de fora está produzindo). Devolve a linha persistida, se houver.
+    if (this.recalcEmAndamento) return this.readRow(target);
     await this.syncDirty();
     const dirtyFrom = (await this.getSetting('dirtyFrom')) || DIRTY_ALL;
     const todayMonth = monthOf(todaySP());
@@ -248,17 +268,25 @@ export class MonthLedgerService {
     // getDailyBalancesDual extra só para descobrir openingPrev/openingEfet).
     const initialDual =
       fromMonth === m0 ? await this.balance.getDailyBalancesDual(fromMonth, undefined) : null;
-    await this.recalcRange(
-      fromMonth,
-      target,
-      opts,
-      initialDual
-        ? {
-            openingPrev: initialDual.openingPrevisto ?? 0,
-            openingEfet: initialDual.openingEfetivado ?? 0,
-          }
-        : null
-    );
+    this.recalcEmAndamento = true;
+    try {
+      await this.recalcRange(
+        fromMonth,
+        target,
+        opts,
+        initialDual
+          ? {
+              openingPrev: initialDual.openingPrevisto ?? 0,
+              openingEfet: initialDual.openingEfetivado ?? 0,
+            }
+          : null
+      );
+    } finally {
+      // v19.1: a guarda NUNCA fica presa em true (recalcRange pode lançar —
+      // leitura/escrita falha, transação abortada — e a próxima leitura
+      // precisa poder recalcular de novo).
+      this.recalcEmAndamento = false;
+    }
     const row = await this.readRow(target);
     if (row) this.memCache.set(target, row);
     return row;
@@ -532,13 +560,16 @@ export class MonthLedgerService {
       budgetAdjust = await this.budgets.getMonthFluxAdjust(month, ctx.scope.scopeIds, undefined);
     }
 
-    // 3) poupança — savAdj + overview (entries MONTHLY).
+    // 3) poupança — savAdj diário. (v19.1: o `savings.getMonthOverview`
+    //    que era chamado aqui NUNCA tinha seu valor usado — código morto —
+    //    e era o gatilho da recursão com o próprio livro: getMonthOverview →
+    //    getClosingSuggestion → getMonthLedgerSummary DENTRO do recalcRange.
+    //    O efeito colateral desejado, recalcClosing da estimativa pendente,
+    //    continua garantido: o Fluxo chama getMonthOverview logo após a
+    //    leitura do livro, fora da transação do recálculo.)
     const savingsOn = await this.settings.getBool('poupanca_ativado');
     const savingsAdjust = savingsOn
       ? await this.savings.getMonthFluxAdjust(month, ctx.scope.scopeIds, undefined)
-      : null;
-    const savingsOverview = savingsOn
-      ? await this.savings.getMonthOverview(month, undefined)
       : null;
 
     // 4) v17 — ENCADEADO: `opening + (dual.alvo − dual.opening) + ajustes`.
@@ -688,28 +719,33 @@ export class MonthLedgerService {
   }
 
   /**
-   * Resolve a Poupança Mensal do mês (de entry MONTHLY OU do plano ativo).
+   * Resolve a Poupança Mensal do mês (de entries MONTHLY OU dos planos ativos).
    * Aceita entry confirmada (já existe transferência) e projected (FORECAST).
+   * v19.1 — SOMA de TODOS os planos: antes era `LIMIT 1` (uma entrada/plano
+   * só), o que subestimava a poupança mensal de quem tem MAIS DE UM plano
+   * (ex.: 2 mensais + fechamento) e inflava a estimativa do Fechamento —
+   * a sobra aparecia maior porque só 1 dos planos era abatido. Mesma regra
+   * do v87 do SavingsService: entries de plano ativo (ou órfãs).
    */
   private async resolveMonthlySavings(month: Ym): Promise<number> {
     const savingsOn = await this.settings.getBool('poupanca_ativado');
     if (!savingsOn) return 0;
-    const row = await this.db.getFirstAsync<{ amount: number | null; txn: string | null }>(
-      `SELECT amount_cents AS amount, transaction_id AS txn
-         FROM savings_entries
-        WHERE month = ? AND kind = 'MONTHLY'
-        LIMIT 1`,
+    const row = await this.db.getFirstAsync<{ total: number | null }>(
+      `SELECT COALESCE(SUM(se.amount_cents), 0) AS total
+         FROM savings_entries se
+         LEFT JOIN savings_plans sp ON sp.id = se.plan_id
+        WHERE se.month = ? AND se.kind = 'MONTHLY'
+          AND (se.plan_id IS NULL OR sp.is_active = 1)`,
       [month]
     );
-    if (row?.amount && row.amount > 0) return row.amount;
-    // Sem entry: usa o plano ATIVO (modo MONTHLY) como previsão.
-    const plan = await this.db.getFirstAsync<{ amount: number | null }>(
-      `SELECT amount_cents AS amount FROM savings_plans
+    if (row?.total && row.total > 0) return row.total;
+    // Sem entry no mês: usa os planos ATIVOS (modo MONTHLY) como previsão.
+    const plan = await this.db.getFirstAsync<{ total: number | null }>(
+      `SELECT COALESCE(SUM(amount_cents), 0) AS total FROM savings_plans
         WHERE mode = 'MONTHLY' AND is_active = 1
-          AND amount_cents IS NOT NULL
-        ORDER BY created_at DESC LIMIT 1`
+          AND amount_cents IS NOT NULL`
     );
-    return plan?.amount ?? 0;
+    return plan?.total ?? 0;
   }
 
   // ---------------------------------------------------- inspeção --------
