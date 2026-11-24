@@ -7,7 +7,7 @@
  */
 import { makeCtx, seedAccount, seedCard } from '../helpers';
 import { SETTING_KEYS } from '../../services/SettingsService';
-import { todaySP, addDays, monthOf } from '../../lib/dates';
+import { todaySP, addDays, monthAdd, monthOf } from '../../lib/dates';
 import { parseNfceItems } from '../../parsers/nfce';
 
 // ---------- AJUDA ----------
@@ -241,15 +241,25 @@ describe('v51 CÁLCULOS — saldo diário EFETIVO / PREVISTO, cartões, contas',
   test('EFETIVO = só CONFIRMED até o dia. PREVISTO = CONFIRMED + PENDING até o dia', async () => {
     const { services } = await makeCtx();
     const acc = await seedAccount(services.db, 'Banco', 10000);
-    await services.transactions.createAccountExpense({ description: 'Hoje CONFIRMED', amountCents: 1000, accountId: acc, date: '2026-11-05' });
-    await services.transactions.createAccountExpense({ description: 'Futuro PENDING', amountCents: 2000, accountId: acc, date: '2026-11-20' });
-    const dual = await services.balance.getDailyBalancesDual('2026-11', 99);
-    // Dia 05: efetivado = 10000-1000, previsto = mesmo (futuro ainda não chegou)
-    expect(dual.efetivado['2026-11-05']).toBe(9000);
-    expect(dual.previsto['2026-11-05']).toBe(9000);
-    // Dia 20: efetivado ainda 9000 (futuro não confirmado), previsto 7000
-    expect(dual.efetivado['2026-11-20']).toBe(9000);
-    expect(dual.previsto['2026-11-20']).toBe(7000);
+    // Datas RELATIVAS (à prova de calendário): à vista no dia de HOJE nasce
+    // CONFIRMED; no mês SEGUINTE nasce PENDING (date > hoje) — mesmo padrão
+    // do teste de regressão do Fluxo (mês futuro + dia fixo).
+    const hoje = todaySP();
+    const mesSeguinte = monthAdd(monthOf(hoje), 1);
+    await services.transactions.createAccountExpense({ description: 'Hoje CONFIRMED', amountCents: 1000, accountId: acc, date: hoje });
+    await services.transactions.createAccountExpense({ description: 'Futuro PENDING', amountCents: 2000, accountId: acc, date: `${mesSeguinte}-10` });
+    // Mês seguinte: a abertura já carrega o CONFIRMED de hoje; o PENDING do
+    // dia 10 entra SÓ no previsto, a partir do próprio dia.
+    const dual = await services.balance.getDailyBalancesDual(mesSeguinte, 99);
+    expect(dual.efetivado[`${mesSeguinte}-05`]).toBe(9000);
+    expect(dual.previsto[`${mesSeguinte}-05`]).toBe(9000);
+    // Dia 10: efetivado ainda 9000 (futuro não confirmado), previsto 7000
+    expect(dual.efetivado[`${mesSeguinte}-10`]).toBe(9000);
+    expect(dual.previsto[`${mesSeguinte}-10`]).toBe(7000);
+    // Mês corrente: o CONFIRMED de hoje conta nos dois; o PENDING futuro não.
+    const dualHoje = await services.balance.getDailyBalancesDual(monthOf(hoje), 99);
+    expect(dualHoje.efetivado[hoje]).toBe(9000);
+    expect(dualHoje.previsto[hoje]).toBe(9000);
   });
   test('CRÉDITO (+) e DÉBITO (-) nos moves: INCOME=CREDIT, EXPENSE=DEBIT', async () => {
     const { services } = await makeCtx();

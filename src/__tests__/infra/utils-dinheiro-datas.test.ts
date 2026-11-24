@@ -2,7 +2,7 @@
 
 import { parseMoneyToCents, formatBRL, divideCents } from '../../lib/money';
 import { addMonths, monthAdd, effectiveClosingDay, spDateOfIso, lastDayNumberOf, brToYmd, ymdToBr, maskBrDate } from '../../lib/dates';
-import { levenshteinSimilarity, jaroWinkler, normalizeText, isFuzzyMatch, truncateLabel } from '../../lib/text';
+import { levenshteinSimilarity, jaroWinkler, normalizeText, productSimilarity, FUZZY_ASK_THRESHOLD, truncateLabel } from '../../lib/text';
 
 describe('money', () => {
   test('parse pt-BR e en-US em centavos (Math.round(input*100))', () => {
@@ -78,15 +78,24 @@ describe('dates America/Sao_Paulo', () => {
   });
 });
 
-describe('fuzzy (thresholds da spec v7)', () => {
+describe('fuzzy (productSimilarity v37, zona de pergunta v100)', () => {
   test('normalização remove acentos e espaços extras', () => {
     expect(normalizeText('  AÇÚCAR   REFINADO ')).toBe('acucar refinado');
   });
 
-  test('isFuzzyMatch respeita Levenshtein > 0.90 / JW > 0.92', () => {
-    expect(isFuzzyMatch('LEITE INTEGRAL 1L', 'LEITE INTEGRAL 1L')).toBe(true);
-    expect(isFuzzyMatch('ACUCAR REFINADO UNIAO 1KG', 'Açúcar Refinado União 1kg')).toBe(true);
-    expect(isFuzzyMatch('SABONETE DOVE', 'PIPOCA DE MICROONDAS')).toBe(false);
+  // v100 — isFuzzyMatch (spec v7, thresholds 0.90/0.92) saiu do código; a
+  // semelhança de produto é a productSimilarity por tokens, com a zona de
+  // pergunta em FUZZY_ASK_THRESHOLD (0.84) e teto de unificação em 0.94.
+  test.each([
+    { a: 'LEITE INTEGRAL 1L', b: 'LEITE INTEGRAL 1L', cruza: true, desc: 'idêntico casa no teto' },
+    { a: 'ACUCAR REFINADO UNIAO 1KG', b: 'Açúcar Refinado União 1kg', cruza: true, desc: 'acentos e caixa não impedem' },
+    { a: 'SABONETE DOVE', b: 'PIPOCA DE MICROONDAS', cruza: false, desc: 'produto diferente não cruza o threshold' },
+  ])('productSimilarity — $desc', ({ a, b, cruza }) => {
+    const s = productSimilarity(a, b);
+    expect(s).toBeGreaterThan(0);
+    expect(s).toBeLessThanOrEqual(1);
+    if (cruza) expect(s).toBeGreaterThanOrEqual(0.94);
+    else expect(s).toBeLessThan(FUZZY_ASK_THRESHOLD);
   });
 
   test('similaridades em [0,1]', () => {

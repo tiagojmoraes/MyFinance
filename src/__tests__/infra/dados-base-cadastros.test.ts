@@ -37,6 +37,14 @@ describe('Dados iniciais e limpeza completa', () => {
     );
     for (const table of tables) {
       const count = await db.getFirstAsync<{ n: number }>(`SELECT COUNT(*) AS n FROM "${table.name}"`);
+      if (table.name === 'app_settings') {
+        // v17: a limpeza preserva 1 linha INTENCIONAL — o marcador do livro-
+        // razão (derivado, precisa ser refeito no próximo boot).
+        const marker = await db.getFirstAsync<{ key: string }>('SELECT key FROM app_settings');
+        expect(count?.n).toBe(1);
+        expect(marker?.key).toBe('ledger_dirty_from');
+        continue;
+      }
       expect(count?.n).toBe(0);
     }
     const after = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');

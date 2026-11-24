@@ -1,7 +1,8 @@
 /** v57 — PRODUTOS (Cadastros) + MEMÓRIA + VINCULAÇÃO DURANTE A NF + KG vs UN
  *  Plano acordado: vincular na NF (durante), classificar 1 vez na tabela, fuzzy só sugere.
  */
-import { normalizeEan, findByEan, findByAlias, suggestByFuzzy, resolveNfItem, learnAlias, pantryDecisionFor, addStock, stockFor, spendByCategory, CatalogProduct, ProductAlias } from '../../lib/productsCatalog';
+import { normalizeEan, findByEan, findByAlias, resolveNfItem, learnAlias, pantryDecisionFor, addStock, stockFor, spendByCategory, CatalogProduct, ProductAlias } from '../../lib/productsCatalog';
+import { productSimilarity } from '../../lib/text';
 
 const P = (id: string, name: string, patch: Partial<CatalogProduct> = {}): CatalogProduct => ({ id, name, ean: null, categoryId: null, subcategoryId: null, pantryPolicy: 'ASK', lowThresholdBase: null, baseUnit: 'UN', ...patch });
 const A = (cnpj: string | null, storeCode: string, productId: string, aliasText = ''): ProductAlias => ({ cnpj, storeCode, ean: null, productId, aliasText });
@@ -50,13 +51,18 @@ describe('v57 ORDEM: EAN → Alias → Fuzzy-sugestão → Pergunta (fuzzy nunca
     const r = resolveNfItem({ name: 'BANANA PRATA KG', eanRaw: 'SEM GTIN', cnpj: 'ASSAI', storeCode: '78901' }, prods, aliases);
     expect(r.kind).toBe('AUTO_ALIAS');
   });
-  test('3º Fuzzy só SUGERE, não unifica: BANANA PRATA - PESO sugere Banana Prata', () => {
-    const r = resolveNfItem({ name: 'BANANA PRATA - PESO', eanRaw: null, cnpj: 'CARREFOUR', storeCode: '456' }, prods, aliases);
-    expect(r.kind).toBe('ASK_FUZZY'); if (r.kind === 'ASK_FUZZY') { expect(r.suggestion?.id).toBe('1'); expect(r.score).toBeGreaterThanOrEqual(0.84); }
-  });
-  test('Fuzzy fraco não sugere: BNN PRATA sugere null (pergunta sem sugestão forte)', () => {
-    const r = resolveNfItem({ name: 'BNN PRATA', eanRaw: null, cnpj: 'BAIRRO', storeCode: '999' }, prods, aliases);
-    expect(r.kind).toBe('ASK_FUZZY');
+  // v100 — resolveNfItem não tem mais passo fuzzy (ASK_FUZZY saiu): item
+  // parecido cai nos PENDENTES do Catálogo; a semelhança vira SUGESTÃO
+  // (productSimilarity ≥ 0.84) mostrada na tela "＋ Criar produto".
+  test.each([
+    { name: 'BANANA PRATA - PESO', sugere: true, desc: 'parecido SÓ SUGERE a Banana Prata (nunca unifica)' },
+    { name: 'BNN PRATA', sugere: false, desc: 'fuzzy fraco NÃO sugere (pergunta sem sugestão forte)' },
+  ])('3º lugar da ordem — $desc', ({ name, sugere }) => {
+    const r = resolveNfItem({ name, eanRaw: null, cnpj: 'CARREFOUR', storeCode: '456' }, prods, aliases);
+    expect(r.kind).toBe('ASK_NEW');
+    const score = productSimilarity(name, prods[0].name); // prods[0] = Banana Prata
+    if (sugere) expect(score).toBeGreaterThanOrEqual(0.84);
+    else expect(score).toBeLessThan(0.84);
   });
   test('Nenhum produto no catálogo → ASK_NEW', () => {
     const r = resolveNfItem({ name: 'COUVE MANTEIGA', eanRaw: null, cnpj: 'X', storeCode: '1' }, [], []);

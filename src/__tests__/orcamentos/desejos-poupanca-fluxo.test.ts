@@ -23,8 +23,8 @@ import {
   BankMessageService, parseBankMessage, parseValorTexto,
 } from '../../services/BankMessageService';
 import {
-  WishlistService, RESERVA_ACCOUNT_NAME, CLASS_LABELS,
-  type WishlistMethodology,
+  RESERVA_ACCOUNT_NAME, CLASS_LABELS,
+  type WishlistMethodology, type WishlistService,
 } from '../../services/WishlistService';
 import { pctOf, orcadoPrevistoGastoLinha, orcadoGastoLinha } from '../../lib/fluxoFormat';
 import { TransactionService } from '../../services/TransactionService';
@@ -45,7 +45,10 @@ let tx: TransactionService;
 beforeEach(async () => {
   ctx = await makeCtx();
   bank = new BankMessageService(ctx.db);
-  wish = new WishlistService(ctx.db, ctx.services.transactions, ctx.services.balance);
+  // v17: usa a instância do buildServices — ela tem o livro-razão ligado
+  // (setMonthLedger). Uma `new WishlistService` aqui ficaria sem ledger e
+  // getMethodology/getProjection devolveriam os stubs legados.
+  wish = ctx.services.wishlist;
   tx = ctx.services.transactions;
 });
 describe('v69 · 4 — Lista de Desejos: cadastro e reserva', () => {
@@ -187,22 +190,20 @@ describe('v69 · 5 — metodologia da hierarquia (meses para comprar)', () => {
     const cat = await ctx.services.categories.create({
       name: 'Orçamento hierarquia', direction: 'DEBIT', icon: '🛒', parentId: null,
     });
+    // v17: o livro só desconta o orçamento da capacidade com o módulo ATIVO
+    // (computeMonth lê `orcamentos_ativado`).
+    await ctx.services.settings.setBool(SETTING_KEYS.budgetsAtivado, true);
     await ctx.services.budgets.save(cat.id, 30_000);
     await ctx.services.savings.createMonthlyPlan({
       amountCents: 20_000, dayOfMonth: 28, fromAccountId: origem, toAccountId: destino,
     });
-    await ctx.services.savings.generateForecast('2026-10-01');
+    await ctx.services.savings.generateForecast(todaySP());
     await wish.addItem({ classificacao: 'PRIORIDADE', description: 'Item', targetCents: 100_000 });
 
-    const [budgetSummary, savingsOverview] = await Promise.all([
-      ctx.services.budgets.getMonthSummary('2026-10'),
-      ctx.services.savings.getMonthOverview('2026-10'),
-    ]);
-    const methodology = await wish.getMethodology('2026-10', {
-      budgetSummary,
-      savingsOverview,
-      saldoPrevistoAjustadoFimCents: 100_000,
-    });
+    // v100: o livro-razão é a fonte única — o cálculo vale para o mês
+    // CORRENTE (meses passados não têm linha no livro). Orçamento entra na
+    // capacidade; a Poupança Mensal é priorizada DEPOIS dos itens (não desconta aqui).
+    const methodology = await wish.getMethodology(monthOf(todaySP()));
 
     expect(methodology.capacityCents).toBe(70_000);
   });
@@ -214,7 +215,8 @@ describe('v69 · 5 — metodologia da hierarquia (meses para comprar)', () => {
     await wish.addItem({ classificacao: 'PRIORIDADE', description: 'Celular', targetCents: 100_000 });
     await wish.addItem({ classificacao: 'NECESSARIO', description: 'Guarda-roupa', targetCents: 50_000 });
     await wish.addItem({ classificacao: 'DESEJO', description: 'Console', targetCents: 20_000 });
-    const m: WishlistMethodology = await wish.getMethodology('2026-07');
+    // mês CORRENTE (v100: meses passados não têm linha no livro-razão)
+    const m: WishlistMethodology = await wish.getMethodology(monthOf(todaySP()));
     expect(m.sobraCents).toBe(1_500);
     expect(m.capacityCents).toBe(1_500);
     const prioridade = m.classes.find((c) => c.cls === 'PRIORIDADE')!;
@@ -286,7 +288,7 @@ describe('v69 · 5 — metodologia da hierarquia (meses para comprar)', () => {
     await seedAccount(ctx.db, 'Unica2', 2_000);
     await wish.addItem({ classificacao: 'PRIORIDADE', description: 'P', targetCents: 1_500 });
     await wish.addItem({ classificacao: 'NECESSARIO', description: 'N', targetCents: 1_000 });
-    const m = await wish.getMethodology('2026-08');
+    const m = await wish.getMethodology(monthOf(todaySP()));
     const p = m.classes.find((c) => c.cls === 'PRIORIDADE')!;
     const n = m.classes.find((c) => c.cls === 'NECESSARIO')!;
     expect(p.startMonth).toBe(1);
@@ -298,7 +300,7 @@ describe('v69 · 5 — metodologia da hierarquia (meses para comprar)', () => {
   test('sem sobra: nenhuma classificação começa (mensagem de aviso)', async () => {
     await seedAccount(ctx.db, 'Zero', 0);
     await wish.addItem({ classificacao: 'PRIORIDADE', description: 'P', targetCents: 1_000 });
-    const m = await wish.getMethodology('2026-09');
+    const m = await wish.getMethodology(monthOf(todaySP()));
     expect(m.sobraCents).toBe(0);
     const p = m.classes.find((c) => c.cls === 'PRIORIDADE')!;
     expect(p.startMonth).toBe(0);
@@ -500,7 +502,10 @@ describe('Saldo final e ordem de cadastro dos módulos', () => {
       ['savings', 'budget', 'wishlist'],
     ] as const;
     const results: Array<number | null> = [];
-    const month = monthAdd(monthOf(todaySP()), 1);
+    // v17: a sugestão do Fechamento é calculada para o mês CORRENTE — é onde
+    // o livro-razão vive. A regra testada é a independência da ORDEM de
+    // cadastro (orçamento × lista × poupança → sempre a mesma hierarquia).
+    const month = monthOf(todaySP());
 
     for (const order of orders) {
       const { db, services } = await makeCtx();

@@ -191,15 +191,20 @@ describe('v37 — mamão Assaí 8142 = Carrefour 456 = Empório 789', () => {
 
     const keyC = genKey();
     const pC = await ingest(keyC, MAMAO_CARREFOUR);
-    // v59: fuzzy SÓ SUGERE — vai para a revisão (a decisão é do usuário)
+    // v100: sem passo fuzzy — o item vai para os PENDENTES do Catálogo; a
+    // semelhança aparece como SUGESTÃO na tela "＋ Criar produto".
     expect(pC.needsReview).toBe(1);
     const itemCRow = await db.getFirstAsync<{ id: string; product_id: string; match_type: string | null; match_score: number | null; stock_applied: number }>(
       'SELECT id, product_id, match_type, match_score, stock_applied FROM nfce_items WHERE access_key = ?', [keyC]);
-    expect(itemCRow?.match_type).toBe('FUZZY');
-    expect(itemCRow?.match_score ?? 0).toBeGreaterThanOrEqual(0.94);
-    expect(itemCRow?.product_id).toBe(item1!.product_id); // ← SUGERIDA a unificação entre lojas
+    expect(itemCRow?.match_type).toBe('PENDING');
+    expect(itemCRow?.product_id).toBeNull(); // ← SUGESTÃO, não vinculação
     expect(itemCRow?.stock_applied).toBe(0); // não aplica antes da decisão
-    // usuário confirma a sugestão → grava o alias do Carrefour (CNPJ, 456) + aplica estoque
+    // a SUGESTÃO aponta para a verdade (mesma fruta vendida em outra loja)
+    const sugC = await services.products.suggestTop3('MAMAO PAPAYA KG');
+    expect(sugC[0]?.product.id).toBe(item1!.product_id);
+    expect(sugC[0]?.score).toBeGreaterThanOrEqual(0.94);
+    // usuário decide (vincula à sugestão) → grava o alias do Carrefour (CNPJ, 456) + aplica estoque
+    await services.nfce.linkItemToProduct(itemCRow!.id, item1!.product_id);
     await services.nfce.confirmItemProduct(itemCRow!.id);
 
     // 2ª nota do Carrefour: agora é ALIAS (código 456 aprendido para o CNPJ do Carrefour)
@@ -222,18 +227,20 @@ describe('v37 — mamão Assaí 8142 = Carrefour 456 = Empório 789', () => {
     await services.nfce.confirmItemProduct(item1Row!.id);
     const truthId = (await db.getFirstAsync<{ product_id: string }>('SELECT product_id FROM nfce_items WHERE access_key = ?', [key1]))!.product_id;
 
-    // v59: Carrefour — fuzzy sugere a verdade, o usuário confirma (grava alias 456)
+    // v100: Carrefour — item PENDENTE, o usuário decide (grava alias 456)
     const keyC = genKey();
     await ingest(keyC, MAMAO_CARREFOUR);
     const itemCRow = await db.getFirstAsync<{ id: string; product_id: string }>('SELECT id, product_id FROM nfce_items WHERE access_key = ?', [keyC]);
-    expect(itemCRow!.product_id).toBe(truthId);
+    expect(itemCRow!.product_id).toBeNull();
+    await services.nfce.linkItemToProduct(itemCRow!.id, truthId);
     await services.nfce.confirmItemProduct(itemCRow!.id);
 
-    // v59: Empório — idem (grava alias 789)
+    // v100: Empório — idem (grava alias 789)
     const keyE = genKey();
     await ingest(keyE, MAMAO_EMPORIO);
     const itemERow = await db.getFirstAsync<{ id: string; product_id: string }>('SELECT id, product_id FROM nfce_items WHERE access_key = ?', [keyE]);
-    expect(itemERow!.product_id).toBe(truthId);
+    expect(itemERow!.product_id).toBeNull();
+    await services.nfce.linkItemToProduct(itemERow!.id, truthId);
     await services.nfce.confirmItemProduct(itemERow!.id);
 
     const aliases = await db.getAllAsync<{ cnpj: string | null; store_product_code: string | null; product_id: string }>(
@@ -266,10 +273,15 @@ describe('v37 — unidade diferente: mesmo código da verdade, KG não vira UN',
     const p2 = await ingest(key2, ABACAXI_EMPORIO_KG);
     const item2 = await db.getFirstAsync<{ product_id: string; match_type: string | null; stock_applied: number }>(
       'SELECT product_id, match_type, stock_applied FROM nfce_items WHERE access_key = ?', [key2]);
-    expect(item2?.product_id).toBe(item1Pid); // mesma verdade sugerida
-    expect(item2?.match_type).toBe('FUZZY');
+    // v100: sem fuzzy na resolução — item KG parecido fica PENDENTE, SEM
+    // produto vinculado e FORA do estoque (dimensão KG ≠ UN do produto UN).
+    expect(item2?.product_id).toBeNull();
+    expect(item2?.match_type).toBe('PENDING');
     expect(item2?.stock_applied).toBe(0); // GUARDA: KG não entra em produto UN (e está em revisão)
-    expect(p2.needsReview).toBe(1); // v59: sugestão fuzzy espera a decisão do usuário
+    expect(p2.needsReview).toBe(1); // sugestão espera a decisão do usuário
+    // a SUGESTÃO continua apontando para a mesma verdade (a fruta UN)
+    const sug2 = await services.products.suggestTop3('ABACAXI PERA kg');
+    expect(sug2[0]?.product.id).toBe(item1Pid);
 
     const stock2 = await db.getFirstAsync<{ quantity_base: number }>('SELECT quantity_base FROM pantry_stock WHERE product_id = ?', [item1Pid]);
     expect(stock2?.quantity_base).toBe(1); // estoque intacto (sem misturar dimensão)

@@ -134,8 +134,10 @@ describe('v67 BUG 1 (atualizado na v68) — saldo do dia sem bloco de orçamento
     expect(src).toContain('mergeDailyAdjust(prev, budAdj?.previsto)');
     expect(src).toContain('mergeDailyAdjust(efet, budAdj?.efetivado)');
     expect(src).not.toMatch(/prev\[d\] = \(prev\[d\] \?\? 0\) \+ \(budAdj\?\.previsto\[d\] \?\? 0\) \+ \(savAdj\?\.previsto\[d\] \?\? 0\)/);
-    // a compensação interna (savAdj) continua existindo pro cálculo de sobra
-    expect(src).toContain('savAdj?.efetivado[lastActivityDate]');
+    // v17 — o dia-alvo vem do closing do LIVRO-RAZÃO (fonte única mensal),
+    // não mais do ajuste da Poupança em memória.
+    expect(src).toContain('monthLedgerRow.closingPrevCents');
+    expect(src).toContain('monthLedgerRow.closingEfetCents');
   });
 
   test('v94: card Poupança — só cabeçalho mostra "Guardado no mês"; expandido tem 2 linhas consolidadas + Efetivar', () => {
@@ -450,9 +452,15 @@ describe('v67 MELHORIA 1 — fluxo guiado: EAN → Alias → Fuzzy → novo → 
     expect(leite.match_type).toBe('EAN');
     expect(leite.product_id).not.toBeNull();
 
-    // 3) fuzzy → SÓ SUGESTÃO (match FUZZY, decisão do usuário)
+    // 3) semelhante → SEM passo fuzzy na resolução (v100): o item vai para os
+    //    Pendentes do Catálogo e a semelhança vira SUGESTÃO na tela
+    //    "＋ Criar produto" (suggestTop3) — nunca unifica sozinho.
     const fuzzy = rows.find((r) => r.description === 'MAMAO PAPAYA kg')!;
-    expect(fuzzy.match_type).toBe('FUZZY');
+    expect(fuzzy.match_type).toBe('PENDING');
+    expect(fuzzy.product_id).toBeNull();
+    const sugFuzzy = await services.products.suggestTop3('MAMAO PAPAYA kg');
+    expect(sugFuzzy[0]?.product.id).toBe(mamao.id);
+    expect(sugFuzzy[0]?.score).toBeGreaterThanOrEqual(0.84);
 
     // 4) desconhecido → PENDING (vai para os Pendentes do Catálogo)
     const novo = rows.find((r) => r.description === 'BOLACHA RECHEADA TOTALMENTE XPTO')!;
@@ -474,7 +482,7 @@ describe('v67 MELHORIA 1 — fluxo guiado: EAN → Alias → Fuzzy → novo → 
     const rows2 = await itemsOf(key2);
     expect(rows2[0].match_type).toBe('ALIAS'); // aprendido
     expect(rows2[0].product_id).toBe(prodId);
-    void mamao; void leite;
+    void leite;
   });
 
   test('"Incluir no estoque?" — SIM aplica; "Apenas agora" deixa fora; "Sempre" grava NUNCA', async () => {

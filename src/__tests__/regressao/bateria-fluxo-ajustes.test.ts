@@ -547,9 +547,9 @@ describe('v68 DESEMPENHO — memoização dos cálculos e listas', () => {
   test('saldo do dia exibido é memoizado (não recalcula a cada digitação)', () => {
     const src = fluxoSrc();
     expect(src).toMatch(/const dailyShown = React\.useMemo\(/);
-    // O saldo depende dos dados diários, dos ajustes e das reservas da
-    // hierarquia mensal, incluindo o mês e os módulos ativos.
-    expect(src).toMatch(/\}, \[[^\]]*dailyBal[^\]]*budAdj[^\]]*savAdj[^\]]*month[^\]]*\]\);/);
+    // O saldo depende dos dados diários, dos ajustes do Orçamento, do
+    // livro-razão do mês (v17), da data-alvo e do mês visto.
+    expect(src).toMatch(/\}, \[[^\]]*dailyBal[^\]]*budAdj[^\]]*monthLedgerRow[^\]]*month[^\]]*\]\);/);
   });
 
   test('LancamentoRow é memoizado (React.memo)', () => {

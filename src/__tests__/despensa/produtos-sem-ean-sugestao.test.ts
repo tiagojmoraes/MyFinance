@@ -23,21 +23,31 @@ describe('v59 SEM EAN NA TELA — criar produto sem EAN funciona', () => {
 });
 
 describe('v59 FUZZY SÓ SUGERE — nunca unifica sozinho', () => {
-  test('Nome IDÊNTICO (100%) NÃO unifica sozinho — vai p/ revisão durante a NF', async () => {
+  test('Nome IDÊNTICO (100%) NÃO unifica sozinho — vira PENDENTE + sugestão na tela', async () => {
     const { services } = await makeCtx();
-    await services.products.createManualProduct({ name: 'Leite Integral Caixa 1L', baseUnit: 'ML' });
-    const res = await services.products.resolveOrRegister('Assaí', { ean: null, storeProductCode: null, name: 'LEITE INTEGRAL CAIXA 1L' });
-    expect(res.matchType).toBe('FUZZY'); expect(res.needsReview).toBe(true); expect(res.score).toBeGreaterThanOrEqual(0.94);
+    const manual = await services.products.createManualProduct({ name: 'Leite Integral Caixa 1L', baseUnit: 'ML' });
+    // NF usa resolveStrict: sem EAN/alias → PENDING (nada unifica sozinho)
+    const res = await services.products.resolveStrict('Assaí', { ean: null, storeProductCode: null, name: 'LEITE INTEGRAL CAIXA 1L' });
+    expect(res.matchType).toBe('PENDING'); expect(res.needsReview).toBe(true);
+    // a tela "＋ Criar produto" sugere o produto existente (score no teto)
+    const sug = await services.products.suggestTop3('LEITE INTEGRAL CAIXA 1L');
+    expect(sug[0]?.product.id).toBe(manual.id);
+    expect(sug[0]?.score).toBeGreaterThanOrEqual(0.94);
   });
   test('Nome parecido (fuzzy) NÃO grava alias sozinho — próxima nota continua perguntando até o usuário decidir', async () => {
     const { services } = await makeCtx();
     const manual = await services.products.createManualProduct({ name: 'Banana Prata', baseUnit: 'G' });
-    const first = await services.products.resolveOrRegister('Carrefour', { ean: null, storeProductCode: '456', name: 'BANANA PRATA - PESO' });
-    expect(first.matchType).toBe('FUZZY'); expect(first.needsReview).toBe(true);
-    // Sem decisão do usuário, a 2ª nota com o mesmo código NÃO resolve por alias
-    const second = await services.products.resolveOrRegister('Carrefour', { ean: null, storeProductCode: '456', name: 'BANANA PRATA - PESO' });
-    expect(second.matchType).toBe('FUZZY'); expect(second.needsReview).toBe(true);
-    expect(second.product?.id).toBe(manual.id); // sugere o mesmo, mas não unifica
+    const first = await services.products.resolveStrict('Carrefour', { ean: null, storeProductCode: '456', name: 'BANANA PRATA - PESO' });
+    expect(first.matchType).toBe('PENDING'); expect(first.needsReview).toBe(true);
+    // Sem decisão do usuário, a 2ª nota com o mesmo código CONTINUA perguntando
+    const second = await services.products.resolveStrict('Carrefour', { ean: null, storeProductCode: '456', name: 'BANANA PRATA - PESO' });
+    expect(second.matchType).toBe('PENDING'); expect(second.needsReview).toBe(true);
+    // a sugestão segue apontando para o produto existente (nunca unifica)
+    const sug = await services.products.suggestTop3('BANANA PRATA - PESO');
+    expect(sug[0]?.product.id).toBe(manual.id);
+    // e NENHUM alias foi gravado sozinho pela semelhança de nome
+    const aliases = await services.db.getAllAsync('SELECT * FROM product_aliases WHERE store_product_code = ?', ['456']);
+    expect(aliases).toHaveLength(0);
   });
   test('Depois que o usuário decide (recordDecision), a próxima nota resolve sozinha por código', async () => {
     const { services } = await makeCtx();

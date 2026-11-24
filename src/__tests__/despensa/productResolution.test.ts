@@ -1,9 +1,12 @@
-/** Fase 4 — Hierarquia de resolução de produtos (v7): EAN > Alias > Fuzzy > Novo. */
+/** Fase 4 — Hierarquia de resolução de produtos (v7) atualizada para a v100:
+ *  EAN > Alias > PENDING (Catálogo classifica 1 vez). Sem passo fuzzy na
+ *  resolução — a semelhança de nome vira SUGESTÃO na tela "＋ Criar produto"
+ *  (suggestTop3) e SÓ o usuário decide (nunca unifica sozinho). */
 
 import { makeCtx } from '../helpers';
 import { ProductAliasRepo } from '../../repos/catalog';
 
-describe('ProductService — hierarquia v7', () => {
+describe('ProductService — hierarquia v7 na v100', () => {
   test('Passo 1: match exato por EAN vence tudo', async () => {
     const { services } = await makeCtx();
     const manual = await services.products.createManualProduct({ name: 'Coca-Cola 2L', ean: '7894900011517', baseUnit: 'ML' });
@@ -23,7 +26,7 @@ describe('ProductService — hierarquia v7', () => {
       ean: null, storeProductCode: 'A-777', name: 'ARROZ INTEGRAL TYPE 1 PACOTE GRANDE 5K',
     });
     expect(first.matchType).toBe('NEW');
-    // Segunda resolução com o MESMO código da loja: passo 2 (alias) vence, mesmo que fuzzy também batesse
+    // Segunda resolução com o MESMO código da loja: passo 2 (alias) vence, mesmo que o nome também lembrasse
     const second = await services.products.resolveOrRegister('Pão de Açúcar', {
       ean: null, storeProductCode: 'A-777', name: 'ARROZ INTEGRAL TYPE 1 PACOTE GRANDE 5K',
     });
@@ -39,28 +42,33 @@ describe('ProductService — hierarquia v7', () => {
     expect(third.product?.id).toBe(manual.id);
   });
 
-  test('Passo 3 v37: nome IDÊNTICO unifica sozinho (sem perguntar) e grava a decisão', async () => {
+  test('Passo 3 (v100): sem fuzzy na resolução — idêntico vira PENDENTE + sugestão na tela', async () => {
     const { services } = await makeCtx();
-    await services.products.createManualProduct({ name: 'Leite Integral Caixa 1L', baseUnit: 'ML' });
-    const res = await services.products.resolveOrRegister('Assaí', {
+    const manual = await services.products.createManualProduct({ name: 'Leite Integral Caixa 1L', baseUnit: 'ML' });
+    // NF usa resolveStrict: sem EAN/alias → PENDING (nada é unificado sozinho)
+    const res = await services.products.resolveStrict('Assaí', {
       ean: null, storeProductCode: null, name: 'LEITE INTEGRAL CAIXA 1L',
     });
-    expect(res.matchType).toBe('FUZZY');
-    expect(res.product?.name).toBe('Leite Integral Caixa 1L');
-    // v59: fuzzy SÓ SUGERE — mesmo com 100%, vai p/ revisão durante a NF (nunca unifica sozinho)
+    expect(res.matchType).toBe('PENDING');
     expect(res.needsReview).toBe(true);
-    expect(res.score).toBeGreaterThanOrEqual(0.94);
+    // a tela "＋ Criar produto" SUGERE o produto existente (nunca une sozinha)
+    const sug = await services.products.suggestTop3('LEITE INTEGRAL CAIXA 1L');
+    expect(sug[0]?.product.id).toBe(manual.id);
+    expect(sug[0]?.score).toBeGreaterThanOrEqual(0.94);
   });
 
-  test('Passo 3 v37: parecido mas não idêntico PERGUNTA (zona de revisão)', async () => {
+  test('Passo 3 (v100): parecido cai na zona de revisão (0.84–0.94) — decisão é do usuário', async () => {
     const { services } = await makeCtx();
-    await services.products.createManualProduct({ name: 'Leite Integral Caixa 1L', baseUnit: 'ML' });
-    const res = await services.products.resolveOrRegister(null, {
+    const manual = await services.products.createManualProduct({ name: 'Leite Integral Caixa 1L', baseUnit: 'ML' });
+    const res = await services.products.resolveStrict(null, {
       ean: null, storeProductCode: null, name: 'LEITE INTEGRAL CAIXA 1L DESLACTOSADO',
     });
-    expect(res.matchType).toBe('FUZZY');
-    expect(res.product?.name).toBe('Leite Integral Caixa 1L');
-    expect(res.needsReview).toBe(true); // score ~0.88 (zona 0.84–0.94): confirma antes
+    expect(res.matchType).toBe('PENDING');
+    expect(res.needsReview).toBe(true);
+    const sug = await services.products.suggestTop3('LEITE INTEGRAL CAIXA 1L DESLACTOSADO');
+    expect(sug[0]?.product.id).toBe(manual.id);
+    expect(sug[0]?.score).toBeGreaterThanOrEqual(0.84); // zona de revisão…
+    expect(sug[0]?.score).toBeLessThan(0.94);            // …não unifica sozinho
   });
 
   test('Passo 3 v37: variedades DIFERENTES não unificam (Manga Palmer × Manga Tommy)', async () => {
@@ -99,27 +107,26 @@ describe('ProductService — hierarquia v7', () => {
     expect(alias).toBeTruthy();
   });
 
-  test('normalização: acentos e maiúsculas não impedem fuzzy', async () => {
+  test('normalização: acentos e maiúsculas não impedem a sugestão', async () => {
     const { services } = await makeCtx();
-    await services.products.createManualProduct({ name: 'Açúcar Refinado União 1kg' });
-    const res = await services.products.resolveOrRegister(null, {
+    const manual = await services.products.createManualProduct({ name: 'Açúcar Refinado União 1kg' });
+    const res = await services.products.resolveStrict(null, {
       ean: null, storeProductCode: null, name: 'ACUCAR REFINADO UNIAO 1KG',
     });
-    expect(res.matchType).toBe('FUZZY');
+    expect(res.matchType).toBe('PENDING');
+    const sug = await services.products.suggestTop3('ACUCAR REFINADO UNIAO 1KG');
+    expect(sug[0]?.product.id).toBe(manual.id);
+    expect(sug[0]?.score).toBeGreaterThanOrEqual(0.94);
   });
 
-  test('segunda resolução fuzzy reutiliza o vínculo criado (alias textual)', async () => {
+  test('depois da decisão (recordDecision), a próxima nota resolve por ALIAS', async () => {
     const { services } = await makeCtx();
-    await services.products.createManualProduct({ name: 'Café Pilão 500g' });
-    const first = await services.products.resolveOrRegister('Hiper', {
-      ean: null, storeProductCode: null, name: 'CAFE PILAO 500G',
-    });
-    // v59: fuzzy SÓ SUGERE — mesmo idêntico após normalizar, vai p/ revisão (nunca unifica sozinho)
-    expect(first.needsReview).toBe(true);
-    // Após o vínculo textual, a próxima busca continua FUZZY (alias_text armazenado)
-    const second = await services.products.resolveOrRegister('Hiper', {
-      ean: null, storeProductCode: null, name: 'CAFE PILAO 500G',
-    });
-    expect(second.product?.id).toBe(first.product?.id);
+    const manual = await services.products.createManualProduct({ name: 'Café Pilão 500g' });
+    // 1ª nota sem código de loja: nada casa → o usuário decide (v100)
+    await services.products.resolveStrict('Hiper', { ean: null, storeProductCode: null, name: 'CAFE PILAO 500G' });
+    await services.products.recordDecision(manual.id, { storeName: 'Hiper', storeProductCode: 'A-1', aliasText: 'CAFE PILAO 500G' });
+    const second = await services.products.resolveOrRegister('Hiper', { ean: null, storeProductCode: 'A-1', name: 'CAFE PILAO 500G' });
+    expect(second.matchType).toBe('ALIAS');
+    expect(second.product?.id).toBe(manual.id);
   });
 });

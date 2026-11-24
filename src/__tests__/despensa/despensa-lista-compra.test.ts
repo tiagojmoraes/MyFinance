@@ -86,7 +86,11 @@ describe('v72 — Lista de Compra: preços por nfce_items', () => {
       items: [{ desc: 'ARROZ (pacote)', qty: 1, unit: 'UN', total: 999, productId: arroz.id }],
     });
 
-    const data = await services.pantry.getListaCompraData([arroz.id, sabonete.id, semNota.id]);
+    const data = await services.pantry.getListaCompraData([
+      { productId: arroz.id, qtyBase: 0 },
+      { productId: sabonete.id, qtyBase: 0 },
+      { productId: semNota.id, qtyBase: 0 },
+    ]);
     expect(data).toHaveLength(3);
 
     const arrozData = data.find((d) => d.productId === arroz.id)!;
@@ -135,7 +139,7 @@ describe('v72 — Lista de Compra: preços por nfce_items', () => {
       issuedAt: '2026-11-02T12:00:00.000Z',
       items: [{ desc: 'BANANA PRATA', qty: 2, unit: 'KG', total: 1198, productId: prod.id }],
     });
-    const [d] = await services.pantry.getListaCompraData([prod.id]);
+    const [d] = await services.pantry.getListaCompraData([{ productId: prod.id, qtyBase: 0 }]);
     expect(d.categoryName).toBe('Hortifruti V72');
     expect(d.parentCategoryName).toBe('Mercado V72');
   });
@@ -159,7 +163,8 @@ describe('v72 — tela Despensa: abas, carrinho e as duas visões', () => {
     const src = readSrc('app/despensa.tsx');
     expect(src).toContain("'ESTOQUE' | 'COMPRA'");
     expect(src).toContain('Lista de Compra');
-    expect(src).toContain('Abaixo do mínimo');
+    // v104: o alerta de estoque baixo virou chip "⚠ Estoque baixo" na linha.
+    expect(src).toContain('Estoque baixo');
     expect(src).toContain('Por categoria');
     expect(src).toContain('Por loja');
     expect(src).toContain('total da lista nesta loja');

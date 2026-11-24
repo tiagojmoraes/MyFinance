@@ -1,13 +1,23 @@
-/** v56 — FUZZY MATCHING: funciona? Resposta: PRODUTO sim, OFX não (sozinho).
+/** v56/v100 — FUZZY: para PRODUTO funciona (tokens); para OFX saiu da resolução.
+ *
+ *  v56 perguntava "fuzzy funciona?": para PRODUTO, sim — productSimilarity
+ *  por tokens (v37). Na v100 o passo fuzzy SAIU da resolução (NF e OFX):
+ *  memoSimilarity, isFuzzyMatch e matchOfxLineWithMemo foram removidos. O
+ *  item parecido cai nos Pendentes do Catálogo e a semelhança aparece como
+ *  SUGESTÃO na tela "＋ Criar produto" (suggestTop3). O casamento de OFX
+ *  ficou determinístico: data + valor (matchOfxLine), empate → AMBIGUOUS.
  */
-import { memoSimilarity, productSimilarity, isFuzzyMatch, normalizeText } from '../../lib/text';
-import { matchOfxLineWithMemo } from '../../lib/ofxMatch';
+import { productSimilarity } from '../../lib/text';
+import { matchOfxLine } from '../../lib/ofxMatch';
 
 describe('v56 FUZZY PRODUTO — SIM, funciona (tokens)', () => {
-  test('Produto igual, loja diferente -> AUTO', () => {
-    expect(productSimilarity('LEITE INTEGRAL CAIXA 1L', 'Leite Integral Caixa 1L')).toBeGreaterThanOrEqual(0.94);
-    expect(productSimilarity('CAFE PILAO 500G', 'Café Pilão 500g')).toBeGreaterThanOrEqual(0.94);
-    expect(productSimilarity('MAMAO PAPAYA KG', 'Mamão Papaya')).toBeGreaterThanOrEqual(0.94);
+  const iguais = [
+    { a: 'LEITE INTEGRAL CAIXA 1L', b: 'Leite Integral Caixa 1L' },
+    { a: 'CAFE PILAO 500G', b: 'Café Pilão 500g' },
+    { a: 'MAMAO PAPAYA KG', b: 'Mamão Papaya' },
+  ];
+  test.each(iguais)('Produto igual normalizado → AUTO: $a ≈ $b', ({ a, b }) => {
+    expect(productSimilarity(a, b)).toBeGreaterThanOrEqual(0.94);
   });
   test('Produto diferente, mesmo gênero -> NÃO unifica (é o ponto do fuzzy bom)', () => {
     expect(productSimilarity('MANGA PALMER', 'MANGA TOMMY')).toBeLessThan(0.84);
@@ -25,58 +35,33 @@ describe('v56 FUZZY PRODUTO — SIM, funciona (tokens)', () => {
   });
 });
 
-describe('v56 FUZZY OFX — NÃO funciona sozinho (memo é sujo)', () => {
-  test('FALSO POSITIVO: MERCADO vs FEIJÃO dá 0.64 — se fosse threshold 0.5, amarraria errado', () => {
-    const s = memoSimilarity('MERCADO', 'Feijão');
-    expect(s).toBeGreaterThan(0.5); // prova o bug: coisas diferentes com score alto
-    expect(s).toBeLessThan(0.9);
-  });
-  test('FALSO NEGATIVO: FARMACIA DROGASIL vs Drogasil dá só 0.47 — perderia o match certo', () => {
-    expect(memoSimilarity('FARMACIA DROGASIL', 'Drogasil')).toBeLessThan(0.5);
-  });
-  test('Memo do banco tem lixo: SUPERMERCADO XYZ LOJA 123 vs Mercado = 0.69 (não é 1.0)', () => {
-    const s = memoSimilarity('SUPERMERCADO XYZ LOJA 123', 'Mercado');
-    expect(s).toBeGreaterThan(0.5); expect(s).toBeLessThan(0.9);
-  });
-  test('Memo curto é ambíguo: UBER vs Uber Eats = 0.89 (quase igual, mas é outro serviço)', () => {
-    expect(memoSimilarity('UBER', 'Uber Eats')).toBeGreaterThan(0.8);
-  });
-  test('Memo bom funciona: UBER *EATS vs Uber Eats, IFOOD vs iFood', () => {
-    expect(memoSimilarity('UBER *EATS', 'Uber Eats')).toBeGreaterThan(0.9);
-    expect(memoSimilarity('IFOOD', 'iFood')).toBe(1);
-  });
-  test('isFuzzyMatch (threshold 0.90/0.92) é MUITO restritivo para OFX', () => {
-    // isFuzzyMatch("SUPERMERCADO XYZ...","Mercado") = false, mesmo sendo o mesmo lugar
-    expect(isFuzzyMatch('SUPERMERCADO XYZ LOJA 123', 'Mercado')).toBe(false);
-    expect(isFuzzyMatch('FARMACIA DROGASIL', 'Drogasil')).toBe(false);
-    // Mas para produto idêntico funciona
-    expect(isFuzzyMatch('LEITE INTEGRAL 1L', 'LEITE INTEGRAL 1L')).toBe(true);
-  });
-});
-
-describe('v56 FIX — memo só DESEMPATA, nunca decide', () => {
-  test('Data+valor decidem, memo não precisa: Mercado vs Mercado da esquina casa', () => {
-    const r = matchOfxLineWithMemo({ fitid: '1', postedOn: '2026-11-05', amountCents: -7500, memo: 'SUPERMERCADO XYZ LOJA 123' }, [{ id: 't1', amountCents: 7500, occurredOn: '2026-11-05', type: 'EXPENSE', description: 'Mercado da esquina' }]);
-    expect(r.status).toBe('MATCHED_AUTO'); expect(r.txId).toBe('t1');
-  });
-  test('Ambíguo por data, memo desempata: 2x R$50, um é Mercado, outro é Farmácia', () => {
-    const r = matchOfxLineWithMemo({ fitid: '1', postedOn: '2026-11-05', amountCents: -5000, memo: 'SUPERMERCADO XYZ' }, [
-      { id: 'a', amountCents: 5000, occurredOn: '2026-11-04', type: 'EXPENSE', description: 'Mercado' },
-      { id: 'b', amountCents: 5000, occurredOn: '2026-11-06', type: 'EXPENSE', description: 'Farmácia' },
-    ]);
-    // Memo de mercado é mais perto de "Mercado" que de "Farmácia" -> desempata para 'a'
-    expect(r.status).toBe('MATCHED_AUTO'); expect(r.txId).toBe('a');
-  });
-  test('Ambíguo por data, memo NÃO desempata se os dois forem parecidos -> continua AMBIGUOUS', () => {
-    const r = matchOfxLineWithMemo({ fitid: '1', postedOn: '2026-11-05', amountCents: -5000, memo: 'MERCADO' }, [
-      { id: 'a', amountCents: 5000, occurredOn: '2026-11-04', type: 'EXPENSE', description: 'Mercado' },
-      { id: 'b', amountCents: 5000, occurredOn: '2026-11-06', type: 'EXPENSE', description: 'Mercado' },
-    ]);
-    // Os dois têm a mesma descrição -> memo não ajuda -> AMBIGUOUS (certo: usuário decide)
-    expect(r.status).toBe('AMBIGUOUS');
-  });
-  test('Memo sozinho NUNCA cria match: valor diferente + memo igual -> NEW_TX', () => {
-    const r = matchOfxLineWithMemo({ fitid: '1', postedOn: '2026-11-05', amountCents: -7500, memo: 'Mercado' }, [{ id: 't1', amountCents: 7501, occurredOn: '2026-11-05', type: 'EXPENSE', description: 'Mercado' }]);
-    expect(r.status).toBe('NEW_TX');
+describe('v100 OFX — casamento determinístico por data + valor (matchOfxLine)', () => {
+  const mesmosValores = [
+    { id: 'a', amountCents: 5000, occurredOn: '2026-11-04', type: 'EXPENSE' as const, description: 'Mercado' },
+    { id: 'b', amountCents: 5000, occurredOn: '2026-11-06', type: 'EXPENSE' as const, description: 'Farmácia' },
+  ];
+  test.each([
+    {
+      desc: 'Data+valor decidem: único candidato casa (memo de banco sujo é irrelevante)',
+      line: { fitid: '1', postedOn: '2026-11-05', amountCents: -7500, memo: 'SUPERMERCADO XYZ LOJA 123' },
+      existing: [{ id: 't1', amountCents: 7500, occurredOn: '2026-11-05', type: 'EXPENSE' as const, description: 'Mercado da esquina' }],
+      status: 'MATCHED_AUTO', txId: 't1',
+    },
+    {
+      desc: '2+ candidatos empatados → AMBIGUOUS (usuário decide, não amarra sozinho)',
+      line: { fitid: '2', postedOn: '2026-11-05', amountCents: -5000, memo: 'MERCADO' },
+      existing: mesmosValores,
+      status: 'AMBIGUOUS', txId: null,
+    },
+    {
+      desc: 'Sem candidato com valor/data → NEW_TX (memo sozinho NUNCA cria match)',
+      line: { fitid: '3', postedOn: '2026-11-05', amountCents: -7500, memo: 'Mercado' },
+      existing: [{ id: 't1', amountCents: 7501, occurredOn: '2026-11-05', type: 'EXPENSE' as const, description: 'Mercado' }],
+      status: 'NEW_TX', txId: null,
+    },
+  ])('$desc', ({ line, existing, status, txId }) => {
+    const r = matchOfxLine(line, existing);
+    expect(r.status).toBe(status);
+    expect(r.txId).toBe(txId);
   });
 });
