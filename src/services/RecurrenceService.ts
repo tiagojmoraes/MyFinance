@@ -89,9 +89,19 @@ export class RecurrenceService {
     }
   }
 
-  /** Executa todas as regras ativas até o mês atual. Idempotente (pode rodar N vezes).
-   *  v68 "Repetir": regras BIMESTRAL/TRIMESTRAL/SEMESTRAL/ANUAL só geram nos
-   *  meses da cadência; SEMANAL itera de 7 em 7 dias a partir do início. */
+  /**
+   * v22 (DESEMPENHO): candidatos calculados EM MEMÓRIA — o padrão da v86 do
+   * forecast, agora no sweep: 2 leituras + 1 transação POR REGRA, em vez de
+   * 3 consultas por mês desde o início da regra (uma fixa semanal de 2 anos
+   * fazia ~312 consultas por sweep). Idempotente pela chave
+   * REC:{ruleId}:{YYYY-MM} e pelo ref por DATA REC:{ruleId}:D:{YYYY-MM-DD}
+   * das semanais (uq_tx_source_ref).
+   * v68 "Repetir": cadências BIMESTRAL+ geram só nos meses delas; SEMANAL
+   * itera de 7 em 7 dias. v87: ocorrência anterior ao início da regra não
+   * nasce; o "Não Pago" (payment_hold) do usuário não é promovido.
+   * v22 (ROBUSTEZ): falha numa regra não derruba o lote — as demais seguem
+   * (antes, a exceção abortava o sweep e as regras seguintes não rodavam).
+   */
   async runDueRecurrences(today?: string): Promise<RunRecurrencesResult> {
     const todayYmd = today ?? todaySP();
     const currentMonth = monthOf(todayYmd);
@@ -103,47 +113,87 @@ export class RecurrenceService {
       result.processedRules++;
       const { stepMonths, stepDays } = this.stepOf(rule);
 
+      // ---------- 1) CANDIDATOS VENCIDOS (só memória) ----------
+      // `conta` = candidato SEMANAL, que sempre contou skippedMonths quando
+      // não criava nem promovia.
+      const candidates: Array<{ month: string; ymd: string; ref: string; conta: boolean }> = [];
       if (stepDays) {
-        // ---------- SEMANAL: uma ocorrência a cada step_days, pelo dia exato ----------
         let ymd = rule.start_date;
         let guard = 0;
         while (ymd <= todayYmd && !(rule.end_date && ymd > rule.end_date) && guard < 600) {
           guard++;
-          const created = await this.ensureMonthTransaction(rule, monthOf(ymd), ymd, `REC:${rule.id}:D:${ymd}`);
-          if (created) result.createdTransactions++; else result.skippedMonths++;
+          candidates.push({ month: monthOf(ymd), ymd, ref: `REC:${rule.id}:D:${ymd}`, conta: true });
           ymd = addDays(ymd, stepDays);
         }
-        continue;
+      } else {
+        const endMonth = rule.end_date ? monthOf(rule.end_date) : currentMonth;
+        let month = monthOf(rule.start_date);
+        let guard = 0;
+        while (month <= currentMonth && month <= endMonth && guard < 120) {
+          guard++;
+          if (!this.isCadenceMonth(rule, month, stepMonths)) {
+            month = monthAdd(month, 1);
+            continue;
+          }
+          const day = Math.min(rule.day_of_month, lastDayNumberOf(month));
+          const ymd = dayInMonth(month, day);
+          // v87 (BUG MÉDIA): regra criada dia 20/01 com vencimento dia 5 gerava
+          // uma ocorrência em 05/01 — ANTES da regra existir. Não nasce.
+          if (ymd < rule.start_date) {
+            result.skippedMonths++;
+            month = monthAdd(month, 1);
+            continue;
+          }
+          if (ymd > todayYmd || (rule.end_date && ymd > rule.end_date)) {
+            result.skippedMonths++;
+            month = monthAdd(month, 1);
+            continue;
+          }
+          candidates.push({ month, ymd, ref: `REC:${rule.id}:${month}`, conta: false });
+          month = monthAdd(month, 1);
+        }
       }
+      if (candidates.length === 0) continue;
 
-      const endMonth = rule.end_date ? monthOf(rule.end_date) : currentMonth;
-      let month = monthOf(rule.start_date);
-      let guard = 0;
-      while (month <= currentMonth && month <= endMonth && guard < 120) {
-        guard++;
-        if (!this.isCadenceMonth(rule, month, stepMonths)) {
-          month = monthAdd(month, 1);
-          continue;
-        }
-        const day = Math.min(rule.day_of_month, lastDayNumberOf(month));
-        const ymd = dayInMonth(month, day);
-        // v87 (BUG MÉDIA): regra criada dia 20/01 com vencimento dia 5 gerava
-        // uma ocorrência em 05/01 — ANTES da regra existir — e o valor entrava
-        // no saldo retroativamente. (o forecast já tinha essa guarda)
-        if (ymd < rule.start_date) {
-          result.skippedMonths++;
-          month = monthAdd(month, 1);
-          continue;
-        }
-        if (ymd > todayYmd || (rule.end_date && ymd > rule.end_date)) {
-          result.skippedMonths++;
-          month = monthAdd(month, 1);
-          continue;
-        }
+      // ---------- 2) ESTADO EXISTENTE (2 leituras por regra) ----------
+      const [existingRows, excludedRows] = await Promise.all([
+        this.db.getAllAsync<{ id: string; external_ref_id: string | null; status: string; payment_hold: number | null }>(
+          'SELECT id, external_ref_id, status, payment_hold FROM transactions WHERE recurrence_rule_id = ?',
+          [rule.id]
+        ),
+        this.db.getAllAsync<{ occurred_month: string }>(
+          'SELECT occurred_month FROM recurrence_exclusions WHERE rule_id = ?',
+          [rule.id]
+        ),
+      ]);
+      const existing = new Map(
+        existingRows.filter((r) => r.external_ref_id).map((r) => [r.external_ref_id as string, r])
+      );
+      const excluded = new Set(excludedRows.map((r) => r.occurred_month));
 
-        const created = await this.ensureMonthTransaction(rule, month, ymd);
-        if (created) result.createdTransactions++;
-        month = monthAdd(month, 1);
+      // ---------- 3) GRAVAÇÃO: 1 BEGIN/COMMIT POR REGRA ----------
+      try {
+        await this.db.transactionAsync(async () => {
+          for (const c of candidates) {
+            // exclusões: mês (mensal) ou data ('D:' — semanal, v87)
+            if (excluded.has(c.month) || excluded.has(`D:${c.ymd}`)) {
+              if (c.conta) result.skippedMonths++;
+              continue;
+            }
+            const ex = existing.get(c.ref);
+            if (!ex) {
+              await this.createOccurrence(rule, c.ymd, c.ref);
+              result.createdTransactions++;
+            } else if (ex.status === 'PENDING' && (ex.payment_hold ?? 0) !== 1) {
+              await this.promotePending(ex.id, rule, c.ymd);
+              result.createdTransactions++;
+            } else if (c.conta) {
+              result.skippedMonths++;
+            }
+          }
+        });
+      } catch (err) {
+        console.warn(`[RecurrenceService] sweep: regra ${rule.id} falhou (segue):`, err);
       }
     }
     return result;
@@ -186,8 +236,12 @@ export class RecurrenceService {
    * v86 (DESEMPENHO): os candidatos são calculados EM MEMÓRIA, o que já existe
    * vem em 2 leituras por regra (antes: 2 por mês) e a gravação inteira roda em
    * UMA transação por regra (antes: 1 BEGIN/COMMIT por mês — 24 por regra).
+   *  v22 (ESTOQUE): o horizonte PADRÃO cai de 24 para 3 meses — o estoque de
+   *  previsões paradas era o motor de crescimento de transactions (30 fixas =
+   *  ~720 linhas PENDING). Meses além disso nascem SOB DEMANDA quando o
+   *  usuário navega no Fluxo (ensureForecastThrough — idempotente, até 36).
    */
-  async runForecast(monthsAhead = 24, today?: string): Promise<RunForecastResult> {
+  async runForecast(monthsAhead = 3, today?: string): Promise<RunForecastResult> {
     const todayYmd = today ?? todaySP();
     const result: RunForecastResult = { processedRules: 0, createdForecast: 0 };
     const active = await this.rules.getActive();
@@ -278,63 +332,65 @@ export class RecurrenceService {
   }
 
 
-  /** Cria a transação do mês se ainda não existir (idempotente).
-   *  v9: ocorrência prevista (PENDING) que chegou ao vencimento é PROMOVIDA —
-   *  vira CONFIRMED e ganha o movimento financeiro (entra no saldo).
-   *  v10: meses EXCLUÍDOS pelo usuário (exclusão física) não são recriados.
-   *  v68: refKey permite ref por DATA (conta fixa SEMANAL). */
-  private async ensureMonthTransaction(rule: RecurrenceRuleRow, month: string, ymd: string, refKey?: string): Promise<boolean> {
-    if (await this.isMonthExcluded(rule.id, month)) return false;
-    // v87: exclusão POR DATA (conta fixa semanal) — só a ocorrência apagada
-    // fica de fora; as outras do mesmo mês continuam.
-    if (await this.isDateExcluded(rule.id, ymd)) return false;
-    const externalRef = refKey ?? `REC:${rule.id}:${month}`;
-    const existing = await this.transactions.findByExternalRef('RECURRENCE', externalRef);
-    if (existing) {
-      if (existing.status === 'PENDING') {
-        // v87 (BUG ALTA): o usuário pode marcar a ocorrência vencida como
-        // "Não Pago" — a promoção automática NÃO pode desfazer essa escolha
-        // (o saldo voltava a contar o valor sozinho no próximo abrir do app).
-        const hold = await this.db.getFirstAsync<{ payment_hold: number | null }>(
-          'SELECT payment_hold FROM transactions WHERE id = ?',
-          [existing.id]
-        );
-        if ((hold?.payment_hold ?? 0) === 1) return false;
-        return this.promotePending(existing.id, rule, ymd);
-      }
-      return false;
+  /** v22: criação crua da ocorrência EFETIVADA — CONFIRMED + movimento na
+   *  conta (ou item de fatura no cartão). Chamada dentro da transação do
+   *  sweep, já filtrada pelo chamador (candidato inexistente e não excluído).
+   *  Diferença do forecast (insertForecast): entra no saldo imediatamente. */
+  private async createOccurrence(rule: RecurrenceRuleRow, ymd: string, externalRef: string): Promise<void> {
+    const tx: TxRow = {
+      id: genId(),
+      kind: 'SIMPLE',
+      type: rule.type,
+      amount_cents: rule.amount_cents,
+      occurred_on: ymd,
+      occurred_at: noonUtcIsoOf(ymd),
+      description: rule.description,
+      category_id: rule.category_id ?? null,
+      account_id: rule.account_id,
+      transfer_account_id: null,
+      card_id: rule.card_id ?? null,
+      source_system: 'RECURRENCE',
+      external_ref_id: externalRef,
+      recurrence_rule_id: rule.id,
+      status: 'CONFIRMED',
+    };
+    await this.transactions.insert(tx);
+    if (rule.card_id) {
+      // v10: fixo em CARTÃO não gera move — a compra entra na FATURA do mês
+      await this.registerCardOccurrence(rule, tx.id, ymd);
+      return;
     }
+    const move: FinancialMoveRow = {
+      id: genId(),
+      transaction_id: tx.id,
+      installment_id: null,
+      invoice_payment_id: null,
+      account_id: rule.account_id!,
+      direction: rule.type === 'INCOME' ? 'CREDIT' : 'DEBIT',
+      amount_cents: rule.amount_cents,
+      effective_date: ymd,
+      status: 'CONFIRMED',
+    };
+    await this.moves.insert(move);
+  }
 
-    return this.db.transactionAsync(async () => {
-      // Double-check dentro da transação (proteção contra corrida)
-      const again = await this.transactions.findByExternalRef('RECURRENCE', externalRef);
-      if (again) return false;
-      const tx: TxRow = {
+  /** v9: promoção de previsão (PENDING) para efetivado (CONFIRMED + move/fatura).
+   *  v22: roda DENTRO da transação do sweep (antes abria a própria — o lote
+   *  do runDueRecurrences já está dentro de uma; transactionAsync aninha por
+   *  SAVEPOINT, mas dentro do lote o custo é desnecessário). */
+  private async promotePending(txId: string, rule: RecurrenceRuleRow, ymd: string): Promise<boolean> {
+    const moves = await this.moves.getByTransaction(txId);
+    const hasConfirmed = moves.some((m) => m.status === 'CONFIRMED');
+    await this.transactions.setStatus(txId, 'CONFIRMED');
+    if (rule.card_id) {
+      // v10: fixo em CARTÃO — garante o item na fatura (sem movimento)
+      await this.registerCardOccurrence(rule, txId, ymd);
+      return true;
+    }
+    if (!hasConfirmed) {
+      await this.moves.insert({
         id: genId(),
-        kind: 'SIMPLE',
-        type: rule.type,
-        amount_cents: rule.amount_cents,
-        occurred_on: ymd,
-        occurred_at: noonUtcIsoOf(ymd),
-        description: rule.description,
-        category_id: rule.category_id ?? null,
-        account_id: rule.account_id,
-        transfer_account_id: null,
-        card_id: rule.card_id ?? null,
-        source_system: 'RECURRENCE',
-        external_ref_id: externalRef,
-        recurrence_rule_id: rule.id,
-        status: 'CONFIRMED',
-      };
-      await this.transactions.insert(tx);
-      if (rule.card_id) {
-        // v10: fixo em CARTÃO não gera move — a compra entra na FATURA do mês
-        await this.registerCardOccurrence(rule, tx.id, ymd);
-        return true;
-      }
-      const move: FinancialMoveRow = {
-        id: genId(),
-        transaction_id: tx.id,
+        transaction_id: txId,
         installment_id: null,
         invoice_payment_id: null,
         account_id: rule.account_id!,
@@ -342,38 +398,9 @@ export class RecurrenceService {
         amount_cents: rule.amount_cents,
         effective_date: ymd,
         status: 'CONFIRMED',
-      };
-      await this.moves.insert(move);
-      return true;
-    });
-  }
-
-  /** v9: promoção de previsão (PENDING) para efetivado (CONFIRMED + move/fatura). */
-  private async promotePending(txId: string, rule: RecurrenceRuleRow, ymd: string): Promise<boolean> {
-    return this.db.transactionAsync(async () => {
-      const moves = await this.moves.getByTransaction(txId);
-      const hasConfirmed = moves.some((m) => m.status === 'CONFIRMED');
-      await this.transactions.setStatus(txId, 'CONFIRMED');
-      if (rule.card_id) {
-        // v10: fixo em CARTÃO — garante o item na fatura (sem movimento)
-        await this.registerCardOccurrence(rule, txId, ymd);
-        return true;
-      }
-      if (!hasConfirmed) {
-        await this.moves.insert({
-          id: genId(),
-          transaction_id: txId,
-          installment_id: null,
-          invoice_payment_id: null,
-          account_id: rule.account_id!,
-          direction: rule.type === 'INCOME' ? 'CREDIT' : 'DEBIT',
-          amount_cents: rule.amount_cents,
-          effective_date: ymd,
-          status: 'CONFIRMED',
-        });
-      }
-      return true;
-    });
+      });
+    }
+    return true;
   }
 
   /** v86: gravação crua da previsão (já filtrada pelo chamador - sem checagens
@@ -404,28 +431,6 @@ export class RecurrenceService {
     }
   }
 
-
-  /** v10: o mês foi excluído pelo usuário? (tabela recurrence_exclusions) */
-  private async isMonthExcluded(ruleId: string, month: string): Promise<boolean> {
-    const row = await this.db.getFirstAsync<{ n: number }>(
-      'SELECT COUNT(*) AS n FROM recurrence_exclusions WHERE rule_id = ? AND occurred_month = ?',
-      [ruleId, month]
-    );
-    return (row?.n ?? 0) > 0;
-  }
-
-  /**
-   * v87: a OCORRÊNCIA (data) foi excluída pelo usuário? A exclusão de uma
-   * conta fixa SEMANAL é POR DATA (chave 'D:AAAA-MM-DD') — as outras
-   * ocorrências do mesmo mês continuam existindo.
-   */
-  private async isDateExcluded(ruleId: string, ymd: string): Promise<boolean> {
-    const row = await this.db.getFirstAsync<{ n: number }>(
-      'SELECT COUNT(*) AS n FROM recurrence_exclusions WHERE rule_id = ? AND occurred_month = ?',
-      [ruleId, `D:${ymd}`]
-    );
-    return (row?.n ?? 0) > 0;
-  }
 
   async createRule(input: {
     description: string;
@@ -620,6 +625,9 @@ export class RecurrenceService {
     }
 
     // 2) PREVISÕES DOS MESES SEGUINTES (PENDING) — novo valor/dia/descrição.
+    //    v22 (DESEMPENHO): valor e descrição são IGUAIS para todas as
+    //    previsões — um único UPDATE em lote; o loop por linha fica só para
+    //    o reposicionamento de data e a regravação do item de fatura (cartão).
     const pendentes = await this.db.getAllAsync<{ id: string; occurred_on: string }>(
       `SELECT id, occurred_on FROM transactions
         WHERE recurrence_rule_id = ? AND status = 'PENDING' AND occurred_on >= ?`,
@@ -636,15 +644,28 @@ export class RecurrenceService {
       const novoAncora = reposiciona(curMonth);
       deltaDias = daysBetween(cur.occurred_on, novoAncora);
     }
-    for (const row of pendentes) {
-      const month = row.occurred_on.slice(0, 7);
-      const novoYmd = stepDays ? addDays(row.occurred_on, deltaDias) : reposiciona(month);
-      await syncOcorrencia(row.id, novoYmd, { confirmed: false });
-      if (novoYmd !== row.occurred_on) {
+    if (pendentes.length > 0) {
+      if (amountChanged || newDescription !== rule.description) {
         await this.db.runAsync(
-          'UPDATE transactions SET occurred_on = ?, occurred_at = ? WHERE id = ?',
-          [novoYmd, noonUtcIsoOf(novoYmd), row.id]
+          `UPDATE transactions SET amount_cents = ?, description = ?
+            WHERE recurrence_rule_id = ? AND status = 'PENDING' AND occurred_on >= ?`,
+          [newAmount, newDescription, id, dayInMonth(monthAdd(curMonth, 1), 1)]
         );
+      }
+      for (const row of pendentes) {
+        const month = row.occurred_on.slice(0, 7);
+        const novoYmd = stepDays ? addDays(row.occurred_on, deltaDias) : reposiciona(month);
+        if (rule.card_id) {
+          // Cartão: o item da fatura acompanha valor/data (idempotente; muda
+          // de fatura quando o novo dia cruza o fechamento).
+          await this.registerCardOccurrence(effectiveRule, row.id, novoYmd);
+        }
+        if (novoYmd !== row.occurred_on) {
+          await this.db.runAsync(
+            'UPDATE transactions SET occurred_on = ?, occurred_at = ? WHERE id = ?',
+            [novoYmd, noonUtcIsoOf(novoYmd), row.id]
+          );
+        }
       }
     }
   }

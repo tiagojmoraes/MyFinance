@@ -166,8 +166,14 @@ export async function runStartupRoutines(
     ['previsão da poupança', () => svc.savings.generateForecast()],
   ];
   for (const [nome, rodar] of rotinas) {
+    const t0 = Date.now();
     try {
       await rodar();
+      // v22 (OBSERVABILIDADE): rotina lenta aparece no log — o sweep das
+      // recorrências e o forecast são os primeiros suspeitos quando o nº de
+      // fixas/parcelados cresce.
+      const ms = Date.now() - t0;
+      if (ms > 250) console.info(`[services] arranque: ${nome} levou ${ms}ms`);
     } catch (err) {
       console.warn(`[services] arranque: ${nome} falhou (segue):`, err);
     }

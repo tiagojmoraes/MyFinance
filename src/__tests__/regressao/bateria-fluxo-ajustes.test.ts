@@ -463,7 +463,9 @@ describe('v68 LANÇAMENTO — seletor "Repetir" (Fixo e Parcelado)', () => {
       dayOfMonth: 1, startDate: `${curMonth()}-01`, accountId: acc, stepMonths: 3,
     });
     await services.recurrences.runDueRecurrences();
-    await services.recurrences.runForecast();
+    // v22: o default do forecast é 3 meses — para ver +6, o Fluxo materializa
+    // sob demanda (ensureForecastThrough), que é o caminho em produção.
+    await services.recurrences.ensureForecastThrough(monthAdd(curMonth(), 6));
     const months = await services.db.getAllAsync<{ m: string }>(
       `SELECT DISTINCT substr(occurred_on, 1, 7) AS m FROM transactions
         WHERE description = 'IPVA trimestral' ORDER BY m`

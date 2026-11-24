@@ -23,6 +23,13 @@ import { todaySP, monthOf, lastDayOfMonth, monthRange } from '../lib/dates';
 /** Subfiltro SQL reutilizável: movimento só conta DA ÂNCORA da própria conta em diante. */
 const ANCHOR_FILTER_FM = `AND fm.effective_date >= COALESCE(a_anchor.initial_balance_date, '0000-01-01')`; // v50: JOIN em vez de subquery correlacionada por linha (200 linhas = 200 subqueries antes)
 
+/** v22: filtro compartilhado das agregações de saldo — parcela EM ABERTO
+ *  (status PENDING) é previsão: o dinheiro ainda não saiu/entrou na conta, o
+ *  movimento dela não conta no efetivado (v87 alinhou o saldo da conta com o
+ *  Fluxo). Constante única no lugar de 3 cópias que podiam divergir. */
+const SQL_PARCELA_ABERTA_FORA =
+  " AND NOT EXISTS (SELECT 1 FROM installments i WHERE i.id = fm.installment_id AND i.status = 'PENDING')";
+
 export interface AccountBalance {
   accountId: string;
   name: string;
@@ -74,17 +81,9 @@ export class BalanceService {
       `SELECT
          COALESCE(SUM(CASE WHEN direction = 'CREDIT' THEN amount_cents ELSE 0 END), 0) AS credits,
          COALESCE(SUM(CASE WHEN direction = 'DEBIT' THEN amount_cents ELSE 0 END), 0) AS debits
-       FROM financial_moves
+       FROM financial_moves AS fm
        WHERE account_id = ? AND effective_date <= ? AND status = 'CONFIRMED'
-         AND effective_date >= COALESCE(?, '0000-01-01')
-         -- v87 (BUG MÉDIA): parcela em ABERTO (status PENDING) é PREVISÃO —
-         -- o dinheiro ainda não saiu da conta. O "efetivado" do Fluxo já
-         -- excluía essas parcelas; o saldo da conta incluía (e os dois
-         -- "saldos efetivados" não batiam para o mesmo dia).
-         AND NOT EXISTS (
-           SELECT 1 FROM installments i
-            WHERE i.id = financial_moves.installment_id AND i.status = 'PENDING'
-         )`,
+         AND effective_date >= COALESCE(?, '0000-01-01')${SQL_PARCELA_ABERTA_FORA}`,
       [accountId, date, account.initial_balance_date]
     );
     return (
@@ -110,13 +109,7 @@ export class BalanceService {
                ON fm.account_id = a.id
               AND fm.effective_date <= ?
               AND fm.effective_date >= COALESCE(a.initial_balance_date, '0000-01-01')
-              AND fm.status = 'CONFIRMED'
-              -- v87: parcela em ABERTO é previsão (o dinheiro não saiu) —
-              -- alinha o saldo geral com o "efetivado" do Fluxo.
-              AND NOT EXISTS (
-                SELECT 1 FROM installments i
-                 WHERE i.id = fm.installment_id AND i.status = 'PENDING'
-              )
+              AND fm.status = 'CONFIRMED'${SQL_PARCELA_ABERTA_FORA}
             WHERE a.include_in_general_balance = 1 AND a.archived_at IS NULL
             GROUP BY a.id
          )`,
@@ -147,13 +140,7 @@ export class BalanceService {
            ON fm.account_id = a.id
           AND fm.effective_date <= ?
           AND fm.effective_date >= COALESCE(a.initial_balance_date, '0000-01-01')
-          AND fm.status = 'CONFIRMED'
-          -- v87: parcela em ABERTO é previsão (o dinheiro não saiu) — alinha
-          -- o saldo da conta com o "efetivado" do Fluxo.
-          AND NOT EXISTS (
-            SELECT 1 FROM installments i
-             WHERE i.id = fm.installment_id AND i.status = 'PENDING'
-          )
+          AND fm.status = 'CONFIRMED'${SQL_PARCELA_ABERTA_FORA}
         WHERE a.archived_at IS NULL
         GROUP BY a.id
         ORDER BY a.name`,
