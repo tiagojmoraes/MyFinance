@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "opencode/minimax-m3.1-flash-free",
+  "small_model": "opencode/nemotron-3.5-lightning-free",
+  "agent": {
+    "planejador": {
+      "description": "Analisa e planeja",
+      "model": "deepseek-v4.1-flash-free",
+      "prompt": "Analise e planeje no formato do AGENTS.md §0. Não edite arquivos. Termine com \"Autoriza?\"."
+    },
+    "Executor": {
+      "description": "Executa o plano",
+      "model": "opencode/minimax-m3",
+      "prompt": "Execute só o plano autorizado, seguindo AGENTS.md §1 a §5."
+    }
+  }
+}

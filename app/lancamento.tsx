@@ -239,6 +239,9 @@ export default function LancamentoScreen() {
   const [date, setDate] = React.useState(todaySP());
   const [categoryId, setCategoryId] = React.useState<string | null>(null);
   const [modality, setModality] = React.useState<Modality>('AVISTA');
+  // v26 (menos é mais): o essencial (tipo, valor, descrição, data, categoria,
+  // conta/cartão) fica à vista; Fixo, Parcelado e Grupo ficam em "Mais opções".
+  const [moreOpen, setMoreOpen] = React.useState(false);
   // v68 "Repetir": cadência do Fixo/Parcelado (padrão Mensal = como sempre foi)
   const [repeat, setRepeat] = React.useState<Repeat>('MENSAL');
   const [installments, setInstallments] = React.useState('2');
@@ -1258,6 +1261,7 @@ export default function LancamentoScreen() {
   const isTransfer = kind === 'TRANSFER';
   const isConsolidated = kind === 'CONSOLIDATED';
   const isPlain = kind === 'EXPENSE' || kind === 'INCOME';
+  const advanced = moreOpen || modality !== 'AVISTA' || kind === 'CONSOLIDATED';
   const isEdit = editId != null;
   /** Edição de grupo: o formulário inclui cabeçalho e linhas. */
   const isEditGroup = isEdit && editKind === 'CONSOLIDATED';
@@ -1347,7 +1351,7 @@ export default function LancamentoScreen() {
             </Text>
           ) : (
             <View className="flex-row gap-1.5">
-              {(Object.keys(KIND_ICONS) as TxKind[]).map((k) => {
+              {(Object.keys(KIND_ICONS) as TxKind[]).filter((k) => advanced || k !== 'CONSOLIDATED').map((k) => {
                 const active = kind === k;
                 return (
                   <Pressable
@@ -1369,7 +1373,18 @@ export default function LancamentoScreen() {
             </View>
           )}
 
-          {isPlain && !isEdit ? (
+          {!isEdit && !advanced ? (
+            <Pressable
+              onPress={() => setMoreOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Mais opções: fixo, parcelado e grupo"
+              className="self-start py-1"
+            >
+              <Text className="text-sm font-medium text-slate-500">Mais opções {ICONS.expandir}</Text>
+            </Pressable>
+          ) : null}
+
+          {isPlain && !isEdit && advanced ? (
             <>
               <Segmented<Modality>
                 value={modality}

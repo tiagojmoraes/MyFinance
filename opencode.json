@@ -13,5 +13,13 @@
       "model": "opencode/minimax-m3",
       "prompt": "Execute só o plano autorizado, seguindo AGENTS.md §1 a §5."
     }
+  },
+  "mcp": {
+    "servers": {
+      "graphify": {
+        "type": "remote",
+        "url": "https://api.graphify.com/mcp"
+      }
+    }
   }
 }
