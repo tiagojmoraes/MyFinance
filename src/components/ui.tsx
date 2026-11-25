@@ -100,9 +100,11 @@ export function Screen({ title, subtitle, children, action, accent, accentTextCl
   );
 }
 
-export function Card({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+export function Card({ children, className = '', muted = false }: { children: React.ReactNode; className?: string; muted?: boolean }) {
   return (
-    <View className={`${theme.surface} ${theme.border} border rounded-2xl p-4 ${className}`}>
+    // v28: `muted` (liquidado) troca o fundo branco por cinza — NÃO somar bg-slate-50 à className,
+    // porque ele conflita com o bg-white do tema.
+    <View className={`${muted ? 'bg-slate-50' : theme.surface} ${theme.border} border rounded-2xl p-4 ${className}`}>
       {children}
     </View>
   );

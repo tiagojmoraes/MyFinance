@@ -74,7 +74,7 @@ export function LancamentoRowBase(a: LancamentoRowProps) {
       accessibilityLabel={a.longPress ? `Segurar para duplicar ${a.title}` : a.title}
       disabled={a.disabled}
     >
-      <Card className={`!py-3 ${a.dashed ? 'ml-3 border-dashed' : ''} ${a.settled ? 'bg-slate-50 border-slate-200' : (a.borderClass ?? '')}`}>
+      <Card muted={a.settled} className={`!py-3 ${a.dashed ? 'ml-3 border-dashed' : ''} ${a.settled ? '' : (a.borderClass ?? '')}`}>
         <View className="flex-row justify-between items-start gap-2">
           {a.arrow || a.icon ? (
             <Pressable

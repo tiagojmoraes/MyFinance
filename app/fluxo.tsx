@@ -971,9 +971,8 @@ export default function FluxoScreen() {
       disabled: tx.status === 'VOIDED',
       settled:
         tx.status === 'CONFIRMED' &&
-        (tx.type === 'INCOME' || tx.type === 'EXPENSE') &&
-        tx.kind === 'SIMPLE' &&
-        !tx.card_id,
+        (tx.type === 'TRANSFER' ||
+          ((tx.type === 'INCOME' || tx.type === 'EXPENSE') && tx.kind === 'SIMPLE' && !tx.card_id)),
       title: tx.description,
       voided: tx.status === 'VOIDED',
       subtitle:
@@ -1054,6 +1053,7 @@ export default function FluxoScreen() {
           },
           disabled: tx.status === 'VOIDED',
           voided: tx.status === 'VOIDED',
+          settled: tx.status !== 'VOIDED' && !!groupStatusInfo(grp, childrenMap[tx.id] ?? [])?.allDone,
           title: tx.description,
           // v88 (BUG): a data exibida é a DO MÊS VISTO (não a do lançamento) —
           // antes, ao passar os meses, a data ficava presa na data original.
@@ -1116,7 +1116,7 @@ export default function FluxoScreen() {
         }}
         onBodyPress={() => router.push(`/cartoes/${inv.cardId}/fatura/${inv.referenceMonth}`)}
         title={`${ICONS.cartoes} Fatura ${inv.cardName}`}
-        voided={paid}
+        settled={paid}
         subtitle={`Vence ${ymdToBr(inv.dueDate)} · ${inv.items.length} lançamento(s) ${paid ? '· quitada' : '· total − antecipados'}`}
         chips={
           <>
@@ -1125,8 +1125,8 @@ export default function FluxoScreen() {
           </>
         }
         amount={`−${formatBRL(inv.dueCents)}`}
-        amountClass={paid ? 'text-slate-400 line-through' : 'text-rose-600'}
-        borderClass={paid ? 'border-slate-200' : 'border-rose-300'}
+        amountClass={paid ? undefined : 'text-rose-600'}
+        borderClass={paid ? undefined : 'border-rose-300'}
         footerOpen={isOpen}
         footer={
           inv.items.length === 0 ? (
