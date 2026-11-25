@@ -64,7 +64,7 @@ function Group({ icon, title, summary, children, defaultOpen = false }: {
         <View className="flex-1">
           <Text className="text-sm font-bold uppercase tracking-wide text-slate-800">{title}</Text>
           {!open && summary ? (
-            <Text className="text-[11px] text-slate-500 mt-0.5" numberOfLines={1}>{summary}</Text>
+            <Text className="text-xs text-slate-500 mt-0.5" numberOfLines={1}>{summary}</Text>
           ) : null}
         </View>
       </Pressable>
@@ -329,10 +329,10 @@ export default function AjustesScreen() {
         defaultOpen
       >
         {/* 1) ATALHOS NA TELA INICIAL — seção AÇÕES RÁPIDAS da tela inicial. */}
-        <Text className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+        <Text className="text-xs font-semibold uppercase tracking-wide text-slate-400">
           Atalhos na tela inicial
         </Text>
-        <Text className="text-[11px] text-slate-500 -mt-1">
+        <Text className="text-xs text-slate-500 -mt-1">
           Escolha o que aparece na seção AÇÕES RÁPIDAS da tela inicial:
         </Text>
         {/* v72: o toggle NFC-e SAIU — ler nota é só pelo Novo Lançamento (botão QR).
@@ -363,10 +363,10 @@ export default function AjustesScreen() {
             v90 (MELHORIA): antes essa seção vinha misturada com os atalhos,
             dando a impressão (errada) de que todos os toggles controlavam a
             tela inicial. Agora a separação é clara. */}
-        <Text className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 -mt-0">
+        <Text className="text-xs font-semibold uppercase tracking-wide text-slate-400 -mt-0">
           Tela de Fluxo
         </Text>
-        <Text className="text-[11px] text-slate-500 -mt-1">
+        <Text className="text-xs text-slate-500 -mt-1">
           Escolha o que aparece como card na tela do Fluxo:
         </Text>
         <ToggleRow
@@ -403,12 +403,12 @@ export default function AjustesScreen() {
         summary={backups.length > 0 ? `${backups.length} backup(s) no dispositivo` : 'Nenhum backup ainda'}
       >
         <Button label="Criar Backup agora" onPress={backupNow} />
-        <Text className="text-[11px] text-slate-500">
+        <Text className="text-xs text-slate-500">
           Copia todos os dados do app para um arquivo seguro que você pode guardar ou levar para outro aparelho.
         </Text>
         <View className="border-t border-dashed border-slate-100" />
         <Button label="Restaurar Dados" variant="danger" onPress={restore} />
-        <Text className="text-[11px] text-slate-500">
+        <Text className="text-xs text-slate-500">
           A restauração substitui o banco atual: depois de concluir, feche e reabra o app.
         </Text>
         {backups.length > 0 ? (
@@ -429,7 +429,7 @@ export default function AjustesScreen() {
         summary="Limpar lançamentos · começar do zero"
       >
         <Button label={`${ICONS.excluir} Limpar lançamento e movimentações`} variant="outline" onPress={() => setClearConfirmOpen(true)} loading={resetting} />
-        <Text className="text-[11px] text-slate-500">
+        <Text className="text-xs text-slate-500">
           Apaga TODOS os lançamentos e movimentações (inclusive as NFC-e salvas). Cartões, Contas e Categorias continuam guardados. Não dá para desfazer — crie um backup antes.
         </Text>
 
@@ -443,7 +443,7 @@ export default function AjustesScreen() {
           onPress={() => setResetConfirmOpen(true)}
           loading={resetting}
         />
-        <Text className="text-[11px] text-slate-500">
+        <Text className="text-xs text-slate-500">
           Apaga TUDO na hora (lançamentos, contas, cartões, NFC-e, despensa). As categorias que você cadastrou continuam — o app não cria categoria nenhuma sozinho. Não dá para desfazer.
         </Text>
       </Group>

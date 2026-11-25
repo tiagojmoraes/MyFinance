@@ -122,7 +122,6 @@ export default function ListaCompraNovaScreen() {
     setSaving(true);
     try {
       await services.shoppingList.create(listName, rows);
-      showToast('Lista criada');
       bump();
       router.back();
     } catch (err) {
@@ -181,7 +180,7 @@ export default function ListaCompraNovaScreen() {
                 <Text className={`text-sm font-medium ${nameColor}`} numberOfLines={1}>
                   {item.name}
                 </Text>
-                <Text className="text-[11px] text-slate-400">
+                <Text className="text-xs text-slate-400">
                   {formatStockQty(item.base_unit, item.quantity_base)}{item.isLow ? ' · ⚠ estoque baixo' : ''}
                 </Text>
               </View>

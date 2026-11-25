@@ -202,7 +202,7 @@ export default function ProdutosScreen() {
         ) : (
           <Card className="!py-3 border-amber-300">
             <Text className={`font-bold ${theme.primaryText}`}>Pendentes de classificação ({pending.length})</Text>
-            <Text className="text-[11px] text-slate-500 mt-0.5">
+            <Text className="text-xs text-slate-500 mt-0.5">
               Toque em "＋ Criar produto" para classificar 1 vez — só então o produto entra na Despensa ou na Lista de Compra.
             </Text>
             <View className="mt-2 gap-2">
@@ -210,7 +210,7 @@ export default function ProdutosScreen() {
                 <PendingRow key={g.groupKey} group={g} onCreateNew={() => router.push(`/produtos/novo?pending=${encodeURIComponent(JSON.stringify({
                   description: g.sampleDescription, cnpj: g.cnpj, storeName: g.storeName, storeProductCode: g.storeProductCode, itemId: g.sampleItemId,
                 }))}`)} onIgnore={async () => {
-                  try { await services.nfce.ignorePendingBatch({ cnpj: g.cnpj, storeProductCode: g.storeProductCode }); showToast('Movido para Inativo|Excluído'); bump(); }
+                  try { await services.nfce.ignorePendingBatch({ cnpj: g.cnpj, storeProductCode: g.storeProductCode });bump(); }
                   catch (e) { showToast(e instanceof Error ? e.message : String(e), 'err'); }
                 }} />
               ))}
@@ -238,13 +238,13 @@ export default function ProdutosScreen() {
             {ignoredFiltered.length > 0 ? (
               <Card className="!py-3 border-slate-300 mt-3">
                 <Text className={`font-bold ${theme.primaryText}`}>Ignorados da NF (não é produto)</Text>
-                <Text className="text-[11px] text-slate-500 mt-0.5">
+                <Text className="text-xs text-slate-500 mt-0.5">
                   Toque em "Restaurar" para voltarem a perguntar na próxima nota desta loja.
                 </Text>
                 <View className="mt-2 gap-2">
                   {ignoredFiltered.map((r) => (
                     <IgnoredRuleRow key={r.id} rule={r} onRestore={async () => {
-                      try { await services.nfce.restoreIgnoreRule(r.id); showToast('Regra restaurada'); bump(); }
+                      try { await services.nfce.restoreIgnoreRule(r.id);bump(); }
                       catch (e) { showToast(e instanceof Error ? e.message : String(e), 'err'); }
                     }} />
                   ))}
@@ -327,7 +327,7 @@ const ProductCard = React.memo(function ProductCard({ product, categoryLabel, st
           <View className="flex-1">
             <Text className="font-semibold text-slate-900">{displayProductName(product.name)}</Text>
             <Text className="text-xs text-slate-500 mt-0.5">{categoryLabel}</Text>
-            <Text className="text-[11px] text-slate-500 mt-0.5">
+            <Text className="text-xs text-slate-500 mt-0.5">
               {unitLabel}{inactive ? ' · Inativo' : ''}
             </Text>
             {hasStock ? (
@@ -335,7 +335,7 @@ const ProductCard = React.memo(function ProductCard({ product, categoryLabel, st
             ) : null}
             <View className="mt-1">
               <View className={`self-start px-2 py-0.5 rounded-full ${hasStock ? 'bg-emerald-50' : 'bg-slate-100'}`}>
-                <Text className={`text-[10px] font-semibold ${hasStock ? 'text-emerald-700' : 'text-slate-600'}`}>
+                <Text className={`text-xs font-semibold ${hasStock ? 'text-emerald-700' : 'text-slate-600'}`}>
                   {hasStock ? 'Com controle' : 'Sem controle'}
                 </Text>
               </View>
@@ -364,7 +364,7 @@ const PendingRow = React.memo(function PendingRow({ group, onCreateNew, onIgnore
   return (
     <View className="border border-slate-200 rounded-lg p-3 bg-white">
       <Text className="font-medium text-slate-900">{sampleName}</Text>
-      <Text className="text-[11px] text-slate-500 mt-0.5">
+      <Text className="text-xs text-slate-500 mt-0.5">
         {group.storeName ?? 'Loja'}{group.storeProductCode ? ` · código ${group.storeProductCode}` : ''} · {group.n} item(ns) desta nota
       </Text>
       <View className="mt-2 flex-row gap-2">
@@ -384,7 +384,7 @@ const IgnoredRuleRow = React.memo(function IgnoredRuleRow({ rule, onRestore }: {
   return (
     <View className="border border-slate-200 rounded-lg p-3 bg-white">
       <Text className="font-medium text-slate-900">{desc}</Text>
-      <Text className="text-[11px] text-slate-500 mt-0.5">
+      <Text className="text-xs text-slate-500 mt-0.5">
         {rule.store_name ?? 'Loja'}{rule.store_product_code ? ` · código ${rule.store_product_code}` : ''}
       </Text>
       <View className="mt-2 flex-row">

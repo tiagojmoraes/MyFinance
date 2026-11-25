@@ -115,7 +115,7 @@ export function NfceManualInput({ onSubmit, busy, tone = 'light', recentInputs, 
       {/* v40 — HISTÓRICO: as últimas notas consultadas, um toque para repetir */}
       {recentInputs && recentInputs.length > 0 && onUseRecent ? (
         <View className="gap-1">
-          <Text className={`${hint} text-[11px] font-semibold`}>Últimas consultas (toque para repetir):</Text>
+          <Text className={`${hint} text-xs font-semibold`}>Últimas consultas (toque para repetir):</Text>
           <View className="flex-row flex-wrap gap-1.5">
             {recentInputs.map((r, i) => (
               <Pressable
@@ -126,7 +126,7 @@ export function NfceManualInput({ onSubmit, busy, tone = 'light', recentInputs, 
                 accessibilityRole="button"
                 accessibilityLabel={`Reconsultar ${recentLabel(r)}`}
               >
-                <Text className={`text-[11px] font-semibold ${dark ? 'text-slate-200' : 'text-slate-700'}`} numberOfLines={1}>
+                <Text className={`text-xs font-semibold ${dark ? 'text-slate-200' : 'text-slate-700'}`} numberOfLines={1}>
                   🕘 {recentLabel(r)}
                 </Text>
               </Pressable>
@@ -134,7 +134,7 @@ export function NfceManualInput({ onSubmit, busy, tone = 'light', recentInputs, 
           </View>
         </View>
       ) : null}
-      <Text className={`${hint} text-[11px] leading-4`}>
+      <Text className={`${hint} text-xs leading-4`}>
         Garantia sem câmera: escaneie o QR com a câmera do próprio celular, copie o link que abrir no navegador e toque em "Colar e consultar" — ou digite a chave de 44 dígitos que está na nota.
       </Text>
     </View>

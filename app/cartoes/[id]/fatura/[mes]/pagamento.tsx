@@ -105,7 +105,7 @@ export default function RegistrarPagamentoScreen() {
               selectedId={accountId}
               onSelect={setAccountId}
             />
-            <Text className="text-[11px] text-slate-500 -mt-1">
+            <Text className="text-xs text-slate-500 -mt-1">
               Obrigatória — o pagamento debita esta conta na data de hoje.
             </Text>
 

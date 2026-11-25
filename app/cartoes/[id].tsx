@@ -222,7 +222,7 @@ export default function CartaoDetalheScreen() {
           <Pressable onPress={() => nextOpen && router.push(`/cartoes/${id}/fatura/${nextOpen.referenceMonth}`)}>
             <View className="flex-row justify-between items-center gap-2">
               <View className="flex-1">
-                <Text className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Próxima fatura em aberto</Text>
+                <Text className="text-xs font-semibold uppercase tracking-wide text-slate-400">Próxima fatura em aberto</Text>
                 <Text className="text-xs text-slate-500 mt-0.5">
                   {nextOpen ? `${monthLabel(nextOpen.referenceMonth)} · toque para abrir` : 'Nenhuma fatura em aberto neste cartão'}
                 </Text>
@@ -232,7 +232,7 @@ export default function CartaoDetalheScreen() {
                   {formatBRL(nextOpen?.dueCents ?? 0)}
                 </Text>
                 {nextOpen ? <Badge status={nextOpen.liveStatus} /> : (
-                  <Text className="text-[10px] font-semibold text-slate-400">Sem fatura em aberto</Text>
+                  <Text className="text-xs font-semibold text-slate-400">Sem fatura em aberto</Text>
                 )}
               </View>
             </View>
@@ -267,7 +267,7 @@ export default function CartaoDetalheScreen() {
                 <Text className="text-rose-600 font-semibold text-sm">{ICONS.excluir} Excluir cartão</Text>
               </Pressable>
             ) : (
-              <Text className="text-[11px] text-slate-400 leading-4">
+              <Text className="text-xs text-slate-400 leading-4">
                 Este cartão possui movimentações (compras/pagamentos) — exclusão bloqueada; use ARQUIVAR.
               </Text>
             )}

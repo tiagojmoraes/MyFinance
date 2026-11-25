@@ -185,7 +185,7 @@ export default function ParcelamentosScreen() {
               {formatBRL(selectedDual.cost.totalCents)}{' '}
               <Text className="text-xs font-medium text-slate-500">na compra de {ymdToBr(selectedDual.cost.occurredOn)}</Text>
             </Text>
-            <Text className="text-[11px] text-amber-600 mt-1">Regra de ouro: nunca somar fluxo e custo no mesmo relatório.</Text>
+            <Text className="text-xs text-amber-600 mt-1">Regra de ouro: nunca somar fluxo e custo no mesmo relatório.</Text>
           </Card>
           <Card>
             <Text className="text-xs font-semibold uppercase text-slate-500 mb-2">Fluxo mensal (caixa)</Text>

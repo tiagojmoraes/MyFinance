@@ -222,7 +222,7 @@ export default function ContasScreen() {
                   <Text className="text-rose-600 font-semibold text-sm">{ICONS.excluir} Excluir</Text>
                 </Pressable>
               ) : (
-                <Text className="flex-1 text-[11px] text-slate-400 leading-4">
+                <Text className="flex-1 text-xs text-slate-400 leading-4">
                   Possui {'movimentações ou saldo'} — exclusão bloqueada; use ARQUIVAR.
                 </Text>
               )}
@@ -265,7 +265,7 @@ export default function ContasScreen() {
         </>
       ) : null}
 
-      <Text className="text-[11px] text-slate-400 text-center px-6">
+      <Text className="text-xs text-slate-400 text-center px-6">
         {ICONS.arquivar} Arquivar esconde a conta das escolhas de lançamento e do saldo geral, preservando o histórico. O "＋" abre a tela de cadastramento.
       </Text>
 

@@ -6,14 +6,15 @@
  * v67: o esqueleto saiu do corpo da tela e virou COMPONENTE — agora as linhas
  * de Orçamento e Poupança (cards aglutinados v42) usam O MESMO layout do
  * Consolidado/Fatura/Parcela: [setinha] [pictograma] título / detalhes / chips
- * à esquerda; VALOR + Alterar/Excluir sempre nos MESMOS pontos à
- * direita. Filhos de grupo mudam só o recuo tracejado. Proibido conceito
+ * à esquerda; VALOR sempre no MESMO ponto à direita. v25: Alterar/Duplicar/
+ * Excluir saíram da linha — tocar na linha abre a folha de ações. Filhos de grupo mudam só o recuo tracejado. Proibido conceito
  * duplo: nenhuma tela do Fluxo monta card de linha à mão.
  */
 
 import React from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { Card } from './ui';
+import { ConfirmDialog, type DialogButton } from './ConfirmDialog';
 import { ICONS } from '../theme/icons';
 
 export interface LancamentoRowProps {
@@ -51,6 +52,19 @@ export interface LancamentoRowProps {
 
 export function LancamentoRowBase(a: LancamentoRowProps) {
   const { footerOpen = true } = a;
+  const [sheet, setSheet] = React.useState(false);
+  const hasActions = !a.disabled && !!(a.onAlterar || a.onExcluir || a.longPress);
+  const onlyAlterar = !!a.onAlterar && !a.onExcluir && !a.longPress;
+  const run = (fn?: (() => void) | null) => {
+    setSheet(false);
+    if (fn) setTimeout(fn, 150); // deixa a folha fechar antes de abrir outra caixa/tela
+  };
+  const sheetButtons: DialogButton[] = [];
+  if (a.onAlterar) sheetButtons.push({ label: 'Alterar', color: 'gray', onPress: () => run(a.onAlterar) });
+  if (a.longPress) sheetButtons.push({ label: 'Duplicar', color: 'gray', onPress: () => run(a.longPress) });
+  if (a.onExcluir) sheetButtons.push({ label: 'Excluir', color: 'red', onPress: () => run(a.onExcluir) });
+  const bodyPress =
+    a.onBodyPress ?? (hasActions ? (onlyAlterar ? a.onAlterar! : () => setSheet(true)) : undefined);
   const arrowBoxClass = a.arrow?.tone === 'rose' ? 'bg-rose-50' : 'bg-violet-50';
   const arrowTextClass = a.arrow?.tone === 'rose' ? 'text-rose-700' : 'text-violet-700';
   return (
@@ -74,7 +88,12 @@ export function LancamentoRowBase(a: LancamentoRowProps) {
               </Text>
             </Pressable>
           ) : null}
-          <Pressable onPress={a.onBodyPress ?? undefined} disabled={!a.onBodyPress} className="flex-1">
+          <Pressable
+            onPress={bodyPress}
+            disabled={!bodyPress}
+            accessibilityLabel={hasActions && !a.onBodyPress ? `Ações de ${a.title}` : undefined}
+            className="flex-1"
+          >
             {/* v10: descrição SEM truncamento — sempre legível por inteiro */}
             <Text className={`font-semibold ${a.settled ? 'text-slate-400' : 'text-slate-900'} ${a.voided ? 'line-through text-slate-400' : ''}`}>
               {a.title}
@@ -96,30 +115,11 @@ export function LancamentoRowBase(a: LancamentoRowProps) {
           </Pressable>
           <View className="items-end gap-1">
             <Text className={`font-bold ${a.settled ? 'text-slate-400' : (a.amountClass ?? 'text-slate-900')}`}>{a.amount}</Text>
-            {!a.disabled ? (
-              <View className="flex-row gap-1">
-                {a.onAlterar ? (
-                  <Pressable
-                    onPress={a.onAlterar}
-                    accessibilityLabel={`Alterar ${a.title}`}
-                    className="px-2 py-1 rounded-lg bg-slate-100"
-                  >
-                    <Text className="text-xs font-semibold text-slate-600">Alterar</Text>
-                  </Pressable>
-                ) : null}
-                {a.onExcluir ? (
-                  <Pressable
-                    onPress={a.onExcluir}
-                    accessibilityLabel={`Excluir ${a.title}`}
-                    className="px-2 py-1 rounded-lg bg-rose-50"
-                  >
-                    <Text className="text-xs font-semibold text-rose-600">Excluir</Text>
-                  </Pressable>
-                ) : null}
-              </View>
-            ) : null}
           </View>
         </View>
+        {sheet ? (
+          <ConfirmDialog visible title={a.title} hint={null} buttons={sheetButtons} onClose={() => setSheet(false)} />
+        ) : null}
         {a.footer && footerOpen ? (
           <View className="mt-2 gap-1 border-t border-dashed border-slate-200 pt-2">{a.footer}</View>
         ) : null}

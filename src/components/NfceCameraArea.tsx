@@ -122,7 +122,7 @@ export function NfceCameraArea({ onScan, busy, tone = 'light', style }: {
           Toque abaixo e ative: Ajustes do Android → Apps → MyFinance → Permissões → Câmera → Permitir.
         </Text>
         <Button label="Abrir Ajustes do app" onPress={() => Linking.openSettings()} />
-        <Text className={`${diagText} text-[10px]`}>
+        <Text className={`${diagText} text-xs`}>
           Diagnóstico: permissão={permission.status} · pode pedir de novo=não
         </Text>
       </View>
@@ -143,7 +143,7 @@ export function NfceCameraArea({ onScan, busy, tone = 'light', style }: {
       <Pressable onPress={() => Linking.openSettings()}>
         <Text className="text-sky-600 font-semibold text-sm underline">Abrir Ajustes do app</Text>
       </Pressable>
-      <Text className={`${diagText} text-[10px]`}>
+      <Text className={`${diagText} text-xs`}>
         Diagnóstico: permissão={permission.status} · pode pedir de novo=sim
       </Text>
     </View>

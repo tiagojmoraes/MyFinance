@@ -175,7 +175,7 @@ function AmbiguousCard({ line, services, reload }: {
           <View key={c.id} className="flex-row justify-between items-center py-1.5 border-b border-slate-100 last:border-0">
             <View className="flex-1">
               <Text className="text-sm text-slate-800" numberOfLines={1}>{c.description}</Text>
-              <Text className="text-[11px] text-slate-500">{ymdToBr(c.occurred_on)} · {formatBRL(c.amount_cents)}</Text>
+              <Text className="text-xs text-slate-500">{ymdToBr(c.occurred_on)} · {formatBRL(c.amount_cents)}</Text>
             </View>
             <Text
               className="text-xs font-bold text-emerald-700 bg-emerald-50 rounded-lg px-2.5 py-1.5"
@@ -259,7 +259,7 @@ function NfceSuggestionBox({ line, onLink }: {
               {s.store_name ?? s.description} · {ymdToBr(s.occurred_on)} · {formatBRL(s.amount_cents)}
             </Text>
             {s.account_name ? (
-              <Text className="text-[11px] text-slate-500" numberOfLines={1}>
+              <Text className="text-xs text-slate-500" numberOfLines={1}>
                 lançada em: {s.account_name} — ao vincular, o lançamento vai para a conta do extrato
               </Text>
             ) : null}

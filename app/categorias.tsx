@@ -142,7 +142,7 @@ export default function CategoriasScreen() {
           accessibilityLabel={`Desarquivar ${c.name}`}
           className="bg-emerald-50 rounded-lg px-2 py-1.5"
         >
-          <Text className="text-[11px] font-semibold text-emerald-700">Desarquivar</Text>
+          <Text className="text-xs font-semibold text-emerald-700">Desarquivar</Text>
         </Pressable>
       );
     }
@@ -154,7 +154,7 @@ export default function CategoriasScreen() {
           accessibilityLabel={`Arquivar ${c.name}`}
           className="bg-slate-100 rounded-lg px-2 py-1.5"
         >
-          <Text className="text-[11px] font-semibold text-slate-600">{ICONS.arquivar} Arquivar</Text>
+          <Text className="text-xs font-semibold text-slate-600">{ICONS.arquivar} Arquivar</Text>
         </Pressable>
       );
     }
@@ -165,7 +165,7 @@ export default function CategoriasScreen() {
         accessibilityLabel={`Excluir ${c.name}`}
         className="bg-rose-50 rounded-lg px-2 py-1.5"
       >
-        <Text className="text-[11px] font-semibold text-rose-600">{ICONS.excluir} Excluir</Text>
+        <Text className="text-xs font-semibold text-rose-600">{ICONS.excluir} Excluir</Text>
       </Pressable>
     );
   };
@@ -204,7 +204,7 @@ export default function CategoriasScreen() {
               <Text className="font-semibold text-slate-900 text-sm">
                 {isChild ? '↳ ' : ''}{c.name}
               </Text>
-              <Text className="text-[11px] text-slate-500">
+              <Text className="text-xs text-slate-500">
                 {c.direction === 'DEBIT' ? `${ICONS.despesa} Débito` : c.direction === 'CREDIT' ? `${ICONS.receita} Crédito` : 'Ambos'}
                 {' · '}tocar para editar
                 {!isChild && hasSubs && !isOpen ? ` · ${subs.length} subcategoria(s)` : ''}
@@ -226,7 +226,7 @@ export default function CategoriasScreen() {
                 accessibilityLabel={`Adicionar subcategoria em ${c.name}`}
                 className="bg-slate-100 rounded-lg px-2 py-1.5"
               >
-                <Text className="text-[11px] font-semibold text-slate-600">+ Subcategoria</Text>
+                <Text className="text-xs font-semibold text-slate-600">+ Subcategoria</Text>
               </Pressable>
             ) : null}
           </View>
@@ -308,7 +308,7 @@ export default function CategoriasScreen() {
         </>
       ) : null}
 
-      <Text className="text-[11px] text-slate-400 text-center px-6">
+      <Text className="text-xs text-slate-400 text-center px-6">
         {ICONS.arquivar} Categoria COM movimentação: só ARQUIVAR (histórico preservado, pode voltar). Sem nenhuma movimentação: EXCLUIR definitivamente. Arquivar a pai arquiva as subcategorias junto.
       </Text>
 

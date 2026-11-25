@@ -104,7 +104,6 @@ export default function OrcamentoScreen() {
     setBusy(true);
     try {
       await services.budgets.save(catId, amount);
-      showToast(editingId ? 'Orçamento atualizado' : 'Orçamento criado — vale todo mês até desativar');
       resetForm();
       bump();
       await load();
@@ -130,7 +129,6 @@ export default function OrcamentoScreen() {
     try {
       // v67 (BUG 4): padrão seguro — exclui SÓ o item; subitens ficam independentes.
       await services.budgets.removeWithStrategy(deleting.id, 'ONLY_THIS');
-      showToast('Orçamento excluído — subitens continuam como estão');
       setDeleting(null);
       bump();
       await load();
@@ -144,7 +142,6 @@ export default function OrcamentoScreen() {
     if (!deleting) return;
     try {
       const n = await services.budgets.removeWithStrategy(deleting.id, 'WITH_SUBITEMS');
-      showToast(`Orçamento excluído com ${Math.max(0, n - 1)} subitem(ns)`);
       setDeleting(null);
       bump();
       await load();
@@ -178,7 +175,7 @@ export default function OrcamentoScreen() {
             <Text
               key={c.id}
               onPress={() => setCatId(catId === c.id ? null : c.id)}
-              className={`text-[11px] px-2 py-1 rounded-full ${
+              className={`text-xs px-2 py-1 rounded-full ${
                 catId === c.id ? 'bg-emerald-600 text-white font-semibold' : 'bg-slate-100 text-slate-600'
               }`}
             >
@@ -238,7 +235,7 @@ export default function OrcamentoScreen() {
                 </Text>
               </View>
               <ProgressBar pct={it.pct} className="mt-1.5" />
-              <Text className="text-[11px] text-slate-500 mt-1">
+              <Text className="text-xs text-slate-500 mt-1">
                 Orçado {formatBRL(it.amountCents)} · gasto {formatBRL(it.spentCents)} · falta {formatBRL(it.remainingCents)} ({it.pct}%)
                 {it.partOfParent ? ' · compõe o item' : ''}
               </Text>

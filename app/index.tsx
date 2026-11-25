@@ -127,10 +127,7 @@ export default function HomeScreen() {
             <View className="flex-row justify-between items-center">
               <View>
                 <Text className="font-semibold text-slate-900">{acc.name}</Text>
-                <Text className="text-xs text-slate-500">
-                  {acc.type === 'CHECKING' ? 'Corrente' : acc.type === 'SAVINGS' ? 'Poupança' : 'Dinheiro'}
-                  {acc.includeInGeneral ? '' : ' (fora do saldo geral)'}
-                </Text>
+                {acc.includeInGeneral ? null : <Text className="text-xs text-slate-500">fora do saldo geral</Text>}
               </View>
               <Text className={`font-bold ${acc.balanceCents < 0 ? 'text-rose-600' : 'text-slate-900'}`}>
                 {formatBRL(acc.balanceCents)}
@@ -171,16 +168,16 @@ export default function HomeScreen() {
                     </Text>
                   </View>
                   <Text className="text-xs text-slate-500 mt-0.5">
-                    {c.hasInvoice
-                      ? `Fatura ${c.referenceMonth.split('-')[1]}/${c.referenceMonth.split('-')[0]} · fecha dia ${c.closingDay} · vence ${c.dueDate ? ymdToBr(c.dueDate) : '—'}`
-                      : `Fecha dia ${c.closingDay} · sem fatura no mês vigente`}
+                    {c.hasInvoice ? `vence ${c.dueDate ? ymdToBr(c.dueDate).slice(0, 5) : '—'}` : 'sem fatura no mês'}
                   </Text>
                   <View className="flex-row gap-1 mt-1 items-center flex-wrap">
-                    {c.hasInvoice && c.liveStatus ? <Badge status={c.liveStatus} /> : null}
+                    {c.hasInvoice && c.liveStatus && ['PAID', 'OVERDUE', 'PARTIALLY_PAID'].includes(c.liveStatus) ? (
+                      <Badge status={c.liveStatus} />
+                    ) : null}
                   </View>
                 </View>
                 <View className="items-end gap-0.5">
-                  <Text className="text-[10px] font-semibold uppercase text-slate-400">A pagar</Text>
+                  <Text className="text-xs font-semibold uppercase text-slate-400">A pagar</Text>
                   <Text
                     className={`font-bold ${
                       !c.hasInvoice ? 'text-slate-400' : c.dueCents > 0 ? 'text-rose-600' : 'text-emerald-600'
@@ -261,7 +258,7 @@ function ReservaChevron({ accName, accBalance, info, open, onToggle }: {
             const pct = it.targetCents > 0 ? Math.round((it.reservedCents / it.targetCents) * 100) : 0;
             return (
               <View key={it.itemId} className="gap-0.5">
-                <Text className="text-[11px] text-slate-700" numberOfLines={1}>
+                <Text className="text-xs text-slate-700" numberOfLines={1}>
                   {it.description} — total {formatBRL(it.targetCents)} · reservado {formatBRL(it.reservedCents)} · falta {formatBRL(falta)}
                 </Text>
                 <ProgressBar pct={pct} />

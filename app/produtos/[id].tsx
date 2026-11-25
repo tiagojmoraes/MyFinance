@@ -340,7 +340,7 @@ export default function ProdutoEditScreen() {
           <TextField label="Nome" value={name} onChangeText={setName} placeholder="Ex.: Café" />
           {isNew && suggestions.length > 0 ? (
             <View className="gap-1">
-              <Text className="text-[11px] text-slate-500">Já existe no catálogo — toque para usar:</Text>
+              <Text className="text-xs text-slate-500">Já existe no catálogo — toque para usar:</Text>
               {suggestions.map((s) => (
                 <Pressable key={s.id} onPress={() => applySuggestion(s.id)} accessibilityRole="button"
                   accessibilityLabel={`Usar ${s.name}`} className="bg-emerald-50 px-3 py-2 rounded-lg">
@@ -354,7 +354,7 @@ export default function ProdutoEditScreen() {
 
           {isNew && pendingEan ? (
             <View className="bg-slate-50 rounded-lg p-2">
-              <Text className="text-[10px] text-slate-500">EAN DA NF</Text>
+              <Text className="text-xs text-slate-500">EAN DA NF</Text>
               <Text className="font-medium text-slate-900">{pendingEan}</Text>
             </View>
           ) : null}
@@ -421,7 +421,7 @@ export default function ProdutoEditScreen() {
                   setStatus('ATIVO');
                 }
               }} />
-              <Text className="text-[11px] text-slate-400">Para inativar com saldo &gt; 0, zere o estoque na Despensa antes (a tela bloqueia).</Text>
+              <Text className="text-xs text-slate-400">Para inativar com saldo &gt; 0, zere o estoque na Despensa antes (a tela bloqueia).</Text>
             </>
           ) : null}
 

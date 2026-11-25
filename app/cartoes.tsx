@@ -68,7 +68,7 @@ export default function CartoesScreen() {
                 {card.name}{card.last_four_digits ? ` ••${card.last_four_digits}` : ''}
               </Text>
               {card.archived ? (
-                <Text className="text-[10px] font-semibold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
+                <Text className="text-xs font-semibold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
                   {ICONS.arquivar} ARQUIVADO
                 </Text>
               ) : null}
@@ -87,7 +87,7 @@ export default function CartoesScreen() {
             // v67 (BUG 6): sem fatura em aberto = R$ 0,00 explícito (não some com o valor)
             <View className="items-end gap-1">
               <Text className="font-bold text-slate-400">{formatBRL(0)}</Text>
-              <Text className="text-[10px] font-semibold text-slate-400">Sem fatura em aberto</Text>
+              <Text className="text-xs font-semibold text-slate-400">Sem fatura em aberto</Text>
             </View>
           )}
         </View>
@@ -125,7 +125,7 @@ export default function CartoesScreen() {
         </>
       ) : null}
 
-      <Text className="text-[11px] text-slate-400 text-center px-6">
+      <Text className="text-xs text-slate-400 text-center px-6">
         Toque em um cartão para ALTERAR (nome, dias, limite) e ARQUIVAR. Cartões com movimentação não podem ser excluídos. O "＋" abre a tela de cadastramento.
       </Text>
     </Screen>

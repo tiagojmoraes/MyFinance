@@ -233,7 +233,7 @@ export default function NfceScreen() {
                     {doc.amount_paid_cents != null ? ` · ${formatBRL(doc.amount_paid_cents)}` : ''}
                   </Text>
                   {doc.cnpj ? (
-                    <Text className="text-[11px] text-slate-400">CNPJ {doc.cnpj}</Text>
+                    <Text className="text-xs text-slate-400">CNPJ {doc.cnpj}</Text>
                   ) : null}
                 </View>
                 <View className="gap-1 items-end">

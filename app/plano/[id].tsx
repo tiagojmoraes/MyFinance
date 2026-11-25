@@ -161,7 +161,6 @@ export default function PlanoEditScreen() {
       }
       await services.installments.updatePlanFields(id, patch);
       bump();
-      showToast('Parcelamento atualizado');
       router.replace('/fluxo');
     } catch (err) {
       showToast(err instanceof Error ? err.message : String(err), 'err');
@@ -217,7 +216,7 @@ export default function PlanoEditScreen() {
               <MoneyInput label="Total restante (R$)" cents={divideTotalCents} onChangeCents={setDivideCents} />
             )}
             {previewParcelas ? (
-              <Text className="text-[11px] text-violet-700 bg-violet-50 rounded-lg px-2.5 py-1.5">{previewParcelas}</Text>
+              <Text className="text-xs text-violet-700 bg-violet-50 rounded-lg px-2.5 py-1.5">{previewParcelas}</Text>
             ) : null}
           </Card>
 
@@ -268,7 +267,7 @@ export default function PlanoEditScreen() {
           <View className="mt-3">
             <Card className="gap-1.5">
               <Text className="text-xs font-semibold uppercase text-slate-500">Resumo</Text>
-              <Text className="text-[11px] text-slate-500">
+              <Text className="text-xs text-slate-500">
                 {paidCount} paga(s) · {pendingCount} em aberto — a edição de valores/data/destino atinge apenas as em aberto; descrição, categoria e data da compra valem para o parcelamento inteiro.
               </Text>
             </Card>

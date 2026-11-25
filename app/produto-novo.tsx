@@ -63,7 +63,6 @@ export default function ProdutoNovoScreen() {
       const th = isKg ? parseKgToGrams(threshold) : parseInt(threshold, 10);
       const valid = isKg ? Number.isFinite(th) : Number.isInteger(th);
       await services.pantry.setLowThreshold(product.id, valid ? th : null);
-      showToast('Produto cadastrado');
       bump();
       router.back();
     } catch (err) {
@@ -99,7 +98,7 @@ export default function ProdutoNovoScreen() {
           </View>
         </View>
       </Card>
-      <Text className="text-[11px] text-slate-400 px-1">
+      <Text className="text-xs text-slate-400 px-1">
         O produto entra na Despensa como Com controle e Ativo. O EAN vem da NFC-e quando o item chega pela próxima nota — não é preciso digitar aqui.
       </Text>
     </Screen>

@@ -1340,7 +1340,7 @@ export default function LancamentoScreen() {
         <Card className="gap-3">
           <Text className={`text-sm font-medium ${theme.textMuted}`}>Tipo de operação</Text>
           {isEdit ? (
-            <Text className="text-[11px] text-slate-500 -mt-1">
+            <Text className="text-xs text-slate-500 -mt-1">
               {isEditGroup
                 ? 'Edite o grupo e suas linhas no mesmo formulário de criação.'
                 : 'No modo Alterar o tipo não muda — exclua e crie um novo caso precise de outro tipo.'}
@@ -1360,7 +1360,7 @@ export default function LancamentoScreen() {
                     }`}
                   >
                     <Text className="text-xl leading-6">{KIND_ICONS[k]}</Text>
-                    <Text className={`text-[10px] font-semibold ${active ? 'text-white' : theme.textMuted}`}>
+                    <Text className={`text-xs font-semibold ${active ? 'text-white' : theme.textMuted}`}>
                       {kindTheme[k].label}
                     </Text>
                   </Pressable>
@@ -1388,15 +1388,6 @@ export default function LancamentoScreen() {
                 <>
                   <Text className={`text-sm font-medium ${theme.textMuted}`}>Repetir</Text>
                   <RepeatButtons value={repeat} onChange={(v) => setRepeat(v)} tone={kind === 'INCOME' ? 'emerald' : 'rose'} />
-                  <Text className="text-[11px] text-slate-500 -mt-1">
-                    {modality === 'FIXO'
-                      ? repeat === 'SEMANAL'
-                        ? '📌 Fixo semanal: repete TODAS as semanas no dia da data. Em CONTA nasce efetivado e as próximas semanas aparecem no Fluxo como previsão. Em CARTÃO, a compra da semana entra na FATURA.'
-                        : '📌 Fixo por cadência: repete na frequência escolhida (mensal, bimestral, trimestral, semestral ou anual) no dia da data. Em CONTA nasce efetivado e os próximos aparecem no Fluxo como previsão. Em CARTÃO, a compra entra na FATURA.'
-                      : repeat === 'SEMANAL'
-                        ? '📦 Parcelado semanal: as parcelas vencem de 7 em 7 dias a partir da data.'
-                        : '📦 Parcelado por cadência: as parcelas vencem na frequência escolhida (mensal, bimestral, trimestral, semestral ou anual) a partir da data.'}
-                  </Text>
                 </>
               ) : null}
               {modality === 'PARCELADO' ? (
@@ -1411,16 +1402,13 @@ export default function LancamentoScreen() {
                     ]}
                     activeBg={ks.solid}
                   />
-                  <Text className="text-[11px] text-slate-500 -mt-1">
-                    📦 Parcelado: "Dividir total" reparte o valor total entre as parcelas; "Parcela fixa" repete o valor informado pelo número de meses. Despesa ou crédito, em conta ou cartão.
-                  </Text>
                 </>
               ) : null}
             </>
           ) : null}
           {isEdit && editIsRecurrence ? (
-            <Text className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-2">
-              📌 Ocorrência de CONTA FIXA: alterar a DESCRIÇÃO vale para a fixa inteira (os meses seguintes passam a usar a descrição nova). Valor, data e categoria valem apenas para ESTE mês.
+            <Text className="text-xs text-amber-700 bg-amber-50 rounded-lg px-2.5 py-2">
+              Descrição vale para a fixa inteira; valor, data e categoria, só para este mês.
             </Text>
           ) : null}
 
@@ -1451,11 +1439,6 @@ export default function LancamentoScreen() {
               </Pressable>
             ) : null}
           </View>
-          {kind === 'EXPENSE' && modality === 'AVISTA' && !isEdit ? (
-            <Text className="text-[11px] text-slate-500 -mt-1">
-              Toque no QR para ler a nota fiscal: o VALOR TOTAL da NFC-e, a data e os ITENS vêm para este formulário — você escolhe categoria, pagamento e o estoque de cada item, e salva quando quiser.
-            </Text>
-          ) : null}
           <TextField
             label={isTransfer ? 'Descrição (opcional)' : isConsolidated ? 'Descrição do Grupo Geral' : 'Descrição'}
             value={isConsolidated ? groupDescription : description}
@@ -1466,13 +1449,8 @@ export default function LancamentoScreen() {
           />
           {/* v69: banner da mensagem bancária preenchida (débito/crédito) */}
           {msgInfo ? (
-            <Text className={`text-[11px] rounded-lg px-2.5 py-2 ${msgInfo.kind === 'CREDIT' ? 'text-emerald-700 bg-emerald-50' : 'text-rose-700 bg-rose-50'}`}>
-              💬 Mensagem bancária preenchida ({msgInfo.kind === 'CREDIT' ? 'crédito — dinheiro que ENTRA' : 'débito — dinheiro que SAI'}{msgInfo.sender ? ` · ${msgInfo.sender}` : ''}). Ao salvar, ela sai da lista de mensagens e o OFX é conciliado automaticamente por data + valor.
-            </Text>
-          ) : null}
-          {isConsolidated ? (
-            <Text className="text-[11px] text-slate-500 -mt-1">
-              Esta descrição é a que aparece no card do grupo no Fluxo (no lugar do texto padrão).
+            <Text className={`text-xs rounded-lg px-2.5 py-2 ${msgInfo.kind === 'CREDIT' ? 'text-emerald-700 bg-emerald-50' : 'text-rose-700 bg-rose-50'}`}>
+              💬 Mensagem bancária ({msgInfo.kind === 'CREDIT' ? 'entrada' : 'saída'}{msgInfo.sender ? ` · ${msgInfo.sender}` : ''}) — ao salvar, sai da lista de mensagens.
             </Text>
           ) : null}
           <DateField label="Data" value={date} onChange={setDate} />
@@ -1512,7 +1490,7 @@ export default function LancamentoScreen() {
           ) : null}
           {/* v41: nota lida exige DESPESA — em outro tipo ela fica na tela NFC-e */}
           {nfceNote && !isPlain ? (
-            <Text className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-2">
+            <Text className="text-xs text-amber-700 bg-amber-50 rounded-lg px-2.5 py-2">
               🧾 Nota lida ({nfceNote.storeName ?? 'loja'} · {formatBRL(nfceNote.totalCents ?? 0)}) só é lançada em DESPESA — em outro tipo ela fica na tela NFC-e para revisão.
             </Text>
           ) : null}
@@ -1550,25 +1528,25 @@ export default function LancamentoScreen() {
                         {it.totalCents != null ? formatBRL(it.totalCents) : '—'}
                       </Text>
                     </View>
-                    <Text className="text-[11px] text-slate-500">
+                    <Text className="text-xs text-slate-500">
                       Qtde: {it.qty ?? '—'} {it.unitOriginal ?? ''}
                       {it.productName ? ` · produto: ${it.productName}` : ''}
                       {it.totalCents == null ? ' · valor não lido' : ''}
                     </Text>
                     <View className="flex-row items-center justify-between gap-2">
-                      <Text className={`text-[10px] px-1.5 py-0.5 rounded ${nfceMatchBadge(it).cls}`}>
+                      <Text className={`text-xs px-1.5 py-0.5 rounded ${nfceMatchBadge(it).cls}`}>
                         {nfceMatchBadge(it).text}
                       </Text>
                       {it.stockApplied ? (
-                        <Text className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-semibold">
+                        <Text className="text-xs text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-semibold">
                           já no estoque
                         </Text>
                       ) : it.productId ? (
-                        <Text className="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-semibold">
+                        <Text className="text-xs text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-semibold">
                           classificado (estoque via Catálogo)
                         </Text>
                       ) : (
-                        <Text className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded font-semibold">
+                        <Text className="text-xs text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded font-semibold">
                           classificar no Catálogo
                         </Text>
                       )}
@@ -1578,7 +1556,7 @@ export default function LancamentoScreen() {
               </Card>
             ) : null}
             {modality !== 'AVISTA' ? (
-              <Text className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-2">
+              <Text className="text-xs text-amber-700 bg-amber-50 rounded-lg px-2.5 py-2">
                 Em Fixo/Parcelado a nota NÃO é anexada nem aplica estoque — salve em À vista para vincular a nota aos itens.
               </Text>
             ) : null}
@@ -1677,16 +1655,6 @@ export default function LancamentoScreen() {
                       )}
                     </>
                   ) : null}
-                  {l.modality === 'FIXO' ? (
-                    <Text className="text-[11px] text-slate-500">
-                      Ex.: Aluguel de R$ 1.200 no dia 5 — todo mês o lançamento aparece sozinho, até você encerrar.
-                    </Text>
-                  ) : null}
-                  {l.modality === 'PARCELADO' ? (
-                    <Text className="text-[11px] text-slate-500">
-                      Ex.: Obras de R$ 10.000 em 5x (Dividir total: R$ 2.000/mês) ou R$ 2.000 por 5 meses (Parcela fixa) — uma parcela por mês até terminar.
-                    </Text>
-                  ) : null}
                   {/* v13 (bug 1.C): DESTINO da linha Fixo/Parcelado — conta do grupo
                       ou CARTÃO DE CRÉDITO (as parcelas/ocorrências vão para a fatura) */}
                   {l.modality !== 'AVISTA' ? (
@@ -1720,7 +1688,7 @@ export default function LancamentoScreen() {
                       ) : null}
                       {/* v26: "Mês da fatura" também para linhas Fixo/Parcelado no cartão */}
                       {l.target === 'CARD' && l.cardId && l.persistedKind ? (
-                        <Text className="text-[11px] text-slate-500">
+                        <Text className="text-xs text-slate-500">
                           A fatura das ocorrências/parcelas existentes acompanha as respectivas datas de vencimento.
                         </Text>
                       ) : l.target === 'CARD' && l.cardId ? (() => {
@@ -1744,7 +1712,7 @@ export default function LancamentoScreen() {
                               selectedId={chosen}
                               onSelect={(id) => updateLine(l.key, { invoiceMonth: id })}
                             />
-                            <Text className="text-[11px] text-slate-500 -mt-1">
+                            <Text className="text-xs text-slate-500 -mt-1">
                               Sugerido pelo fechamento do cartão ({lc.closingDay}).{' '}
                               {l.modality === 'FIXO'
                                 ? 'Fixo: vale para todos os meses (mesmo deslocamento).'
@@ -1754,11 +1722,6 @@ export default function LancamentoScreen() {
                         );
                       })() : null}
                     </>
-                  ) : null}
-                  {l.modality === 'PARCELADO' && l.dir === 'CREDIT' ? (
-                    <Text className="text-[11px] text-emerald-700 bg-emerald-50 rounded-lg px-2.5 py-1.5">
-                      Ex.: Aluguel recebido em 36x de R$ 1.500 — cada parcela vira ENTRADA no mês do vencimento (na conta ou abatendo a fatura do cartão).
-                    </Text>
                   ) : null}
                   <View className="flex-row items-center gap-1.5">
                     <View className="flex-1">
@@ -1824,7 +1787,7 @@ export default function LancamentoScreen() {
                         if (!Number.isInteger(n) || n < 2 || l.cents <= 0) return null;
                         if (l.planMode === 'FIXED_PER_MONTH') {
                           return (
-                            <Text className="text-[11px] text-violet-700 bg-violet-50 rounded-lg px-2.5 py-1.5">
+                            <Text className="text-xs text-violet-700 bg-violet-50 rounded-lg px-2.5 py-1.5">
                               Total do parcelamento: {formatBRL(l.cents * n)} em {n} parcela(s) · cada parcela: {formatBRL(l.cents)}
                             </Text>
                           );
@@ -1832,7 +1795,7 @@ export default function LancamentoScreen() {
                         const parts = divideCents(l.cents, n);
                         const resto = parts[n - 1] !== parts[0];
                         return (
-                          <Text className="text-[11px] text-violet-700 bg-violet-50 rounded-lg px-2.5 py-1.5">
+                          <Text className="text-xs text-violet-700 bg-violet-50 rounded-lg px-2.5 py-1.5">
                             Cada parcela: {formatBRL(parts[0])}
                             {resto ? ` · última parcela ${formatBRL(parts[n - 1])} (ajuste de centavos)` : ` × ${n}`}
                           </Text>
@@ -1857,13 +1820,13 @@ export default function LancamentoScreen() {
                     {l.description.trim() || 'Linha sem descrição'}
                   </Text>
                   {l.modality === 'FIXO' ? (
-                    <Text className="text-[10px] text-violet-600 bg-violet-50 px-1.5 py-0.5 rounded font-semibold">FIXA</Text>
+                    <Text className="text-xs text-violet-600 bg-violet-50 px-1.5 py-0.5 rounded font-semibold">FIXA</Text>
                   ) : null}
                   {l.modality === 'PARCELADO' ? (
-                    <Text className="text-[10px] text-violet-600 bg-violet-50 px-1.5 py-0.5 rounded font-semibold">{l.parcelas}x</Text>
+                    <Text className="text-xs text-violet-600 bg-violet-50 px-1.5 py-0.5 rounded font-semibold">{l.parcelas}x</Text>
                   ) : null}
                   {l.modality !== 'AVISTA' && l.target === 'CARD' ? (
-                    <Text className="text-[10px] text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded font-semibold">
+                    <Text className="text-xs text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded font-semibold">
                       {ICONS.cartoes} {cards.find((c) => c.id === l.cardId)?.label ?? 'CARTÃO'}
                     </Text>
                   ) : null}
@@ -1903,10 +1866,6 @@ export default function LancamentoScreen() {
           <Card className="gap-3 mt-3">
             <Select label="De (origem)" items={accounts} selectedId={fromId} onSelect={setFromId} />
             <Select label="Para (destino)" items={accounts} selectedId={toId} onSelect={setToId} />
-            <Text className="text-xs text-slate-500">
-              A transferência é atômica (1 transação + 2 movimentos): debita a origem e credita o destino na mesma
-              gravação. Não afeta o saldo geral — só redistribui entre contas.
-            </Text>
           </Card>
         ) : null}
 
@@ -1924,11 +1883,6 @@ export default function LancamentoScreen() {
                 { value: 'CARD', label: 'Cartão' },
               ]}
             />
-            {modality === 'FIXO' && kind === 'INCOME' && target === 'CARD' ? (
-              <Text className="text-xs text-slate-500">
-                📌 Receita fixa no CARTÃO (v12): todo mês, no dia escolhido, o valor entra como CRÉDITO na fatura — abate o total a pagar.
-              </Text>
-            ) : null}
             {target === 'ACCOUNT' ? (
               <Select label="Conta" items={accounts} selectedId={accountId} onSelect={setAccountId} />
             ) : (
@@ -1945,23 +1899,8 @@ export default function LancamentoScreen() {
                         setInvoiceMonthTouched(true);
                       }}
                     />
-                    <Text className="text-xs text-slate-500">
-                      {selectedCard
-                        ? `Sugerido pelo dia de fechamento (${selectedCard.closingDay}) — pode trocar manualmente (até 6 meses à frente).${
-                            modality === 'FIXO'
-                              ? ' Fixo: a escolha vale para todos os meses (mesmo deslocamento).'
-                              : modality === 'PARCELADO'
-                                ? ' Parcelado: é a fatura da 1ª parcela; as demais seguem mês a mês.'
-                                : ' Faturas já pagas e após o fechamento são bloqueadas.'
-                          }`
-                        : 'Selecione um cartão para sugerir a fatura.'}
-                    </Text>
                   </>
-                ) : (
-                  <Text className="text-xs text-slate-500">
-                    A compra entra na fatura conforme o dia de corte (America/Sao_Paulo). Não afeta o saldo da conta agora.
-                  </Text>
-                )}
+                ) : null}
               </View>
             )}
             {modality === 'PARCELADO' ? (
@@ -1996,7 +1935,7 @@ export default function LancamentoScreen() {
             ) : null}
             {kind === 'INCOME' && target === 'CARD' && modality === 'AVISTA' ? (
               <Text className="text-xs text-rose-600">
-                Receita à vista só pode ser lançada em conta. No cartão, use Fixo ou Parcelado (entra como crédito na fatura).
+                Receita à vista só em conta. No cartão, use Fixo ou Parcelado.
               </Text>
             ) : null}
           </Card>

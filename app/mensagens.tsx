@@ -134,14 +134,12 @@ export default function MensagensScreen() {
   const excluirCapturada = (item: GridBankNotification) => {
     removeCapturedBankNotification(item.id);
     setCapturadas((prev) => prev.filter((c) => c.id !== item.id));
-    showToast('Mensagem tirada do grid');
   };
 
   const removerDaLista = async () => {
     if (!deleting) return;
     try {
       await services.bankMessages.discard(deleting.id);
-      showToast('Notificação tirada da lista');
       setDeleting(null);
       await load();
     } catch (err) {
@@ -201,7 +199,7 @@ export default function MensagensScreen() {
           Notificações capturadas ({grid.grid.length})
         </Text>
         {grid.jaNaLista > 0 ? (
-          <Text className="text-[11px] text-slate-400">+{grid.jaNaLista} já na lista</Text>
+          <Text className="text-xs text-slate-400">+{grid.jaNaLista} já na lista</Text>
         ) : null}
       </View>
 
@@ -217,32 +215,32 @@ export default function MensagensScreen() {
                   <View className="flex-row items-center gap-1.5 flex-wrap">
                     {p ? (
                       <Text
-                        className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                        className={`text-xs font-bold px-1.5 py-0.5 rounded ${
                           p.kind === 'CREDIT' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
                         }`}
                       >
                         {p.kind === 'CREDIT' ? 'ENTRADA · +' : 'SAÍDA · −'}
                       </Text>
                     ) : (
-                      <Text className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
+                      <Text className="text-xs font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
                         sem valor
                       </Text>
                     )}
                     {p?.paymentMethod ? (
-                      <Text className="text-[10px] font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                      <Text className="text-xs font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
                         {p.paymentMethod === 'CREDITO' ? 'CARTÃO CRÉDITO' : 'CARTÃO DÉBITO'}
                       </Text>
                     ) : null}
                     {p?.cardFinal ? (
-                      <Text className="text-[10px] font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                      <Text className="text-xs font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
                         final {p.cardFinal}
                       </Text>
                     ) : null}
-                    <Text className="text-[10px] text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">
+                    <Text className="text-xs text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">
                       {p?.date ? ymdToBr(p.date) : 'hoje'}
                     </Text>
                     {item.appName ? (
-                      <Text className="text-[10px] text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">
+                      <Text className="text-xs text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">
                         {item.appName}
                       </Text>
                     ) : null}
@@ -250,7 +248,7 @@ export default function MensagensScreen() {
                   <Text className="font-semibold text-slate-900 mt-1" numberOfLines={2}>
                     {p?.description ?? item.title ?? 'Notificação do banco'}
                   </Text>
-                  <Text className="text-[11px] text-slate-500" numberOfLines={3}>
+                  <Text className="text-xs text-slate-500" numberOfLines={3}>
                     {item.body}
                   </Text>
                 </View>
@@ -309,33 +307,33 @@ export default function MensagensScreen() {
               <View className="flex-1">
                 <View className="flex-row items-center gap-1.5 flex-wrap">
                   <Text
-                    className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                    className={`text-xs font-bold px-1.5 py-0.5 rounded ${
                       m.kind === 'CREDIT' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
                     }`}
                   >
                     {m.kind === 'CREDIT' ? 'ENTRADA · +' : 'SAÍDA · −'}
                   </Text>
                   {m.payment_method ? (
-                    <Text className="text-[10px] font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                    <Text className="text-xs font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
                       {m.payment_method === 'CREDITO' ? 'CARTÃO CRÉDITO' : 'CARTÃO DÉBITO'}
                     </Text>
                   ) : null}
                   {m.card_final ? (
-                    <Text className="text-[10px] font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                    <Text className="text-xs font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
                       final {m.card_final}
                     </Text>
                   ) : null}
-                  <Text className="text-[10px] text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">
+                  <Text className="text-xs text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">
                     {m.tx_date ? ymdToBr(m.tx_date) : 'sem data'}
                   </Text>
                   {m.sender ? (
-                    <Text className="text-[10px] text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">{m.sender}</Text>
+                    <Text className="text-xs text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">{m.sender}</Text>
                   ) : null}
                 </View>
                 <Text className="font-semibold text-slate-900 mt-1" numberOfLines={2}>
                   {m.description ?? 'Notificação bancária'}
                 </Text>
-                <Text className="text-[11px] text-slate-500" numberOfLines={3}>
+                <Text className="text-xs text-slate-500" numberOfLines={3}>
                   {m.body}
                 </Text>
               </View>
@@ -367,7 +365,7 @@ export default function MensagensScreen() {
       )}
 
       {msgs.length > 0 ? (
-        <Text className="text-[11px] text-slate-400 px-1">
+        <Text className="text-xs text-slate-400 px-1">
           Depois que você lançar, a conciliação com o OFX é automática por data + valor — o extrato não duplica o lançamento.
         </Text>
       ) : null}

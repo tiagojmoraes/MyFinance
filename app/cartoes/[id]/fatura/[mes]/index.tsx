@@ -275,7 +275,7 @@ export default function FaturaScreen() {
                 <Text className="font-bold text-emerald-700">− {formatBRL(p.amount_cents)}</Text>
               </Pressable>
             ))}
-            <Text className="text-[10px] text-slate-400 text-center">
+            <Text className="text-xs text-slate-400 text-center">
               Segure o pagamento por 3 segundos para excluir (com estorno total).
             </Text>
           </View>

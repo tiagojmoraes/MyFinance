@@ -10,8 +10,8 @@ import { Modal, View, Text, Pressable } from 'react-native';
 
 export interface DialogButton {
   label: string;
-  /** red = débito/despesa · green = crédito/receita */
-  color: 'red' | 'green';
+  /** red = débito/despesa · green = crédito/receita · gray = ação neutra (Alterar/Duplicar) */
+  color: 'red' | 'green' | 'gray';
   onPress: () => void | Promise<void>;
 }
 
@@ -21,6 +21,8 @@ export function ConfirmDialog(props: {
   message?: string;
   buttons: DialogButton[];
   onClose: () => void;
+  /** Rodapé de ajuda; `null` esconde (padrão: aviso de fechar sem excluir). */
+  hint?: string | null;
 }) {
   return (
     <Modal transparent visible={props.visible} animationType="fade" onRequestClose={props.onClose}>
@@ -41,23 +43,29 @@ export function ConfirmDialog(props: {
               key={b.label}
               onPress={b.onPress}
               className={`rounded-xl border px-3 py-3 ${
-                b.color === 'red' ? 'border-rose-100 bg-rose-50' : 'border-emerald-100 bg-emerald-50'
+                b.color === 'red'
+                  ? 'border-rose-100 bg-rose-50'
+                  : b.color === 'gray'
+                    ? 'border-slate-200 bg-slate-50'
+                    : 'border-emerald-100 bg-emerald-50'
               }`}
               accessibilityRole="button"
               accessibilityLabel={b.label}
             >
               <Text
                 className={`text-center text-[13px] font-bold leading-5 ${
-                  b.color === 'red' ? 'text-rose-600' : 'text-emerald-600'
+                  b.color === 'red' ? 'text-rose-600' : b.color === 'gray' ? 'text-slate-700' : 'text-emerald-600'
                 }`}
               >
                 {b.label}
               </Text>
             </Pressable>
           ))}
-          <Text className="text-[10px] text-slate-400 text-center">
-            Toque fora da caixa para fechar sem excluir.
-          </Text>
+          {props.hint === null ? null : (
+            <Text className="text-xs text-slate-400 text-center">
+              {props.hint ?? 'Toque fora da caixa para fechar sem excluir.'}
+            </Text>
+          )}
         </Pressable>
       </Pressable>
     </Modal>

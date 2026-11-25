@@ -76,13 +76,11 @@ export default function ContaNovaScreen() {
           'UPDATE accounts SET name = ?, type = ?, initial_balance_cents = ?, initial_balance_date = ?, include_in_general_balance = ? WHERE id = ?',
           [name.trim(), type, initialCents, initialDate || null, includeFlag, editId]
         );
-        showToast('Conta alterada');
       } else {
         await services.db.runAsync(
           'INSERT INTO accounts (id, name, type, initial_balance_cents, initial_balance_date, include_in_general_balance, archived_at) VALUES (?,?,?,?,?,?,NULL)',
           [genId(), name.trim(), type, initialCents, initialDate || null, includeFlag]
         );
-        showToast(`Conta criada — saldo inicial ${formatBRL(initialCents)}`);
       }
       bump();
       router.back();
@@ -109,7 +107,7 @@ export default function ContaNovaScreen() {
         />
         <MoneyInput label="Saldo inicial" cents={initialCents} onChangeCents={setInitialCents} />
         <DateField label="Data do saldo inicial" value={initialDate} onChange={setInitialDate} />
-        <Text className="text-[11px] text-slate-400 leading-4 -mt-1">
+        <Text className="text-xs text-slate-400 leading-4 -mt-1">
           O valor acima é o saldo da conta NO INÍCIO do dia escolhido. Lançamentos ANTERIORES a ele já estão dentro do saldo (não somam de novo) e dias anteriores mostram 0,00. Em branco = vale desde sempre.
         </Text>
         <View className="flex-row gap-2 mt-1">
@@ -121,7 +119,7 @@ export default function ContaNovaScreen() {
           </View>
         </View>
       </Card>
-      <Text className="text-[11px] text-slate-400 text-center px-6">
+      <Text className="text-xs text-slate-400 text-center px-6">
         {ICONS.contas} A nova conta entra nas escolhas de lançamento e, por padrão, soma no saldo geral da tela Início — o toggle "Aparece no saldo do Fluxo" fica na tela Contas.
       </Text>
     </Screen>

@@ -86,7 +86,6 @@ export default function PoupancaScreen() {
           return;
         }
         await services.savings.createMonthlyPlan({ amountCents: amount, dayOfMonth: day, fromAccountId: fromId, toAccountId: toId });
-        showToast('Poupança mensal criada — a previsão do mês já entrou no Fluxo');
       } else {
         await services.savings.createClosingPlan({ fromAccountId: fromId, toAccountId: toId });
         showToast('Fechamento de mês ativado — a estimativa aparece no card da Poupança');
@@ -115,7 +114,6 @@ export default function PoupancaScreen() {
     if (!deleting) return;
     try {
       await services.savings.removePlan(deleting.id);
-      showToast('Plano excluído — previsões não efetivadas saíram do Fluxo');
       setDeleting(null);
       bump();
       await load();
@@ -212,7 +210,7 @@ export default function PoupancaScreen() {
         ))
       )}
       {plans.length > 0 ? (
-        <Text className="text-[11px] text-slate-400 px-1">
+        <Text className="text-xs text-slate-400 px-1">
           As transferências previstas e efetivadas aparecem no Fluxo (card Poupança e lançamento normal) — desfazer uma efetivada: exclua o lançamento no Fluxo.
         </Text>
       ) : null}

@@ -287,7 +287,7 @@ export function InstallmentPill({ current, total, className = '' }: {
   const seq = Math.min(Math.max(1, current), Math.max(1, total));
   return (
     <View className={`bg-black rounded-md px-1.5 py-0.5 self-start ${className}`}>
-      <Text className="text-white text-[10px] font-bold leading-tight tracking-wide">
+      <Text className="text-white text-xs font-bold leading-tight tracking-wide">
         {seq}/{total}
       </Text>
     </View>
@@ -407,7 +407,7 @@ export function CalendarModal({ visible, onClose, value, onSelect }: {
           </View>
           <View className="flex-row mb-1">
             {WEEK_DAYS.map((d, i) => (
-              <Text key={`wd-${i}`} className="flex-1 text-center text-[11px] font-semibold text-slate-400">{d}</Text>
+              <Text key={`wd-${i}`} className="flex-1 text-center text-xs font-semibold text-slate-400">{d}</Text>
             ))}
           </View>
           {Array.from({ length: cells.length / 7 }, (_, w) => (
@@ -501,7 +501,7 @@ export function ToggleRow({ label, description, value, onChange, hidden }: {
     <View className="flex-row items-center justify-between gap-3 py-1">
       <View className="flex-1">
         <Text className={`text-sm font-medium ${theme.text}`}>{label}</Text>
-        {description ? <Text className="text-[11px] text-slate-500 leading-4 mt-0.5">{description}</Text> : null}
+        {description ? <Text className="text-xs text-slate-500 leading-4 mt-0.5">{description}</Text> : null}
       </View>
       <Switch
         value={value}

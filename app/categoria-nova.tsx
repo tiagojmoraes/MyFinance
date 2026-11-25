@@ -62,10 +62,8 @@ export default function CategoriaNovaScreen() {
     try {
       if (editId) {
         await services.categories.update(editId, { name, direction, icon, parentId });
-        showToast('Categoria alterada');
       } else {
         await services.categories.create({ name, direction, icon, parentId });
-        showToast('Categoria criada');
       }
       bump();
       router.back();
@@ -127,7 +125,7 @@ export default function CategoriaNovaScreen() {
           </View>
         </View>
       </Card>
-      <Text className="text-[11px] text-slate-400 text-center px-6">
+      <Text className="text-xs text-slate-400 text-center px-6">
         {ICONS.categorias} O mesmo pictograma de uma categoria aparece junto ao nome dela nas telas de lançamento e fluxo.
       </Text>
     </Screen>

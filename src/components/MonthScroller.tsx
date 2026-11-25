@@ -123,7 +123,7 @@ export function MonthScroller({ value, onChange }: {
                 {shortMonthLabel(ym)}
               </Text>
               {isCurrent ? (
-                <Text className={`text-[9px] font-semibold ${active ? 'text-emerald-50' : 'text-emerald-600'}`}>
+                <Text className={`text-[11px] font-semibold ${active ? 'text-emerald-50' : 'text-emerald-600'}`}>
                   atual
                 </Text>
               ) : null}

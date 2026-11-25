@@ -60,7 +60,7 @@ export default function CadastroScreen() {
           </Card>
         </Pressable>
       ))}
-      <Text className="text-[11px] text-slate-400 text-center px-6">
+      <Text className="text-xs text-slate-400 text-center px-6">
         Dica: o mesmo pictograma de uma categoria aparece junto ao nome dela nas telas de lançamento e fluxo.
       </Text>
     </Screen>

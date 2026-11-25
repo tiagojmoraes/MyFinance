@@ -80,7 +80,7 @@ export default function OfxScreen() {
       <Card className="gap-3">
         <Select label="Conta do extrato" items={accounts} selectedId={accountId} onSelect={setAccountId} />
         <Button label="Selecionar arquivo .ofx/.qfx" onPress={pickAndImport} loading={busy} />
-        <Text className="text-[11px] text-slate-500">
+        <Text className="text-xs text-slate-500">
           Dedupe por SHA-256: o mesmo arquivo nunca é importado duas vezes. Lançamentos manuais/NFC-e de mesmo valor na janela de datas são conciliados, não duplicados.
         </Text>
       </Card>

@@ -361,7 +361,7 @@ export default function NfceReviewScreen() {
           </Text>
           {doc.transaction_id ? (
             <View className="gap-1.5">
-              <Text className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-2">
+              <Text className="text-xs text-amber-700 bg-amber-50 rounded-lg px-2.5 py-2">
                 Esta nota já está vinculada a um lançamento — Confira no Fluxo.
               </Text>
               <Button
@@ -372,7 +372,7 @@ export default function NfceReviewScreen() {
             </View>
           ) : (
             <>
-              <Text className="text-[11px] text-slate-500">
+              <Text className="text-xs text-slate-500">
                 Ao continuar, a nota abre no formulário Novo Lançamento com valor total, data, descrição e os itens da nota. Você define categoria, pagamento e o que entra no estoque, depois SALVA.
               </Text>
               <Button
@@ -384,7 +384,7 @@ export default function NfceReviewScreen() {
                 disabled={items.length === 0}
               />
               {doc.needs_review || items.some((it) => it.match_type === 'FUZZY' || it.match_type === 'NEW' || !it.product_id) ? (
-                <Text className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-2">
+                <Text className="text-xs text-amber-700 bg-amber-50 rounded-lg px-2.5 py-2">
                   Há itens pendentes de revisão — finalize as decisões em CADA item acima antes de confirmar, ou continue e conclua tudo no formulário de Novo Lançamento depois.
                 </Text>
               ) : null}
@@ -419,21 +419,21 @@ export default function NfceReviewScreen() {
                 {item.total_cents != null ? formatBRL(item.total_cents) : '—'}
               </Text>
               <View className="flex-row flex-wrap items-center gap-1 mt-1">
-                <Text className="text-[10px] text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded">
+                <Text className="text-xs text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded">
                   {item.product_name ? `→ ${item.product_name}` : 'produto não vinculado'}
                 </Text>
                 {mb ? (
-                  <Text className={`text-[10px] px-1.5 py-0.5 rounded ${badgeToneCls[mb.tone]}`}>{mb.text}</Text>
+                  <Text className={`text-xs px-1.5 py-0.5 rounded ${badgeToneCls[mb.tone]}`}>{mb.text}</Text>
                 ) : null}
                 {item.stock_applied ? (
-                  <Text className="text-[10px] text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">no estoque</Text>
+                  <Text className="text-xs text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">no estoque</Text>
                 ) : null}
                 {unitClash ? (
-                  <Text className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">
+                  <Text className="text-xs text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">
                     {itemDim} ≠ {item.product_base_unit} — fora do estoque
                   </Text>
                 ) : null}
-                {item.status === 'IGNORED' ? <Text className="text-[10px] text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">ignorado</Text> : null}
+                {item.status === 'IGNORED' ? <Text className="text-xs text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">ignorado</Text> : null}
               </View>
             </View>
           </View>
@@ -482,7 +482,7 @@ export default function NfceReviewScreen() {
                 <MiniAction label="Sempre (NUNCA perguntar)" onPress={() => skipStockAlways(item)} tone="muted" />
                 <MiniAction label="Voltar" onPress={() => setStockAskId(null)} tone="muted" />
               </View>
-              <Text className="text-[10px] text-amber-700">
+              <Text className="text-xs text-amber-700">
                 "Sempre" grava a memória NUNCA: as próximas notas deste produto nem perguntam.
               </Text>
             </View>
@@ -618,7 +618,7 @@ function CategoriaSelect({ cats, value, onChange }: { cats: CatOption[]; value: 
           <Text
             key={c.id}
             onPress={() => onChange(value === c.id ? null : c.id)}
-            className={`text-[11px] px-2 py-1 rounded-full ${
+            className={`text-xs px-2 py-1 rounded-full ${
               value === c.id ? 'bg-emerald-600 text-white font-semibold' : 'bg-slate-100 text-slate-600'
             }`}
           >

@@ -50,7 +50,7 @@ export function Footer() {
           >
             <Text className={`text-xl leading-7 ${active ? 'opacity-100' : 'opacity-40'}`}>{tab.icon}</Text>
             <Text
-              className={`text-[9px] font-semibold ${active ? 'text-emerald-700' : 'text-slate-400'}`}
+              className={`text-[11px] font-semibold ${active ? 'text-emerald-700' : 'text-slate-400'}`}
               numberOfLines={1}
             >
               {tab.label}

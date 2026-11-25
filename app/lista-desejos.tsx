@@ -160,10 +160,8 @@ export default function ListaDesejosScreen() {
           targetCents: formCents,
           link: formLink,
         });
-        showToast('Item alterado');
       } else {
         await services.wishlist.addItem({ classificacao: formCls, description: formDesc, targetCents: formCents, link: formLink });
-        showToast('Item cadastrado na Programação de Compra');
       }
       resetForm();
       bump();
@@ -213,7 +211,6 @@ export default function ListaDesejosScreen() {
     if (!deleting) return;
     try {
       await services.wishlist.removeItem(deleting.id);
-      showToast('Item excluído da Programação de Compra');
       setDeleting(null);
       bump();
       await load();
@@ -251,18 +248,18 @@ export default function ListaDesejosScreen() {
                 accessibilityLabel="Abrir link do item"
                 className="bg-sky-50 rounded px-1.5 py-0.5"
               >
-                <Text className="text-[10px] font-semibold text-sky-700">🔗 link</Text>
+                <Text className="text-xs font-semibold text-sky-700">🔗 link</Text>
               </Pressable>
             ) : null}
             {it.pronto ? (
-              <Text className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
+              <Text className="text-xs font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
                 ✓ Pronto para comprar
               </Text>
             ) : null}
           </View>
           {/* v69 (5.4): barra de progressão — valor do item, quanto já reservou
               e quanto falta reservar */}
-          <Text className="text-[11px] text-slate-500 mt-1">
+          <Text className="text-xs text-slate-500 mt-1">
             Valor {formatBRL(it.target_cents)} · reservado {formatBRL(it.reserved_cents)} · falta {formatBRL(it.faltaCents)}
           </Text>
           <ProgressBar pct={it.pct} className="mt-1" />
@@ -329,7 +326,7 @@ export default function ListaDesejosScreen() {
               const mc = method.classes.find((m) => m.cls === c.cls);
               if (!mc || mc.itemCount === 0) return null;
               return (
-                <Text className="text-[10px] font-semibold text-violet-700 bg-violet-50 px-1.5 py-0.5 rounded">
+                <Text className="text-xs font-semibold text-violet-700 bg-violet-50 px-1.5 py-0.5 rounded">
                   {mc.startMonth > 0 ? `começa no ${mc.startMonth}º mês` : 'sem sobra'}
                 </Text>
               );
@@ -364,7 +361,7 @@ export default function ListaDesejosScreen() {
                 Esta tela fica só com o RESUMO POR CLASSIFICAÇÃO (itens, valor,
                 meses) para consulta rápida. */}
             {method.classes.filter((c) => c.itemCount > 0).map((c) => (
-              <Text key={c.cls} className="text-[11px] text-slate-600">
+              <Text key={c.cls} className="text-xs text-slate-600">
                 • {c.label}: {formatBRL(c.totalCents)} ({c.itemCount} item(ns)){c.startMonth > 0 ? ` — do ${c.startMonth}º ao ${c.endMonth}º mês` : ' — sem sobra, não começa'}
               </Text>
             ))}
@@ -386,7 +383,7 @@ export default function ListaDesejosScreen() {
       )}
 
       {boxId ? (
-        <Text className="text-[11px] text-slate-400 px-1">
+        <Text className="text-xs text-slate-400 px-1">
           {ICONS.reserva} As reservas saem do Saldo para a caixinha "{RESERVA_ACCOUNT_NAME}" (fora do saldo geral) — ou para a conta Poupança, em fatia separada na fechinha da tela inicial.
         </Text>
       ) : null}
@@ -466,7 +463,7 @@ export default function ListaDesejosScreen() {
               onSelect={setOrigem}
               emptyLabel="Escolha a origem"
             />
-            <Text className="text-[11px] text-slate-500">
+            <Text className="text-xs text-slate-500">
               A reserva é uma transferência real: o valor SAI do Saldo (o Fluxo para de contar esse dinheiro como disponível) e fica guardado na caixinha ou na fatia "Reserva Programação de Compra" da Poupança.
             </Text>
             <Button label="Reservar" onPress={confirmarReserva} loading={busy} />

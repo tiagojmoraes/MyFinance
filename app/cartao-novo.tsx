@@ -46,7 +46,6 @@ export default function CartaoNovoScreen() {
         'INSERT INTO cards (id, name, last_four_digits, closing_day, due_day, linked_account_id, limit_cents, archived_at) VALUES (?,?,?,?,?,?,NULL,NULL)',
         [genId(), name.trim(), last4.trim() || null, closing, due, linkedId]
       );
-      showToast('Cartão criado');
       bump();
       router.back();
     } catch (err) {
@@ -67,7 +66,7 @@ export default function CartaoNovoScreen() {
             <TextField label="Dia do vencimento" value={dueDay} onChangeText={setDueDay} keyboardType="numeric" />
           </View>
         </View>
-        <Text className="text-[11px] text-slate-400 leading-4 -mt-1">
+        <Text className="text-xs text-slate-400 leading-4 -mt-1">
           Fechamento = dia em que as compras saem da fatura; vencimento = dia de pagar. Os dois vão de 1 a 31.
         </Text>
         <Select label="Conta de pagamento (opcional)" items={accounts} selectedId={linkedId} onSelect={setLinkedId} allowEmpty />
@@ -80,7 +79,7 @@ export default function CartaoNovoScreen() {
           </View>
         </View>
       </Card>
-      <Text className="text-[11px] text-slate-400 text-center px-6">
+      <Text className="text-xs text-slate-400 text-center px-6">
         {ICONS.cartoes} Depois de criar, o limite e o arquivamento ficam no detalhe do cartão (toque no cartão na lista).
       </Text>
     </Screen>

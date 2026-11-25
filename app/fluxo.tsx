@@ -237,6 +237,7 @@ export default function FluxoScreen() {
   const [budAdj, setBudAdj] = React.useState<DayAdjust | null>(null);
   const [savAdj, setSavAdj] = React.useState<DayAdjust | null>(null);
   const [budgetOpen, setBudgetOpen] = React.useState(false);
+  const [resumoOpen, setResumoOpen] = React.useState(false);
   const [savingsOpen, setSavingsOpen] = React.useState(false);
   // v86 (DESEMPENHO): o foco só força recarga quando o DIA virou (o app pode
   // ficar aberto de um dia para o outro: promoção de vencidas e previsão das
@@ -681,7 +682,7 @@ export default function FluxoScreen() {
                 Saldo do dia Previsto: {formatBRL(item.prev)}
               </Text>
               {item.efet != null ? (
-                <Text className={`text-[11px] font-semibold ${item.efet < 0 ? 'text-rose-500' : 'text-slate-500'}`}>
+                <Text className={`text-xs font-semibold ${item.efet < 0 ? 'text-rose-500' : 'text-slate-500'}`}>
                   Saldo do dia Efetivado: {formatBRL(item.efet)}
                 </Text>
               ) : null}
@@ -785,7 +786,7 @@ export default function FluxoScreen() {
         accessibilityLabel={`Status do grupo: ${label}. Toque para alternar para todo o agrupamento.`}
         className={`rounded-full px-2 py-0.5 ${cls}`}
       >
-        <Text className={`text-[10px] font-bold ${txt}`}>{label}</Text>
+        <Text className={`text-xs font-bold ${txt}`}>{label}</Text>
       </Pressable>
     );
   };
@@ -833,7 +834,7 @@ export default function FluxoScreen() {
         accessibilityLabel={`${isIncome ? 'Recebido' : 'Pago'}: ${label}. Toque para alternar.`}
         className={`rounded-full px-2 py-0.5 ${cls}`}
       >
-        <Text className={`text-[10px] font-bold ${txt}`}>{label}</Text>
+        <Text className={`text-xs font-bold ${txt}`}>{label}</Text>
       </Pressable>
     );
   };
@@ -864,7 +865,7 @@ export default function FluxoScreen() {
         accessibilityLabel={`${label}. Toque para alternar.`}
         className={`rounded-full px-2 py-0.5 ${cls}`}
       >
-        <Text className={`text-[10px] font-bold ${txt}`}>{label}</Text>
+        <Text className={`text-xs font-bold ${txt}`}>{label}</Text>
       </Pressable>
     );
   };
@@ -949,6 +950,8 @@ export default function FluxoScreen() {
 
   /** v14: MESMO card para todo lançamento comum (à vista, fixa, transferência,
    *  OFX, NFC-e e as LINHAS do grupo — com recuo tracejado). */
+  // v25: a conta só aparece na linha quando o mês tem lançamentos em mais de uma.
+  const multiAccount = React.useMemo(() => new Set(txs.map((t) => t.account_name).filter(Boolean)).size > 1, [txs]);
   const renderTxCard = (tx: FlowTx, opts: { child?: boolean }) => {
     const hasPill = tx.plan_total_installments != null && tx.plan_total_installments > 1;
     // v19: item interno leva o marcador (bolinha ✓ de conta fixa / pill X/N de
@@ -977,7 +980,7 @@ export default function FluxoScreen() {
         `${ymdToBr(tx.occurred_on)}` +
         `${tx.category_name ? ` · ${tx.category_name}` : ''}` +
         `${tx.card_name ? ` · ${tx.card_name}` : ''}` +
-        `${tx.account_name && tx.type === 'TRANSFER' ? ` · ${tx.account_name} → ${tx.transfer_account_name}` : tx.account_name ? ` · ${tx.account_name}` : ''}`,
+        `${tx.account_name && tx.type === 'TRANSFER' ? ` · ${tx.account_name} → ${tx.transfer_account_name}` : tx.account_name && multiAccount ? ` · ${tx.account_name}` : ''}`,
       subLeading: childMarker,
       chips: (
         <>
@@ -988,8 +991,8 @@ export default function FluxoScreen() {
               total={tx.plan_total_installments ?? 1}
             />
           ) : null}
-          {!opts.child ? (
-            <Text className="text-[10px] text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">{sourceLabel(tx.source_system)}</Text>
+          {!opts.child && (tx.source_system === 'OFX_BANK' || tx.source_system === 'OFX_CARD' || tx.source_system === 'NFCE') ? (
+            <Text className="text-xs text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">{sourceLabel(tx.source_system)}</Text>
           ) : null}
           {/* v16 (melhoria 1): itens AGLUTINADOS no grupo NÃO têm botão de status
               individual — o controle é exclusivo do CABEÇALHO do grupo. Só o
@@ -1057,11 +1060,11 @@ export default function FluxoScreen() {
           subtitle: `${ymdToBr(groupMonthDate(grp))} · ${itemCount} item(ns) neste mês`,
           chips: (
             <>
-              <Text className="text-[10px] text-violet-600 bg-violet-50 px-1.5 py-0.5 rounded font-semibold">
+              <Text className="text-xs text-violet-600 bg-violet-50 px-1.5 py-0.5 rounded font-semibold">
                 {ICONS.consolidado} CONSOLIDADO
               </Text>
               {tx.source_system !== 'MANUAL' ? (
-                <Text className="text-[10px] text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">{sourceLabel(tx.source_system)}</Text>
+                <Text className="text-xs text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">{sourceLabel(tx.source_system)}</Text>
               ) : null}
               {/* Status do grupo visível MESMO com a setinha RECOLHIDA —
                   tocar alterna Pago/Não pago para TODO o agrupamento do card */}
@@ -1118,7 +1121,7 @@ export default function FluxoScreen() {
         chips={
           <>
             <Badge status={inv.liveStatus} />
-            <Text className="text-[10px] text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">FATURA</Text>
+            <Text className="text-xs text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">FATURA</Text>
           </>
         }
         amount={`−${formatBRL(inv.dueCents)}`}
@@ -1185,7 +1188,7 @@ export default function FluxoScreen() {
         accessibilityLabel={paid ? 'Parcela paga. Toque para marcar como não paga.' : 'Parcela em aberto. Toque para marcar como paga.'}
         className={`rounded-full px-2 py-0.5 ${cls}`}
       >
-        <Text className={`text-[10px] font-bold ${txt}`}>{label}</Text>
+        <Text className={`text-xs font-bold ${txt}`}>{label}</Text>
       </Pressable>
     );
   };
@@ -1209,7 +1212,7 @@ export default function FluxoScreen() {
         <>
           {!opts.child ? pill : null}
           {!opts.child ? (
-            <Text className="text-[10px] text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">{sourceLabel('INSTALLMENT')}</Text>
+            <Text className="text-xs text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">{sourceLabel('INSTALLMENT')}</Text>
           ) : null}
           {/* v16 (melhoria 1): parcela DENTRO do grupo não tem botão próprio —
               o status é comandado pelo cabeçalho do consolidado */}
@@ -1284,7 +1287,7 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
                 linha, com a MESMA regra de % por movimento do v69 (sem o
                 "Previsto": agora o denominador é orçado+gasto).
                 · falta (orçado − efetivado) segue ao lado, intacto. */}
-            <Text className="text-[11px] text-slate-500">
+            <Text className="text-xs text-slate-500">
               {orcadoGastoLinha(budgetSum.budgetedCents, budgetSum.efetivadoCents)} · falta {formatBRL(budgetSum.remainingCents)}
             </Text>
             {budgetSum.items.map((it) => (
@@ -1381,7 +1384,7 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
                             </Text>
                             <Text className="text-xs font-semibold text-slate-800">{formatBRL(it.target_cents)}</Text>
                           </View>
-                          <Text className="text-[10px] text-slate-400">
+                          <Text className="text-xs text-slate-400">
                             reservado {formatBRL(it.reserved_cents)} · falta {formatBRL(it.faltaCents)}
                           </Text>
                           <ProgressBar pct={it.pct} />
@@ -1483,6 +1486,33 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
     />
   ) : null;
 
+  /** v25 (menos é mais): com 2+ módulos ativos (Orçamento, Programação,
+   *  Poupança) o topo do Fluxo mostra UMA linha recolhida "Resumo do mês";
+   *  com 1 só, o card aparece direto. */
+  const modulosMes = [budgetCard, wishlistCard, savingsCard].filter(Boolean);
+  const resumoMes =
+    modulosMes.length >= 2 ? (
+      <View className="gap-3">
+        <Pressable
+          onPress={() => setResumoOpen((v) => !v)}
+          accessibilityLabel={resumoOpen ? 'Recolher resumo do mês' : 'Expandir resumo do mês'}
+        >
+          <Card className="!py-3 flex-row items-center justify-between">
+            <Text className="font-semibold text-slate-900">Resumo do mês</Text>
+            <Text className="text-xs text-slate-500">
+              {[budgetCard ? 'Orçamento' : null, wishlistCard ? 'Programação' : null, savingsCard ? 'Poupança' : null]
+                .filter(Boolean)
+                .join(' · ')}{' '}
+              {resumoOpen ? ICONS.recolher : ICONS.expandir}
+            </Text>
+          </Card>
+        </Pressable>
+        {resumoOpen ? modulosMes : null}
+      </View>
+    ) : (
+      modulosMes
+    );
+
   // ---------- v11 (Req 2): topo SEM "Saldo Consolidado" e SEM os textos
   //  "Saldo Efetivado"/"Saldo Previsto" — fica só o seletor de Mês/Ano ----------
   const headerArea = (
@@ -1520,9 +1550,7 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
                   { value: 'EXPENSE', label: 'Saídas' },
                 ]}
               />
-              {budgetCard}
-              {wishlistCard}
-              {savingsCard}
+              {resumoMes}
               {loading ? (
                 <Card>
                   <Text className="text-slate-500">Carregando...</Text>
@@ -1536,13 +1564,6 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
                 />
               ) : null}
             </View>
-          }
-          ListFooterComponent={
-            days.length > 0 ? (
-              <Text className="text-[11px] text-slate-400 text-center px-8 pt-3">
-                Dica: segure um lançamento por 3 segundos para duplicar. Use "Alterar" para editar; toque no status para marcar Pago/Recebido. Faturas: toque na seta para ver os lançamentos.
-              </Text>
-            ) : null
           }
         />
       }

@@ -125,7 +125,6 @@ export default function DespensaScreen() {
   const deleteList = async (listId: string) => {
     try {
       await services.shoppingList.delete(listId);
-      showToast('Lista excluída');
       bump();
       if (previewListId === listId) closeList();
     } catch (err) {
@@ -513,7 +512,7 @@ function ListRow({ list, fmtTotal, onPress, onDelete }: {
         <View className="flex-row justify-between items-center">
           <Pressable onPress={onPress} accessibilityRole="button" className="flex-1" accessibilityLabel={`Abrir ${list.name}`}>
             <Text className="font-semibold text-slate-900" numberOfLines={1}>{list.name}</Text>
-            <Text className="text-[11px] text-slate-500 mt-0.5">
+            <Text className="text-xs text-slate-500 mt-0.5">
               {ymdToBr(list.updated_at.slice(0, 10))} · {list.itemCount} item(ns) · {fmtTotal(list.estimatedTotalCents)}
             </Text>
           </Pressable>
@@ -643,7 +642,7 @@ function ListPreview(props: {
                   ))}
                 </View>
               ))}
-              <Text className="text-[11px] text-slate-400 px-1">
+              <Text className="text-xs text-slate-400 px-1">
                 Total desta lista = soma de (quantidade × melhor preço entre lojas) por item. Peso vale por kg, volume por L, unidade por un — nunca mistura.
               </Text>
             </>
@@ -681,12 +680,12 @@ function ListPreviewPorLoja(props: {
             <Text className="font-semibold text-slate-900" numberOfLines={1}>{loja}</Text>
             <View className="items-end">
               <Text className="text-sm font-bold text-slate-900">{props.formatBRL(Math.round(total * 100) / 100)}</Text>
-              <Text className="text-[10px] text-slate-400">total da lista nesta loja</Text>
+              <Text className="text-xs text-slate-400">total da lista nesta loja</Text>
             </View>
           </View>
           {cats.map(([cat, prods]) => (
             <View key={cat} className="pl-2 gap-1">
-              <Text className="text-[11px] font-semibold text-slate-500">{cat}</Text>
+              <Text className="text-xs font-semibold text-slate-500">{cat}</Text>
               {prods.map(({ p, offer, subtotalCents }) => (
                 <PreviewItemCard
                   key={p.productId}
@@ -702,7 +701,7 @@ function ListPreviewPorLoja(props: {
             </View>
           ))}
           {faltam > 0 ? (
-            <Text className="text-[10px] text-slate-400 px-1">
+            <Text className="text-xs text-slate-400 px-1">
               {faltam} item(ns) sem preço nesta loja
             </Text>
           ) : null}
@@ -710,7 +709,7 @@ function ListPreviewPorLoja(props: {
       ))}
       {props.data.filter((p) => p.offers.length === 0).length > 0 ? (
         <Card className="gap-1.5 !py-3 border-slate-200">
-          <Text className="text-[11px] font-semibold text-slate-500">Sem preço em notas lidas</Text>
+          <Text className="text-xs font-semibold text-slate-500">Sem preço em notas lidas</Text>
           {props.data
             .filter((p) => p.offers.length === 0)
             .map((p) => (
@@ -725,7 +724,7 @@ function ListPreviewPorLoja(props: {
             ))}
         </Card>
       ) : null}
-      <Text className="text-[11px] text-slate-400 px-1">
+      <Text className="text-xs text-slate-400 px-1">
         Total da loja = soma de (quantidade × preço na loja) de cada item. Lojas ordenadas da mais barata para a mais cara.
       </Text>
     </>
@@ -754,8 +753,8 @@ function PreviewItemCard(props: {
         <Text className="flex-1 text-sm text-slate-700" numberOfLines={1}>{props.p.name}</Text>
         <View className="items-end ml-2">
           <Text className={`text-sm font-bold ${props.rightLabel === 'sem preço em notas lidas' ? 'text-slate-400' : 'text-emerald-700'}`}>{props.rightLabel}</Text>
-          {props.rightSubLabel ? <Text className="text-[10px] text-slate-400">{props.rightSubLabel}</Text> : null}
-          {props.subtotalLabel ? <Text className="text-[10px] text-slate-700 font-semibold">{props.subtotalLabel}</Text> : null}
+          {props.rightSubLabel ? <Text className="text-xs text-slate-400">{props.rightSubLabel}</Text> : null}
+          {props.subtotalLabel ? <Text className="text-xs text-slate-700 font-semibold">{props.subtotalLabel}</Text> : null}
         </View>
       </View>
       <View className="flex-row items-center justify-between mt-2">
