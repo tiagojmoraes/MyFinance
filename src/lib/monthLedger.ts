@@ -40,8 +40,14 @@ import { monthAdd, monthOf } from './dates';
  *  saldo real do dia-alvo fica intacto (dívida fantasma do "Saldo do dia
  *  Efetivado" quando o previsto contava receita pendente). Bump ZERA as
  *  linhas persistidas: os closings efetivados negativos gravados pelo bug
- *  são descartados e o livro inteiro recalcula. */
-export const LEDGER_RULES_VERSION = 3;
+ *  são descartados e o livro inteiro recalcula.
+ *  v27 = 4: a cascade dos meses FUTUROS passa a tratar carry AUSENTE como
+ *  0 (item saiu da fila) em vez de falta fresca. Antes, ao avançar os meses
+ *  a fila REINICIAVA do zero quando uma classificação terminava (item sem
+ *  linha no mês anterior voltava com `target − reserved` inteiro) — os
+ *  meses futuros já persistidos com a fila recomeçada ficam stale. Bump
+ *  ZERA o livro: os meses futuros recalculam com a fila contínua. */
+export const LEDGER_RULES_VERSION = 4;
 
 /** Marca d'água que significa "tudo sujo, recalcular do zero". */
 export const DIRTY_ALL = '0000-00';

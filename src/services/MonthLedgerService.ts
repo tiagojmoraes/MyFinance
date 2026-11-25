@@ -671,6 +671,15 @@ export class MonthLedgerService {
    * que reativava items que já tinham sido totalmente cobertos no mês
    * anterior (a falta fresca é max(0, target - reserved) e ignora o
    * trabalho do mês anterior).
+   *
+   * v27 (fix "fila recomeça do zero"): item SEM linha no mês anterior
+   * (`carry == undefined`) significa que ele NÃO estava mais na fila — a
+   * falta dele zerou em algum mês anterior e a cascade o omitiu
+   * (`faltaInicio <= 0 → continue`, sem linha persistida). O fallback para
+   * `fresh` ressuscitava o item com a falta inteira: ao avançar os meses a
+   * fila REINICIAVA (ex.: P 900k fechando em fev/2027 voltava com 900k em
+   * abr/2027), empurrando Necessário/Desejo para trás e o plano nunca
+   * chegava a "done". Nos meses futuros, carry ausente = 0.
    */
   private async cascadeWishlistForMonth(
     month: Ym,
@@ -693,7 +702,10 @@ export class MonthLedgerService {
     }
     // Para o mês corrente: usa a falta fresca (target - reserved). Para
     // meses futuros (>current): usa o carryover (shortage_end do mês
-    // anterior) — se não houver carryover, usa a falta fresca.
+    // anterior). v27: carry AUSENTE (item sem linha no mês anterior) = o
+    // item já tinha saído da fila (falta zerou) → 0, nunca volta para a
+    // falta fresca — a falta fresca só vale para o mês corrente (estado
+    // real de hoje).
     const items: WishItemRef[] = [];
     for (const cl of classes) {
       for (const item of cl.items) {
@@ -704,7 +716,7 @@ export class MonthLedgerService {
         const faltaInicio =
           month === ctx.todayMonth
             ? fresh
-            : (carry != null ? carry : fresh);
+            : (carry != null ? carry : 0);
         if (faltaInicio <= 0) continue;
         items.push({
           itemId: item.id,
