@@ -245,6 +245,8 @@ export default function LancamentoScreen() {
   // v68 "Repetir": cadência do Fixo/Parcelado (padrão Mensal = como sempre foi)
   const [repeat, setRepeat] = React.useState<Repeat>('MENSAL');
   const [installments, setInstallments] = React.useState('2');
+  // v29 "Parcela atual": parcelamento que já está andando (ex.: 125 de 360). Vazio = 1.
+  const [parcelaAtual, setParcelaAtual] = React.useState('');
   // v11 (Req 4): "Dividir total" e "Parcela fixa" migradas dos Parcelamentos
   const [planMode, setPlanMode] = React.useState<'DIVIDE_TOTAL' | 'FIXED_PER_MONTH'>('DIVIDE_TOTAL');
   const [target, setTarget] = React.useState<'ACCOUNT' | 'CARD'>(params.card ? 'CARD' : 'ACCOUNT');
@@ -1164,6 +1166,7 @@ export default function LancamentoScreen() {
           // no CARTÃO entram negativas na fatura (abatem o total a pagar).
           const n = parseInt(installments, 10);
           if (!Number.isInteger(n) || n < 2) throw new Error('Informe o número de parcelas (2 ou mais)');
+          if (!atualOk) throw new Error(`A parcela atual deve estar entre 1 e ${n}`);
           if (!description.trim()) throw new Error('Informe a descrição');
           // v11 (Req 4): os dois modos migrados da tela Parcelamentos
           const base =
@@ -1173,6 +1176,7 @@ export default function LancamentoScreen() {
                   mode: 'FIXED_PER_MONTH' as const,
                   fixedAmountCents: cents,
                   totalInstallments: n,
+                  startSequence: atualParc,
                   firstDueDate: date,
                   purchaseDate: date,
                   categoryId,
@@ -1183,6 +1187,7 @@ export default function LancamentoScreen() {
                   mode: 'DIVIDE_TOTAL' as const,
                   totalCents: cents,
                   totalInstallments: n,
+                  startSequence: atualParc,
                   firstDueDate: date,
                   purchaseDate: date,
                   categoryId,
@@ -1262,6 +1267,21 @@ export default function LancamentoScreen() {
   const isConsolidated = kind === 'CONSOLIDATED';
   const isPlain = kind === 'EXPENSE' || kind === 'INCOME';
   const advanced = moreOpen || modality !== 'AVISTA' || kind === 'CONSOLIDATED';
+  // v29 — parcela atual (125/360) e quantas parcelas ainda faltam gerar
+  const nParc = parseInt(installments, 10);
+  const atualParc = parcelaAtual.trim() === '' ? 1 : parseInt(parcelaAtual, 10);
+  const atualOk = Number.isInteger(atualParc) && atualParc >= 1 && (!Number.isInteger(nParc) || atualParc <= nParc);
+  const restantes = Number.isInteger(nParc) ? (atualOk ? nParc - atualParc + 1 : nParc) : 0;
+  const emAndamento = modality === 'PARCELADO' && atualOk && atualParc > 1;
+  // v29 — Subcategoria (lançamento manual): a categoria gravada é a sub quando escolhida,
+  // senão a principal. Fica escondida quando o lançamento vem de QR code (NF).
+  const catSel = categories.find((c) => c.id === categoryId) ?? null;
+  const catPaiId = catSel ? (catSel.parent_id ?? catSel.id) : null;
+  const subcats = catPaiId
+    ? categories
+        .filter((c) => c.parent_id === catPaiId && categoryMatchesFilter(c, kind === 'INCOME' ? 'CREDIT' : kind === 'EXPENSE' ? 'DEBIT' : 'ANY'))
+        .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
+    : [];
   const isEdit = editId != null;
   /** Edição de grupo: o formulário inclui cabeçalho e linhas. */
   const isEditGroup = isEdit && editKind === 'CONSOLIDATED';
@@ -1433,7 +1453,7 @@ export default function LancamentoScreen() {
                 <Text className={`text-sm font-medium ${theme.textMuted} h-[22px]`}>Edição do grupo</Text>
               ) : (
                 <MoneyInput
-                  label={modality === 'PARCELADO' && planMode === 'FIXED_PER_MONTH' ? 'Valor da parcela (R$)' : 'Valor'}
+                  label={modality === 'PARCELADO' && planMode === 'FIXED_PER_MONTH' ? 'Valor da parcela (R$)' : emAndamento && planMode === 'DIVIDE_TOTAL' ? 'Valor total restante (R$)' : 'Valor'}
                   cents={cents}
                   onChangeCents={setCents}
                   autoFocus
@@ -1487,11 +1507,21 @@ export default function LancamentoScreen() {
                   : 'Categoria (opcional)'
               }
               categories={categories}
-              value={categoryId}
+              value={catPaiId}
               onChange={setCategoryId}
               filter={categoryFilter}
               allowEmpty
               onlyParents
+            />
+          ) : null}
+          {!isTransfer && !isConsolidated && !nfceNote && subcats.length > 0 ? (
+            <Select
+              label="Subcategoria (opcional)"
+              items={subcats.map((c) => ({ id: c.id, label: c.name }))}
+              selectedId={catSel?.parent_id ? catSel.id : null}
+              onSelect={(id) => setCategoryId(id ?? catPaiId)}
+              allowEmpty
+              emptyLabel="Sem subcategoria"
             />
           ) : null}
           {/* A conta do grupo vale para todas as linhas à vista e as linhas em conta. */}
@@ -1927,16 +1957,30 @@ export default function LancamentoScreen() {
                   keyboardType="numeric"
                   placeholder="Ex.: 12"
                 />
+                {!isEdit ? (
+                  <TextField
+                    label="Parcela atual (opcional)"
+                    value={parcelaAtual}
+                    onChangeText={(t) => setParcelaAtual(t.replace(/\D/g, ''))}
+                    keyboardType="numeric"
+                    placeholder="1"
+                  />
+                ) : null}
+                {emAndamento ? (
+                  <Text className="text-xs font-semibold text-slate-600 -mt-1">
+                    Começa na parcela {atualParc}/{nParc} · {restantes} parcela(s) restante(s)
+                  </Text>
+                ) : null}
                 {/* v11 (Req 4): no modo "Parcela fixa" o total é calculado automaticamente.
                     v17 (melhoria 1): em AMBOS os modos o valor de cada parcela fica
                     visível — em "Dividir total" é o cálculo exato (resto na última). */}
                 {planMode === 'FIXED_PER_MONTH' ? (
                   <Text className="text-xs text-slate-500 -mt-1">
-                    Total do parcelamento: {formatBRL(cents * (parseInt(installments, 10) || 0))} em {parseInt(installments, 10) || 0} parcela(s) · cada parcela: {formatBRL(cents)}
+                    Total {emAndamento ? 'restante' : 'do parcelamento'}: {formatBRL(cents * restantes)} em {restantes} parcela(s) · cada parcela: {formatBRL(cents)}
                   </Text>
                 ) : (() => {
-                  const n = parseInt(installments, 10);
-                  if (!Number.isInteger(n) || n < 2 || cents <= 0) return null;
+                  const n = restantes;
+                  if (!Number.isInteger(nParc) || nParc < 2 || n < 1 || cents <= 0) return null;
                   const parts = divideCents(cents, n);
                   const resto = parts[n - 1] !== parts[0];
                   return (

@@ -642,6 +642,23 @@ export class TransactionService {
     const tx = await this.transactions.getById(transactionId);
       if (!tx) throw new Error('Transação não encontrada');
 
+      // v29: transferência VINCULADA a um plano de poupança / reserva da Programação
+      // de Compra não pode ser apagada pelo Fluxo (FK) — explica em vez do erro cru.
+      const daPoupanca = await this.db.getFirstAsync<{ id: string }>(
+        'SELECT id FROM savings_entries WHERE transaction_id = ? LIMIT 1',
+        [transactionId]
+      );
+      if (daPoupanca) {
+        throw new Error('Esta transferência vem do plano de poupança. Altere o plano de poupança para removê-la.');
+      }
+      const daReserva = await this.db.getFirstAsync<{ id: string }>(
+        'SELECT id FROM wishlist_reserves WHERE transaction_id = ? LIMIT 1',
+        [transactionId]
+      );
+      if (daReserva) {
+        throw new Error('Esta transferência é uma reserva da Programação de Compra. Exclua o item na Programação de Compra para removê-la.');
+      }
+
       // 0. Ocorrência de conta fixa: impede que a regra recrie esta ocorrência
       // v87 (BUG ALTA): a exclusão da SEMANAL não era registrada (o ref é
       // REC:{regra}:D:{AAAA-MM-DD} e o código só aceitava AAAA-MM) → na

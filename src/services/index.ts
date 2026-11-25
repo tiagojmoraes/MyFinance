@@ -128,7 +128,7 @@ export function buildServices(db: DbDriver): Omit<Services, 'ready'> {
   const wishlist = new WishlistService(db, transactions, balance);
   // v104: o serviço da LISTA DE COMPRA não depende de orçamento/transferência
   // (só lê do banco e persiste listas); fica no grafo principal.
-  const shoppingList = new ShoppingListService(db);
+  const shoppingList = new ShoppingListService(db, pantry);
   // v17: livro-razão mensal (mantém a hierarquia encadeada em SQLite).
   const monthLedger = new MonthLedgerService(db, settings, balance, budgets, savings, wishlist);
   // v17: late-binding — o WishlistService consulta o MonthLedgerService para

@@ -43,6 +43,12 @@ export interface CreatePlanInput {
   stepMonths?: number;
   /** v68 "Repetir": cadência em dias (7=semanal) — sobrepõe stepMonths. */
   stepDays?: number | null;
+  /** v29 "Parcela atual": o parcelamento já está andando (ex.: 125/360). Só são
+   *  criadas as parcelas de `startSequence` até `totalInstallments`; o total do
+   *  plano continua o informado (125/360) e `firstDueDate` é o vencimento da
+   *  parcela atual. Em DIVIDE_TOTAL, `totalCents` é o valor RESTANTE, dividido
+   *  entre as parcelas que faltam. Padrão: 1. */
+  startSequence?: number;
 }
 
 /** Campos editáveis de um plano de parcelamento (tela "Alterar parcelamento"). */
@@ -90,10 +96,13 @@ export class InstallmentService {
     if (input.cardId && input.accountId) throw new Error('Escolha apenas cartão OU conta');
     const planType = input.type ?? 'EXPENSE';
 
+    const start = input.startSequence ?? 1;
+    if (!Number.isInteger(start) || start < 1 || start > n) throw new Error('Parcela atual inválida');
+    const count = n - start + 1; // parcelas a gerar (da atual até a última)
     const amounts =
       input.mode === 'DIVIDE_TOTAL'
-        ? divideCents(input.totalCents!, n)
-        : new Array(n).fill(input.fixedAmountCents!);
+        ? divideCents(input.totalCents!, count)
+        : new Array(count).fill(input.fixedAmountCents!);
     const planTotal =
       input.mode === 'DIVIDE_TOTAL' ? input.totalCents! : amounts.reduce((a, b) => a + b, 0);
 
@@ -142,13 +151,13 @@ export class InstallmentService {
         step_days: stepDays,
       });
 
-      for (let i = 0; i < n; i++) {
+      for (let i = 0; i < count; i++) {
         const dueDate = dueOf(i);
         const instId = genId();
         await this.installments.insert({
           id: instId,
           plan_id: planId,
-          sequence_number: i + 1,
+          sequence_number: start + i,
           amount_cents: amounts[i],
           due_date: dueDate,
           invoice_id: null,
@@ -405,7 +414,9 @@ export class InstallmentService {
       const novoTotal = patch.totalInstallments;
       if (!Number.isInteger(novoTotal) || novoTotal < 1) throw new Error('Número de parcelas inválido');
       const existentes = all.filter((i) => i.status !== 'CANCELED');
-      const atual = existentes.length;
+      // v29: maior sequência (== quantidade nos planos de sempre; nos que começam
+      // na "parcela atual" há menos linhas que o total do plano).
+      const atual = existentes.reduce((m, i) => Math.max(m, i.sequence_number), 0);
       restanteAntesDeContagem = pendings.reduce((a, b) => a + b.amount_cents, 0);
       const lastDue = existentes.reduce((acc, i) => (i.due_date > acc ? i.due_date : acc), plan.first_due_date);
       if (novoTotal > atual) {

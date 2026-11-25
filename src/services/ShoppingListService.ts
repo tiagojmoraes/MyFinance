@@ -10,6 +10,7 @@
 import type { DbDriver } from '../db/types';
 import { genId } from '../lib/id';
 import { nowIso } from '../lib/dates';
+import { PantryService } from './PantryService';
 
 export type ShoppingListStatus = 'OPEN' | 'CLOSED';
 
@@ -44,7 +45,14 @@ export interface ShoppingListSummary extends ShoppingListRow {
 }
 
 export class ShoppingListService {
-  constructor(private db: DbDriver) {}
+  private pantry: PantryService;
+
+  constructor(private db: DbDriver, pantry?: PantryService) {
+    // v29: o total estimado usa a MESMA regra do detalhe da lista
+    // (PantryService.getListaCompraData): último preço de cada loja e,
+    // entre as lojas, o menor.
+    this.pantry = pantry ?? new PantryService(db);
+  }
 
   // ---------------- CRUD ----------------
 
@@ -101,25 +109,15 @@ export class ShoppingListService {
     const items = await this.db.getAllAsync<ShoppingListItemRow>(
       'SELECT id, list_id, product_id, qty_base FROM shopping_list_items'
     );
-    const priceRows = await this.db.getAllAsync<{
-      product_id: string;
-      qty: number | null;
-      unit_original: string | null;
-      total_cents: number | null;
-      unit_price_cents: number | null;
-      base_unit: 'G' | 'ML' | 'UN' | null;
-    }>(
-      `SELECT ni.product_id, ni.qty, ni.unit_original, ni.total_cents, ni.unit_price_cents, pc.base_unit
-         FROM nfce_items ni
-         JOIN products_catalog pc ON pc.id = ni.product_id
-         JOIN nfce_documents d ON d.access_key = ni.access_key
-        WHERE ni.status = 'PARSED' AND ni.qty > 0 AND ni.total_cents > 0
-          AND d.issued_at IS NOT NULL
-        ORDER BY ni.product_id, d.issued_at DESC, ni.line_number ASC`
-    );
-    // Para cada produto, mapa de CNPJ/loja → preço em REAL (R$/g · R$/ml · R$/un = cent/base).
-    // 'Melhor' = menor preço entre lojas.
-    const bestByProduct = computeBestPerProduct(priceRows);
+    // v29 — REGRA ÚNICA (igual ao detalhe da lista): para cada produto, o ÚLTIMO
+    // preço de cada loja; o 'melhor' é o MENOR entre essas lojas.
+    const productIds = [...new Set(items.map((it) => it.product_id))];
+    const data = await this.pantry.getListaCompraData(productIds.map((productId) => ({ productId, qtyBase: 0 })));
+    const bestByProduct = new Map<string, number>();
+    for (const p of data) {
+      if (p.offers.length === 0) continue;
+      bestByProduct.set(p.productId, Math.min(...p.offers.map((o) => o.unitPriceBaseCents)));
+    }
     const byList = new Map<string, ShoppingListItemRow[]>();
     for (const it of items) {
       const arr = byList.get(it.list_id) ?? [];
@@ -132,7 +130,7 @@ export class ShoppingListService {
       for (const it of arr) {
         const best = bestByProduct.get(it.product_id);
         if (best == null) continue;
-        totalCents += it.qty_base * best.unitPriceBaseCents;
+        totalCents += it.qty_base * best;
       }
       return { ...l, itemCount: arr.length, estimatedTotalCents: roundedCents(totalCents) };
     });
@@ -194,89 +192,6 @@ export class ShoppingListService {
   async touch(listId: string): Promise<void> {
     await this.db.runAsync('UPDATE shopping_lists SET updated_at = ? WHERE id = ?', [nowIso(), listId]);
   }
-}
-
-/**
- * v104 — MELHOR PREÇO POR PRODUTO.
- * Reaproveita o reader das NFs já existente: filtra por UNIDADE compatível com
- * o base_unit do produto (KG nunca mistura com UN — guarda de dimensão).
- * Preço por kg (NfceItemRow.unit_price_cents) tem prioridade sobre total/qty
- * quando está preenchido — alinha com a regra do cálculo da lista.
- * 'Melhor entre lojas' = o MENOR preço unitário (base).
- */
-function computeBestPerProduct(
-  rows: Array<{
-    product_id: string;
-    qty: number | null;
-    unit_original: string | null;
-    total_cents: number | null;
-    unit_price_cents: number | null;
-    base_unit: 'G' | 'ML' | 'UN' | null;
-  }>
-): Map<string, { unitPriceBaseCents: number; dim: 'G' | 'ML' | 'UN' }> {
-  // Calcula preços na UNIDADE BASE (R$/g, R$/ml, R$/un) POR produto.
-  // Para KG/ML: se nfce_items.unit_price_cents veio preenchido (em R$/kg ou R$/L),
-  // converte dividindo por 1000; senão usa total_cents ÷ (qty × fator p/ base).
-  const factorMap: Record<string, { factor: number; base: 'G' | 'ML' | 'UN' }> = {
-    G: { factor: 1, base: 'G' },
-    GR: { factor: 1, base: 'G' },
-    GRAMAS: { factor: 1, base: 'G' },
-    KG: { factor: 1000, base: 'G' },
-    KGS: { factor: 1000, base: 'G' },
-    QUILO: { factor: 1000, base: 'G' },
-    QUILOS: { factor: 1000, base: 'G' },
-    ML: { factor: 1, base: 'ML' },
-    MILILITRO: { factor: 1, base: 'ML' },
-    MILILITROS: { factor: 1, base: 'ML' },
-    L: { factor: 1000, base: 'ML' },
-    LT: { factor: 1000, base: 'ML' },
-    LITRO: { factor: 1000, base: 'ML' },
-    LITROS: { factor: 1000, base: 'ML' },
-    UN: { factor: 1, base: 'UN' },
-    UND: { factor: 1, base: 'UN' },
-    UNIDADE: { factor: 1, base: 'UN' },
-    UNIDADES: { factor: 1, base: 'UN' },
-    CX: { factor: 1, base: 'UN' },
-    PC: { factor: 1, base: 'UN' },
-  };
-  const calcBase = (
-    qty: number | null,
-    unitOrig: string | null,
-    totalCents: number | null,
-    unitPriceCents: number | null,
-    baseUnit: 'G' | 'ML' | 'UN' | null
-  ): { deltaBase: number; base: 'G' | 'ML' | 'UN' | null; unitPriceBaseCents: number | null } => {
-    if (qty == null || totalCents == null || totalCents <= 0 || qty <= 0) return { deltaBase: 0, base: null, unitPriceBaseCents: null };
-    const unit = (unitOrig || 'UN').trim().toUpperCase();
-    const entry = factorMap[unit];
-    if (!entry) return { deltaBase: 0, base: null, unitPriceBaseCents: null };
-    const delta = Math.round(qty * entry.factor);
-    if (baseUnit && entry.base !== baseUnit) return { deltaBase: 0, base: null, unitPriceBaseCents: null };
-    // v104: nfce_items.unit_price_cents é em REAL/UNIDADE-DA-NOTA (R$/kg ou R$/L
-    // ou R$/un). Para KG/ML → divide por 1000 para cair em R$/g ou R$/ml
-    // (preço por BASE). Para UN → já é preço direto por unidade.
-    if (unitPriceCents != null && unitPriceCents > 0) {
-      const perBase = entry.base === 'UN' ? unitPriceCents : unitPriceCents / 1000;
-      return { deltaBase: delta, base: entry.base, unitPriceBaseCents: perBase };
-    }
-    // Fallback: total / deltaBase (regra antiga).
-    const perBase = totalCents / delta;
-    return { deltaBase: delta, base: entry.base, unitPriceBaseCents: perBase };
-  };
-
-  const out = new Map<string, { unitPriceBaseCents: number; dim: 'G' | 'ML' | 'UN' }>();
-  for (const r of rows) {
-    const { base, unitPriceBaseCents } = calcBase(r.qty, r.unit_original, r.total_cents, r.unit_price_cents, r.base_unit);
-    if (base == null || unitPriceBaseCents == null) continue;
-    const cur = out.get(r.product_id);
-    if (!cur || unitPriceBaseCents < cur.unitPriceBaseCents) {
-      out.set(r.product_id, { unitPriceBaseCents, dim: base });
-    }
-  }
-  // 'Melhor entre lojas' = o MENOR preço unitário (base) observado na história
-  // toda — um valor mais alto nunca vence. A regra já existia no v72, então a
-  // lista nova mantém (não recalculamos a cada NF para não criar inconsistência).
-  return out;
 }
 
 function roundedCents(c: number): number {

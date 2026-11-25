@@ -175,7 +175,7 @@ export default function CategoriasScreen() {
     const hasSubs = subs.length > 0;
     const isOpen = !!openCats[c.id];
     return (
-      <Pressable onPress={() => openEdit(c)} accessibilityRole="button" accessibilityLabel={`Editar ${c.name}`}>
+      <Pressable key={c.id} onPress={() => openEdit(c)} accessibilityRole="button" accessibilityLabel={`Editar ${c.name}`}>
         <Card className={`!py-2.5 ${isChild ? 'ml-4 border-dashed' : 'mb-1'}`}>
           <View className="flex-row items-center gap-2">
             {/* v14 — seta ANTES do pictograma (▸ recolhido / ▾ aberto) — só
