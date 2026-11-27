@@ -142,7 +142,22 @@ export default function AjustesScreen() {
       vacuumInto: async (target) => {
         const driver = svc.db as unknown as { vacuumInto?: (p: string) => Promise<void> };
         if (typeof driver.vacuumInto !== 'function') throw new Error('Driver não suporta VACUUM INTO');
-        await driver.vacuumInto(target);
+        // v32: o SQLite abre o destino por caminho COMUM, mas o que vem de documentDirectory
+        // é um endereço file:// com caracteres codificados (no Expo Go a pasta do app é algo
+        // como %40anonymous%2F...). Decodifica UMA vez para virar o caminho real do disco;
+        // no APK instalado não há nada codificado e o resultado é o mesmo caminho.
+        let destino = target;
+        try {
+          destino = decodeURIComponent(target);
+        } catch {
+          /* mantém o caminho original */
+        }
+        try {
+          await driver.vacuumInto(destino);
+        } catch (e) {
+          // inclui o caminho tentado para diagnosticar sem adivinhar
+          throw new Error(`${e instanceof Error ? e.message : String(e)} [destino: ${destino}]`);
+        }
       },
       listFiles: async (dir) => {
         try {

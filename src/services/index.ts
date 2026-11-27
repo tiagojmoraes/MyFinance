@@ -56,6 +56,14 @@ class DeferredDriver implements DbDriver {
   closeAsync(): Promise<void> {
     return this.d().closeAsync();
   }
+  /** v30: o backup (Ajustes e AutoBackupService) fala com ESTE proxy, não com o
+   *  driver real — sem repassar o `vacuumInto`, o app dizia "Driver não suporta
+   *  VACUUM INTO" mesmo com o ExpoSQLiteDriver suportando. */
+  vacuumInto(targetPath: string): Promise<void> {
+    const real = this.d() as DbDriver & { vacuumInto?: (p: string) => Promise<void> };
+    if (typeof real.vacuumInto !== 'function') throw new Error('Driver não suporta VACUUM INTO');
+    return real.vacuumInto(targetPath);
+  }
 }
 
 export interface Services {
