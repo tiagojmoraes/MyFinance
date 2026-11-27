@@ -508,7 +508,8 @@ export function parseNfceHeader(html: string, accessKey: string): NfceHeader {
 
 /** Converte unidade da nota para unidade base do catálogo (G|ML|UN). */
 export function convertToBaseUnit(qty: number, unitOriginal: string | null): { deltaBase: number; baseUnit: 'G' | 'ML' | 'UN' } | null {
-  const unit = (unitOriginal || 'UN').trim().toUpperCase();
+  // v31: ignora ponto/espaços no fim ("UN.", "PCT.") e normaliza maiúsculas
+  const unit = (unitOriginal || 'UN').trim().toUpperCase().replace(/[.\s]+$/, '');
   const factorMap: Record<string, { factor: number; base: 'G' | 'ML' | 'UN' }> = {
     G: { factor: 1, base: 'G' },
     GR: { factor: 1, base: 'G' },
@@ -530,6 +531,16 @@ export function convertToBaseUnit(qty: number, unitOriginal: string | null): { d
     UNIDADES: { factor: 1, base: 'UN' },
     CX: { factor: 1, base: 'UN' },
     PC: { factor: 1, base: 'UN' },
+    // v31: embalagens comuns em NFC-e — contam como 1 unidade (embalagem), não o conteúdo
+    UNID: { factor: 1, base: 'UN' },
+    PCT: { factor: 1, base: 'UN' },
+    PACOTE: { factor: 1, base: 'UN' },
+    BDJ: { factor: 1, base: 'UN' },
+    BANDEJA: { factor: 1, base: 'UN' },
+    FD: { factor: 1, base: 'UN' },
+    FARDO: { factor: 1, base: 'UN' },
+    SC: { factor: 1, base: 'UN' },
+    DZ: { factor: 12, base: 'UN' }, // dúzia
   };
   const entry = factorMap[unit];
   if (!entry) return null;

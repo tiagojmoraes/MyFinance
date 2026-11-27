@@ -97,6 +97,8 @@ export class ProductAliasRepo {
   constructor(private db: DbDriver) {}
   /** v37: legado — match por loja+código (só quando o doc NÃO tem CNPJ). */
   async ensureStoreCodeAlias(product_id: string, storeName: string, storeProductCode: string): Promise<void> {
+    // v31: código vazio NÃO vira alias (ligaria todo item sem código da loja ao mesmo produto)
+    if (!storeProductCode || !storeProductCode.trim()) return;
     const existing = await this.findByStoreCode(storeName, storeProductCode);
     if (existing) {
       if (existing.product_id !== product_id) {
@@ -109,6 +111,7 @@ export class ProductAliasRepo {
   }
   /** v37: legado — match por loja+código (só quando o doc NÃO tem CNPJ). */
   findByStoreCode(storeName: string, storeProductCode: string): Promise<{ id: string; product_id: string } | null> {
+    if (!storeProductCode || !storeProductCode.trim()) return Promise.resolve(null);
     return this.db.getFirstAsync(
       `SELECT pa.id, pa.product_id
          FROM product_aliases pa
@@ -120,6 +123,7 @@ export class ProductAliasRepo {
   }
   /** v100 — CAMINHO OURO da TABELA DA VERDADE: CNPJ (digits) + código. */
   findByCnpjCode(cnpj: string, storeProductCode: string): Promise<{ id: string; product_id: string } | null> {
+    if (!storeProductCode || !storeProductCode.trim()) return Promise.resolve(null);
     const digits = cnpj.replace(/\D/g, '');
     return this.db.getFirstAsync(
       `SELECT pa.id, pa.product_id
@@ -162,6 +166,8 @@ export class ProductAliasRepo {
    * Mesmo (loja, código) legado é mantido para notas SEM CNPJ.
    */
   async ensureCnpjCodeAlias(product_id: string, cnpj: string | null | undefined, storeProductCode: string, storeName?: string | null, aliasText?: string | null): Promise<void> {
+    // v31: código vazio NÃO vira alias
+    if (!storeProductCode || !storeProductCode.trim()) return;
     const { genId } = require('../lib/id') as typeof import('../lib/id');
     const cnpjDigits = cnpj ? cnpj.replace(/\D/g, '') || null : null;
     if (cnpjDigits) {

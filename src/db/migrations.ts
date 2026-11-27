@@ -1171,6 +1171,18 @@ END;
         }
       },
     },
+    // v31: remove vínculos (alias) com código de loja VAZIO — ligavam todo item sem
+    // código daquela loja ao mesmo produto. Só os sem texto de apelido.
+    {
+      version: 65,
+      name: 'v31_remove_alias_codigo_vazio',
+      sql: '',
+      fn: async (driver) => {
+        await driver.execAsync(
+          "DELETE FROM product_aliases WHERE TRIM(COALESCE(store_product_code, '')) = '' AND alias_text IS NULL;"
+        );
+      },
+    },
 ];
 
 /**
