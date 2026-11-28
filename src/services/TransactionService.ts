@@ -56,6 +56,10 @@ export interface CreateTransferInput {
   date?: string;
   fromAccountId: string;
   toAccountId: string;
+  /** v35: "hoje" de referência para a regra futuro→PENDING (padrão: todaySP()).
+   *  Só quem gera previsões determinísticas usa (generateForecast da poupança):
+   *  no app real o valor é o mesmo do relógio — nada muda em produção. */
+  today?: string;
 }
 
 /** v7.1: linha de um lançamento consolidado manual (débito ou crédito). */
@@ -253,7 +257,11 @@ export class TransactionService {
     if (input.amountCents <= 0) throw new Error('Valor deve ser maior que zero');
     if (input.fromAccountId === input.toAccountId) throw new Error('Conta de origem e destino devem ser diferentes');
     const date = input.date ?? todaySP();
-    const futuro = date > todaySP(); // v21 (bug 2): transferência futura vira previsão
+    // v35 (bug 2): transferência futura vira previsão — comparada contra o
+    // "hoje" de referência (input.today ?? relógio real), para que geradores
+    // determinísticos (generateForecast com hoje simulado) nasçam PENDING
+    // quando a data ainda não venceu NO TEMPO SIMULADO.
+    const futuro = date > (input.today ?? todaySP());
     return this.db.transactionAsync(async () => {
       const tx: TransactionRow = {
         id: genId(),

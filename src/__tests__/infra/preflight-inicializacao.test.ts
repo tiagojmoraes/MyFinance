@@ -41,9 +41,10 @@ describe('v60 PRÉ-VOO — inicialização sem erro', () => {
   test('AGENTS.md documenta versões travadas e a regra de testes', () => {
     const txt = fs.readFileSync(path.join(root, 'AGENTS.md'), 'utf8');
     // AGENTS.md reescrito (fonte única): a seção "Versões travadas" documenta
-    // o motivo de cada pin — expo 58.0.23, RN 0.88.1, jest 29 (Jest 30 + TS 6
-    // quebrou test.each) — e a seção 5 guarda a regra de não rodar testes.
-    for (const marco of ['## 5. Testes', '## 5.1 Versões travadas', 'expo 58.0.23', 'react-native 0.88.1', 'jest ^29.7.0', 'npm install']) {
+    // o motivo de cada pin — expo ~58 (58.0.23 → ~58.0.26 na v24, por isso o
+    // marcador sem patch), RN 0.88.1, jest 29 (Jest 30 + TS 6 quebrou
+    // test.each) — e a seção 5 guarda a regra de não rodar testes.
+    for (const marco of ['## 5. Testes', '## 5.1 Versões travadas', 'expo ~58.', 'react-native 0.88.1', 'jest ^29.7.0', 'npm install']) {
       expect(txt).toContain(marco);
     }
   });

@@ -160,12 +160,16 @@ export class SavingsService {
     );
   }
 
-  /** Plano MENSAL: valor todo mês no dia escolhido (origem → destino). */
+  /** Plano MENSAL: valor todo mês no dia escolhido (origem → destino).
+   *  v35: `today` opcional — "hoje" de referência da geração inicial de
+   *  previsões (padrão: todaySP()); quem simula uma data (testes) passa o
+   *  mesmo hoje usado em generateForecast para nascer determinístico. */
   async createMonthlyPlan(input: {
     amountCents: number;
     dayOfMonth: number;
     fromAccountId: string;
     toAccountId: string;
+    today?: string;
   }): Promise<string> {
     if (input.amountCents <= 0) throw new Error('O valor da poupança deve ser maior que zero');
     if (!input.dayOfMonth || input.dayOfMonth < 1 || input.dayOfMonth > 31)
@@ -179,7 +183,7 @@ export class SavingsService {
          VALUES (?, 'MONTHLY', ?, ?, ?, ?, 1, ?)`,
         [id, input.amountCents, Math.trunc(input.dayOfMonth), input.fromAccountId, input.toAccountId, nowIso()]
       );
-      await this.generateForecast(todaySP());
+      await this.generateForecast(input.today ?? todaySP());
       return id;
     });
   }
@@ -264,6 +268,10 @@ export class SavingsService {
           amountCents: plan.amount_cents!,
           date,
           description: 'Poupança mensal',
+          // v35: determinismo do parâmetro `today` — a regra futuro→PENDING
+          // usa o MESMO "hoje" que define os meses gerados (no app real o
+          // valor é todaySP(); nos testes, o hoje simulado).
+          today: todayYmd,
         });
         await this.db.runAsync(
           `INSERT INTO savings_entries (id, plan_id, month, kind, amount_cents, status, transaction_id, created_at)

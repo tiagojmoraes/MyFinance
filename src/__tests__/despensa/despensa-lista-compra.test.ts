@@ -167,7 +167,9 @@ describe('v72 — tela Despensa: abas, carrinho e as duas visões', () => {
     expect(src).toContain('Estoque baixo');
     expect(src).toContain('Por categoria');
     expect(src).toContain('Por loja');
-    expect(src).toContain('total da lista nesta loja');
+    // v34: cada item entra UMA vez, na loja do MENOR preço — o rodapé do card
+    // passou a dizer "total nesta loja"
+    expect(src).toContain('total nesta loja');
     // guarda de dimensão documentada na tela (KG nunca mistura com UN)
     expect(src).toContain('nunca mistura');
   });

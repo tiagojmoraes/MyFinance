@@ -511,10 +511,11 @@ describe('v68 LANÇAMENTO — seletor "Repetir" (Fixo e Parcelado)', () => {
 
   test('Repetir não aparece para À vista nem em modo Alterar', () => {
     const src = lancSrc();
-    // o bloco inteiro do Repetir está dentro de "isPlain && !isEdit" e só fora de À vista
+    // o bloco inteiro do Repetir está dentro de "isPlain && !isEdit && advanced"
+    // (v26: Fixo/Parcelado/Grupo foram para "Mais opções") e só fora de À vista
     const idx = src.indexOf("<RepeatButtons value={repeat}");
     expect(idx).toBeGreaterThan(0);
-    const plainIdx = src.indexOf('isPlain && !isEdit ? (');
+    const plainIdx = src.indexOf('isPlain && !isEdit && advanced ? (');
     expect(plainIdx).toBeGreaterThan(0);
     expect(plainIdx).toBeLessThan(idx); // dentro do bloco do formulário simples
     const blockStart = src.indexOf("modality !== 'AVISTA' ? (", idx - 600);

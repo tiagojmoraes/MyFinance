@@ -225,7 +225,8 @@ describe('NFC-e — convertToBaseUnit', () => {
     ['CX', 1, 'CX', 1, 'UN'],
     ['PC', 4, 'PC', 4, 'UN'],
     ['PAR', 2, 'PAR', null, null],
-    ['SC', 1, 'SC', null, null],
+    // v31: SC virou embalagem reconhecida (1 SC = 1 UN) — preço e saldo voltam a carregar
+    ['SC', 1, 'SC', 1, 'UN'],
     ['null → UN', 5, null, 5, 'UN'],
     ['unidade vazia', 5, '', 5, 'UN'],
     ['fracionária 0,25 KG', 0.25, 'KG', 250, 'G'],

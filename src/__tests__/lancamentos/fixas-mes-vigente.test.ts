@@ -540,9 +540,11 @@ describe('Melhorias v16 — marcadores de fonte', () => {
 
   test('melhoria 4: mensagens do Consolidado viraram EXEMPLOS de uso', () => {
     const lanc = read('app/lancamento.tsx');
-    expect(lanc).toContain('Ex.: Aluguel de R$ 1.200 no dia 5');
-    expect(lanc).toContain('Ex.: Obras de R$ 10.000 em 5x');
-    expect(lanc).toContain('Ex.: Aluguel recebido em 36x');
+    // v25 (UI enxuta) cortou as ajudas longas do v16 — os exemplos curtos ficaram:
+    expect(lanc).not.toContain('Ex.: Aluguel de R$ 1.200 no dia 5');
+    expect(lanc).not.toContain('Ex.: Obras de R$ 10.000 em 5x');
+    expect(lanc).not.toContain('Ex.: Aluguel recebido em 36x');
+    expect(lanc).toContain("isConsolidated ? 'Ex.: Feira + farmácia do mês' : 'Ex.: Mercado da esquina'");
     expect(lanc).not.toContain('vira CONTA FIXA neste dia');
     expect(lanc).not.toContain('vira PARCELAMENTO');
   });

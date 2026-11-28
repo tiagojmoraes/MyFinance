@@ -347,7 +347,8 @@ describe('v69 · 6 — Poupança do Fluxo (cabeçalho, programado, falta, transf
     const origem = await seedAccount(ctx.db, 'Conta F', 10_000);
     const destino = await seedAccount(ctx.db, 'Poupança F', 0);
     // dia 28 (ainda não venceu): a previsão do mês nasce PENDING — preciso transferir 10 mil
-    await ctx.services.savings.createMonthlyPlan({ amountCents: 10_000, dayOfMonth: 28, fromAccountId: origem, toAccountId: destino });
+    // v35: o "hoje" simulado atravessa createMonthlyPlan → a previsão nasce PENDING de fato
+    await ctx.services.savings.createMonthlyPlan({ amountCents: 10_000, dayOfMonth: 28, fromAccountId: origem, toAccountId: destino, today: '2026-11-01' });
     // v69: previsões determinísticas — gera a do mês visto como se hoje fosse 01/11
     await ctx.services.savings.generateForecast('2026-11-01');
     // transfere 500 manualmente (CONFIRMED) para a conta poupança do plano — "já transferido"
@@ -369,7 +370,7 @@ describe('v69 · 6 — Poupança do Fluxo (cabeçalho, programado, falta, transf
     const origem = await seedAccount(ctx.db, 'Conta T', 20_000);
     const destino = await seedAccount(ctx.db, 'Poupança T', 0);
     // plano ativo dá o DESTINO válido para as transferências avulsas contarem
-    await ctx.services.savings.createMonthlyPlan({ amountCents: 700, dayOfMonth: 28, fromAccountId: origem, toAccountId: destino });
+    await ctx.services.savings.createMonthlyPlan({ amountCents: 700, dayOfMonth: 28, fromAccountId: origem, toAccountId: destino, today: '2026-11-01' });
     await ctx.services.savings.generateForecast('2026-11-01');
     // uma CONFIRMED (no mês) e uma PENDING futura (mês seguinte)
     await tx.createTransfer({ fromAccountId: origem, toAccountId: destino, amountCents: 700, date: '2026-11-05', description: 'T1' });
