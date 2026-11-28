@@ -1,6 +1,6 @@
 {
   "name": "myfinance",
-  "version": "37.0.0",
+  "version": "38.0.0",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",

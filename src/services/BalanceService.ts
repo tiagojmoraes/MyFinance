@@ -192,81 +192,16 @@ export class BalanceService {
     return (await this.getDailyBalancesDual(month, dataVersion)).efetivado;
   }
 
-  /** Lê uma única vez a abertura prevista do mês, sem construir saldos diários. */
+  /** v38: FONTE ÚNICA DO SALDO DE ABERTURA — `getDailyBalancesDual` já reunia
+   *  s0Pre (âncoras anteriores ao mês) + histórico CONFIRMED < mês + carry
+   *  (pendências anteriores) + s0ByDay (âncoras dentro do mês). É a MESMA
+   *  rotina que alimentava o "Saldo do dia" na v34. A versão antiga deste
+   *  método divergia em alguns casos (âncoras internas e carry), zerando
+   *  o saldo do dia quando havia contas âncora dentro do mês. Agora
+   *  delega direto — uma única consulta, fórmula única. */
   async getOpeningBalanceCents(month: string): Promise<number> {
-    const start = monthRange(month).start;
-    const accounts = await this.db.getAllAsync<{
-      id: string;
-      initial_balance_cents: number;
-      initial_balance_date: string | null;
-    }>(
-      `SELECT id, initial_balance_cents, initial_balance_date FROM accounts
-        WHERE include_in_general_balance = 1 AND archived_at IS NULL`
-    );
-    if (accounts.length === 0) return 0;
-
-    const ids = accounts.map((account) => account.id);
-    const marks = ids.map(() => '?').join(',');
-    const initial = accounts.reduce(
-      (sum, account) => sum + (!account.initial_balance_date || account.initial_balance_date < start
-        ? account.initial_balance_cents
-        : 0),
-      0
-    );
-    const [confirmed, pending, transfers, installments, invoices] = await Promise.all([
-      this.db.getFirstAsync<{ total: number | null }>(
-        `SELECT COALESCE(SUM(CASE WHEN fm.direction = 'CREDIT' THEN fm.amount_cents ELSE -fm.amount_cents END), 0) AS total
-           FROM financial_moves fm
-           LEFT JOIN accounts a_anchor ON a_anchor.id = fm.account_id
-           LEFT JOIN installments inst_excl ON inst_excl.id = fm.installment_id AND inst_excl.status = 'PENDING'
-          WHERE fm.account_id IN (${marks}) AND fm.status = 'CONFIRMED'
-            AND fm.effective_date < ? ${ANCHOR_FILTER_FM}
-            AND inst_excl.id IS NULL`,
-        [...ids, start] as never
-      ),
-      this.db.getFirstAsync<{ total: number | null }>(
-        `SELECT COALESCE(SUM(CASE WHEN t.type = 'INCOME' THEN t.amount_cents ELSE -t.amount_cents END), 0) AS total
-           FROM transactions t
-           LEFT JOIN accounts a_anchor ON a_anchor.id = t.account_id
-          WHERE t.status = 'PENDING' AND t.card_id IS NULL AND t.type IN ('INCOME','EXPENSE')
-            AND t.account_id IN (${marks}) AND t.occurred_on < ?
-            AND t.occurred_on >= COALESCE(a_anchor.initial_balance_date, '0000-01-01')`,
-        [...ids, start] as never
-      ),
-      this.db.getFirstAsync<{ total: number | null }>(
-        `SELECT COALESCE(SUM(CASE WHEN fm.direction = 'CREDIT' THEN fm.amount_cents ELSE -fm.amount_cents END), 0) AS total
-           FROM transactions t
-           JOIN financial_moves fm ON fm.transaction_id = t.id
-           LEFT JOIN accounts a_anchor ON a_anchor.id = fm.account_id
-          WHERE t.status = 'PENDING' AND t.type = 'TRANSFER'
-            AND fm.account_id IN (${marks}) AND fm.effective_date < ?
-            AND fm.effective_date >= COALESCE(a_anchor.initial_balance_date, '0000-01-01')`,
-        [...ids, start] as never
-      ),
-      this.db.getFirstAsync<{ total: number | null }>(
-        `SELECT COALESCE(SUM(CASE WHEN fm.direction = 'CREDIT' THEN fm.amount_cents ELSE -fm.amount_cents END), 0) AS total
-           FROM installments i
-           JOIN installment_plans p ON p.id = i.plan_id
-           JOIN financial_moves fm ON fm.installment_id = i.id
-           LEFT JOIN accounts a_anchor ON a_anchor.id = fm.account_id
-          WHERE p.account_id IN (${marks}) AND p.card_id IS NULL
-            AND i.status = 'PENDING' AND fm.status = 'CONFIRMED'
-            AND fm.effective_date < ? ${ANCHOR_FILTER_FM}`,
-        [...ids, start] as never
-      ),
-      this.db.getFirstAsync<{ total: number | null }>(
-        `SELECT COALESCE(SUM(MAX(0, total_cents - credit_from_prev_cents - paid_cents)), 0) AS total
-           FROM invoices WHERE due_date < ? AND status != 'PAID'`,
-        [start]
-      ),
-    ]);
-
-    return initial
-      + (confirmed?.total ?? 0)
-      + (pending?.total ?? 0)
-      + (transfers?.total ?? 0)
-      + (installments?.total ?? 0)
-      - (invoices?.total ?? 0);
+    const dual = await this.computeDailyBalancesDual(month);
+    return dual.openingPrevisto;
   }
 
   /**
