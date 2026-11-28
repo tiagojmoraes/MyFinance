@@ -1183,6 +1183,14 @@ END;
         );
       },
     },
+    // v33 — o layout "Visualizar em Abas" › "Produto/Serviços" traz o desconto
+    // POR ITEM ("Valor do Desconto"). O total do item continua bruto (bate com
+    // o total de produtos da nota); o preço efetivo usa total − desconto.
+    {
+      version: 66,
+      name: 'v33_nfce_items_discount',
+      sql: 'ALTER TABLE nfce_items ADD COLUMN discount_cents INTEGER;',
+    },
 ];
 
 /**

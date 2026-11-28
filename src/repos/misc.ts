@@ -232,6 +232,8 @@ export interface NfceItemRow {
   /** v98: valor unitário lido da nota — null quando a página não traz
    *  "Vl. Unitário". */
   unit_price_cents?: number | null;
+  /** v33: desconto do ITEM (Valor do Desconto) — total_cents continua bruto. */
+  discount_cents?: number | null;
 }
 
 export class NfceDocumentRepo {
@@ -297,12 +299,13 @@ export class NfceItemRepo {
   insert(row: NfceItemRow): Promise<unknown> {
     return this.db.runAsync(
       `INSERT INTO nfce_items
-        (id, access_key, line_number, description, ean_extracted, store_product_code, qty, unit_original, total_cents, unit_price_cents, product_id, status, stock_applied, match_type, match_score)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        (id, access_key, line_number, description, ean_extracted, store_product_code, qty, unit_original, total_cents, unit_price_cents, discount_cents, product_id, status, stock_applied, match_type, match_score)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         row.id, row.access_key, row.line_number, row.description, row.ean_extracted,
         row.store_product_code, row.qty, row.unit_original, row.total_cents,
         row.unit_price_cents ?? null,
+        row.discount_cents ?? null,
         row.product_id, row.status, row.stock_applied,
         row.match_type ?? null, row.match_score ?? null,
       ]

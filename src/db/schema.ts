@@ -256,6 +256,8 @@ CREATE TABLE IF NOT EXISTS nfce_items (
   total_cents INTEGER,
   -- v98: valor unitário lido da nota (Vl. Unit. / Vl. Unitário); null = não veio na página
   unit_price_cents INTEGER,
+  -- v33: desconto do ITEM (Valor do Desconto); o total_cents continua bruto
+  discount_cents INTEGER,
   product_id TEXT REFERENCES products_catalog(id),
   -- v62: log da decisão v37 já no schema novo
   match_type TEXT,

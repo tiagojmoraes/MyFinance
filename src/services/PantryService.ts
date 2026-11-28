@@ -9,7 +9,7 @@
 import type { DbDriver } from '../db/types';
 import { genId } from '../lib/id';
 import { nowIso } from '../lib/dates';
-import { convertToBaseUnit } from '../parsers/nfce';
+import { convertToBaseUnit, normalizeUnitToken } from '../parsers/nfce';
 import { PantryStockRepo, PantryLedgerRepo } from '../repos/misc';
 import type { PantryLedgerRow } from '../repos/misc';
 
@@ -255,10 +255,12 @@ export class PantryService {
     const rows = await this.db.getAllAsync<{
       product_id: string; qty: number | null; unit_original: string | null;
       total_cents: number | null; unit_price_cents: number | null;
+      discount_cents: number | null;
       store_name: string | null; issued_at: string | null; access_key: string;
       doc_cnpj: string | null;
     }>(
       `SELECT ni.product_id, ni.qty, ni.unit_original, ni.total_cents, ni.unit_price_cents,
+              ni.discount_cents,
               d.store_name, d.issued_at, d.access_key, d.cnpj AS doc_cnpj
          FROM nfce_items ni
          JOIN nfce_documents d ON d.access_key = ni.access_key
@@ -287,16 +289,20 @@ export class PantryService {
       // v32 (BUG): o preço unitário vinha do "Vl. Unit." cru, com /1000 fixo
       // para peso/volume. Isso errava por DZ (12×), por nota com unidade em
       // gramas (1000×) e quando o "Vl. Unit." vinha arredondado/inconsistente.
-      // Agora o preço efetivo por unidade BASE é o TOTAL do item dividido pela
-      // quantidade convertida — o total é o campo conferido contra o total da
-      // nota na leitura. O preço por embalagem da nota (R$/BDJ, R$/DZ) fica
-      // separado para a tela poder mostrar a embalagem.
+      // Agora o preço efetivo por unidade BASE é o valor PAGO pelo item dividido
+      // pela quantidade convertida — o total é o campo conferido contra o total
+      // da nota na leitura. v33: desconta o desconto do ITEM (o total_cents é
+      // bruto), então 2 BDJ de 23,80 com 2,80 de desconto = 21,00 ÷ 2 = 10,50/un.
+      // O preço por embalagem da nota (R$/BDJ, R$/DZ) fica separado para a tela.
       const qtyNota = r.qty ?? 0;
-      const priceBase = r.total_cents != null && r.total_cents > 0
-        ? r.total_cents / conv.deltaBase
+      const itemPaidCents = r.total_cents != null && r.total_cents > 0
+        ? Math.max(0, r.total_cents - (r.discount_cents ?? 0))
+        : null;
+      const priceBase = itemPaidCents != null
+        ? itemPaidCents / conv.deltaBase
         : ((r.unit_price_cents ?? 0) * qtyNota) / conv.deltaBase;
-      const notePriceCents = r.total_cents != null && r.total_cents > 0 && qtyNota > 0
-        ? r.total_cents / qtyNota
+      const notePriceCents = itemPaidCents != null && qtyNota > 0
+        ? itemPaidCents / qtyNota
         : (r.unit_price_cents ?? 0);
       entry.offers.push({
         storeName: loja,
@@ -305,7 +311,7 @@ export class PantryService {
         accessKey: r.access_key,
         unitPriceBaseCents: priceBase,
         notePriceCents,
-        unitOriginal: r.unit_original,
+        unitOriginal: normalizeUnitToken(r.unit_original),
         unitFactor: qtyNota > 0 ? conv.deltaBase / qtyNota : 1,
         dim: conv.baseUnit,
       });

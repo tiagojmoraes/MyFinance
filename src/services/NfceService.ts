@@ -350,9 +350,11 @@ export class NfceService {
   ): Promise<{ accessKey: string; created: boolean; transactionId: string | null; needsAmount?: boolean }> {
     // v87 (BUG BAIXA): o valor pago podia ser o TOTAL DOS PRODUTOS (quando o
     // layout não traz "Valor Pago"), ignorando o DESCONTO da nota — o
-    // lançamento saía maior do que o que o usuário pagou. Agora, sem "Valor
-    // Pago", o total é o bruto MENOS o desconto.
+    // lançamento saía maior do que o que o usuário pagou.
+    // v33: "Valor a pagar R$:" é o número explícito da nota (já líquido) e vem
+    // primeiro; sem ele, "Valor Pago"; sem nenhum, bruto − desconto.
     const amountCents =
+      header.payableCents ??
       header.amountPaidCents ??
       (header.grossTotalCents != null
         ? Math.max(0, header.grossTotalCents - (header.discountCents ?? 0))
@@ -564,27 +566,41 @@ export class NfceService {
     const rawItems = parseNfceItems(html);
     if (!rawItems.length) {
       // v40: parser não achou NENHUM item — layout inesperado (o resumo mostra qual)
-      nfceStep(NFCE_STEP.ITENS, 'fail', `parser NÃO encontrou itens no HTML (${nfceHtmlSummary(html)}) — se persistir, use "Compartilhar página capturada" na revisão para me enviar o layout novo`);
+      nfceStep(NFCE_STEP.ITENS, 'fail', `parser NÃO encontrou itens no HTML (${nfceHtmlSummary(html)}) — layout novo ou página incompleta`);
       await this.documents.updateHeader(accessKey, { parse_status: 'FAILED', needs_review: 1 });
       return { items: 0, appliedToStock: 0, needsReview: 0 };
     }
     // v40: CONFERÊNCIA DE SOMA — a soma dos itens tem que bater com o total da
     // nota (centavo exato). Diferença = item faltando/duplicado/valor podre.
-    const sumCents = rawItems.reduce((acc, r) => acc + (r.totalCents ?? 0), 0);
+    // v33: há DOIS totais legítimos — "Valor Total dos Produtos" (bruto, é a
+    // soma de total_cents) e "Valor a pagar" (líquido, é a soma de total −
+    // desconto do item). Confere se bater com QUALQUER um deles.
+    const sumGross = rawItems.reduce((acc, r) => acc + (r.totalCents ?? 0), 0);
+    const sumNet = rawItems.reduce(
+      (acc, r) => acc + Math.max(0, (r.totalCents ?? 0) - (r.discountCents ?? 0)),
+      0
+    );
     const itemsWithoutTotal = rawItems.filter((r) => r.totalCents == null).length;
     const itemsWithoutCode = rawItems.filter((r) => !r.eanExtracted && !r.storeProductCode).length;
-    const noteTotal = doc.gross_total_cents ?? doc.amount_paid_cents ?? null;
+    const noteGross = doc.gross_total_cents;
+    const notePayable = doc.amount_paid_cents;
+    const okGross = noteGross != null && Math.abs(sumGross - noteGross) <= 1;
+    const okNet = notePayable != null && Math.abs(sumNet - notePayable) <= 1;
     let somaStatus: 'ok' | 'warn' = 'ok';
     let somaMsg: string;
-    if (noteTotal == null) {
+    if (noteGross == null && notePayable == null) {
       somaMsg = 'total da nota indisponível — conferência de soma pulada';
       somaStatus = 'warn';
     } else {
-      const diff = sumCents - noteTotal;
-      somaMsg = `soma dos itens ${nfceBRL(sumCents)} vs total da nota ${nfceBRL(noteTotal)} — diferença ${nfceBRL(diff)}`;
-      if (Math.abs(diff) > 1 || itemsWithoutTotal > 0) {
+      const refCents = okGross ? noteGross! : (notePayable ?? noteGross ?? 0);
+      const diff = okGross ? sumGross - noteGross! : sumNet - refCents;
+      somaMsg = `soma dos itens ${nfceBRL(sumGross)} vs total da nota ${nfceBRL(refCents)} — diferença ${nfceBRL(diff)}`;
+      if (!okGross && !okNet) {
         somaStatus = 'warn';
         somaMsg += itemsWithoutTotal > 0 ? ` · ${itemsWithoutTotal} item(ns) sem valor legível` : ' · itens faltando/duplicados na página?';
+      } else if (itemsWithoutTotal > 0) {
+        somaStatus = 'warn';
+        somaMsg += ` · ${itemsWithoutTotal} item(ns) sem valor legível`;
       } else {
         somaMsg += ' · CONFERE no centavo';
       }
@@ -681,11 +697,13 @@ export class NfceService {
                   unit_original = COALESCE(unit_original, ?),
                   store_product_code = COALESCE(store_product_code, ?),
                   ean_extracted = COALESCE(ean_extracted, ?),
-                  unit_price_cents = COALESCE(unit_price_cents, ?)
+                  unit_price_cents = COALESCE(unit_price_cents, ?),
+                  discount_cents = COALESCE(discount_cents, ?)
             WHERE id = ?`,
           [
             raw.totalCents, raw.qty, raw.unitOriginal,
             raw.storeProductCode, raw.eanExtracted, raw.unitPriceCents,
+            raw.discountCents,
             existing.id,
           ] as never
         );
@@ -719,6 +737,7 @@ export class NfceService {
         unit_original: raw.unitOriginal,
         total_cents: raw.totalCents,
         unit_price_cents: raw.unitPriceCents,
+        discount_cents: raw.discountCents,
         product_id: null,
         status: 'PARSED',
         stock_applied: 0,
@@ -825,7 +844,9 @@ export class NfceService {
     const existing = await this.documents.getById(accessKey);
     // v87: mesmo cálculo do fluxo automático — sem "Valor Pago", o total é o
     // bruto MENOS o desconto da nota.
+    // v33: "Valor a pagar R$:" (líquido, explícito) vem antes de "Valor Pago".
     const valorPago =
+      header.payableCents ??
       header.amountPaidCents ??
       (header.grossTotalCents != null
         ? Math.max(0, header.grossTotalCents - (header.discountCents ?? 0))
@@ -945,6 +966,8 @@ export class NfceService {
       grossTotalCents: doc.gross_total_cents,
       amountPaidCents: doc.amount_paid_cents,
       discountCents: doc.discount_cents,
+      // v33: no banco, amount_paid_cents já é o valor líquido da nota
+      payableCents: doc.amount_paid_cents,
     };
     const registered = await this.findRegisteredTransactionId(accessKey);
     if (registered) {

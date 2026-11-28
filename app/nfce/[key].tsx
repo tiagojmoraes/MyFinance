@@ -17,8 +17,6 @@ import React from 'react';
 import { View, Text } from 'react-native';
 import { showToast } from '../../lib/toast';
 import { router, useLocalSearchParams } from 'expo-router';
-import * as FileSystem from 'expo-file-system/legacy';
-import * as Sharing from 'expo-sharing';
 import { Screen, Card, Button, Badge, SectionTitle, EmptyState, KeyValue, TextField, Segmented } from '../../src/components/ui';
 import { convertToBaseUnit } from '../../src/parsers/nfce';
 import { normalizeText } from '../../src/lib/text';
@@ -249,23 +247,6 @@ export default function NfceReviewScreen() {
     }
   };
 
-  /** v26: exporta o HTML capturado da SEFAZ — é o que permite corrigir o leitor
-   *  para o layout REAL da nota quando os itens não aparecem. */
-  const shareCaptured = async () => {
-    try {
-      const html = await services.nfce.getCapturedHtml(key);
-      if (!html) {
-        showToast('Nenhuma página capturada — refaça a leitura da nota na tela NFC-e', 'err');
-        return;
-      }
-      const path = `${FileSystem.cacheDirectory}nfce-${key.slice(-8)}.html`;
-      await FileSystem.writeAsStringAsync(path, html);
-      await Sharing.shareAsync(path, { mimeType: 'text/html', dialogTitle: 'Página capturada da NFC-e' });
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : String(err), 'err');
-    }
-  };
-
   const ignore = async (item: ItemRow) => {
     // v87: sem try/catch, um erro do serviço virava "unhandled rejection"
     // (sem aviso na tela) — o usuário ficava sem saber por que nada mudou.
@@ -334,15 +315,11 @@ export default function NfceReviewScreen() {
         autoProcessing ? (
           <Card><Text className="text-sm text-slate-500">Buscando itens na página capturada…</Text></Card>
         ) : (
-          <View className="gap-2">
-            <EmptyState
-              icon="🧾"
-              title="Nenhum item encontrado"
-              hint="A página guardada não tem itens — confira se a nota foi lida com a chave certa ou use Compartilhar página capturada (diagnóstico) para reportar."
-            />
-            {/* v26: diagnóstico — compartilhar o HTML para o mantenedor. */}
-            <Button label="Compartilhar página capturada (diagnóstico)" variant="outline" onPress={shareCaptured} />
-          </View>
+          <EmptyState
+            icon="🧾"
+            title="Nenhum item encontrado"
+            hint="A página guardada não tem itens — confira se a nota foi lida com a chave certa."
+          />
         )
       ) : null}
 

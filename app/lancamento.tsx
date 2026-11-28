@@ -306,7 +306,13 @@ export default function LancamentoScreen() {
         showToast('NFC já cadastrada');
         return false;
       }
-      const total = prepared.header.amountPaidCents ?? prepared.header.grossTotalCents ?? null;
+      // v33: "Valor a pagar R$:" é o total LÍQUIDO explícito da nota — vem
+      // antes de "Valor Pago" e do total de produtos (sem desconto duplo).
+      const total =
+        prepared.header.payableCents ??
+        prepared.header.amountPaidCents ??
+        prepared.header.grossTotalCents ??
+        null;
       // v100 — sem toggle por item (prompt §3.2/§9.4): inclui é decidido no Catálogo
       setNfceNote({
         accessKey: prepared.accessKey,

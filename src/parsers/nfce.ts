@@ -22,9 +22,13 @@ export interface NfceHeader {
   storeName: string | null;
   cnpj: string | null;
   issuedAt: string | null; // ISO
+  /** Soma dos produtos (bruto, antes do desconto da nota). */
   grossTotalCents: number | null;
+  /** Valor REALMENTE PAGO (ou o total, quando a página não traz "Valor Pago"). */
   amountPaidCents: number | null;
   discountCents: number;
+  /** v33 — "Valor a pagar R$:" da nota (líquido). É o número que o lançamento usa. */
+  payableCents: number | null;
 }
 
 export interface NfceRawItem {
@@ -39,6 +43,10 @@ export interface NfceRawItem {
    *  "Vl. Unitário" / "Vl. Unit." (a tela da revisão já calcula qty × unit
    *  como fallback). */
   unitPriceCents: number | null;
+  /** v33: desconto do ITEM ("Valor do Desconto" do bloco de detalhes). O total
+   *  do item continua BRUTO (bate com o total de produtos da nota); o preço
+   *  efetivo é `(total - desconto) / quantidade`. */
+  discountCents: number | null;
 }
 
 const CHAVE_RE = /\d{44}/;
@@ -365,6 +373,166 @@ function decodeEntities(text: string): string {
     .trim();
 }
 
+/* ════════════════════════════════════════════════════════════════════
+ * v33 — LEITURA EM ORDEM DE DOCUMENTO (aba "Produto/Serviços").
+ *
+ * O layout "Visualizar em Abas" (site 1.2.7.1-P21) não usa as classes do
+ * portal público nem a tabela Axure: a aba mostra Num./Descrição/Qtd./
+ * Unidade Comercial/Valor(R$) e cada item tem um bloco de detalhes com
+ * "Código EAN Tributável" e "Unidade Tributável" — os campos confiáveis,
+ * porque o código da loja raramente é EAN. Lendo o TEXTO na ordem em que
+ * aparece, o parser independe da marcação (tabela, divs, accordion).
+ * ════════════════════════════════════════════════════════════════════ */
+
+/** Texto visível, um item por nó, na ordem do documento. */
+function htmlTextTokens(html: string): string[] {
+  const out: string[] = [];
+  const re = />([^<>]+)</g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    const t = decodeEntities(m[1]);
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+/** Valor monetário tolerante ("23,800", "11,9000000000", "R$ 1.234,56"). */
+const MONEY_ANY_RE = /^(?:R\$\s*)?\d{1,3}(?:\.\d{3})*,\d{2,10}$/;
+/** Quantidade da nota ("2,0000", "0.456", "3"). */
+const QTY_ANY_RE = /^\d{1,5}(?:[.,]\d{1,4})?$/;
+/** Unidade com o dígito de nota de rodapé colado ("BDJ9", "UND7", "PCT9"). */
+const UNIT_ANY_RE = /^[A-Za-zÇÃÉÊÓÚ]{1,8}\d{0,2}$/;
+/** EAN/GTIN válido. */
+const EAN_ONLY_RE = /^(?:\d{8}|\d{12,14})$/;
+
+/** Normaliza a unidade da nota: "BDJ9" → "BDJ", "UND7" → "UND", "un." → "UN". */
+export function normalizeUnitToken(unit: string | null | undefined): string | null {
+  if (!unit) return null;
+  const clean = unit.trim().toUpperCase().replace(/[.\s]+$/, '').replace(/\d+$/, '');
+  return clean || null;
+}
+
+/** Rótulos do bloco de detalhes — nunca são descrição de produto. */
+const DETAIL_LABEL_RE =
+  /^(?:c[oó]digo|unidade|quantidade|valor|indicador|origem|tributa|cfop|ncm|cest|cst|cclass|al[ií]quota|percentual|cnpj|n[úu]mero|item\s+do\s+pedido|chave|opera|ibs|cbs|pis|cofins|referenciamento|icms|outras|data)\b/i;
+
+/** v33 — itens do layout "Visualizar em Abas" › aba "Produto/Serviços". */
+export function parseNfceItemsProdutosServicos(html: string): NfceRawItem[] {
+  const tokens = htmlTextTokens(html);
+  const start = tokens.findIndex((t) => /^Dados dos Produtos e Servi/i.test(t));
+  if (start < 0) return [];
+
+  const items: NfceRawItem[] = [];
+  let cur: NfceRawItem | null = null;
+  // Detalhes do item aberto — aplicados no flush (o bloco vem depois da linha)
+  let eanComercial: string | null = null;
+  let eanTributavel: string | null = null;
+  let unitComercial: string | null = null;
+  let unitTributavel: string | null = null;
+  let storeCode: string | null = null;
+
+  const flush = () => {
+    if (!cur) return;
+    // v33: EAN TRIBUTÁVEL é a fonte primária; comercial e código da loja são reserva
+    cur.eanExtracted = eanTributavel ?? eanComercial ?? cur.eanExtracted;
+    cur.storeProductCode = storeCode ?? cur.storeProductCode;
+    if (unitComercial) cur.unitOriginal = normalizeUnitToken(unitComercial);
+    else if (unitTributavel) cur.unitOriginal = normalizeUnitToken(unitTributavel);
+    cur.lineNumber = items.length + 1;
+    items.push(cur);
+    cur = null;
+    eanComercial = eanTributavel = unitComercial = unitTributavel = storeCode = null;
+  };
+
+  const qtyOf = (raw: string): number | null => {
+    const n = Number.parseFloat(raw.replace(/\./g, '').replace(',', '.'));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+
+  for (let i = start + 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    // Fim da aba de produtos (rodapé da página)
+    if (/^(?:Data\/?Hora|Vers[ãa]o do Site|Secretaria da Fazenda)\b/i.test(t)) break;
+
+    // ---- Bloco de detalhes do item aberto (só enriquece item já lido)
+    if (cur) {
+      const label = t.replace(/:\s*$/, '').trim();
+      const value = tokens[i + 1];
+      const hasValue = !!value && MONEY_ANY_RE.test(value);
+      if (/^C[oó]digo EAN Comercial$/i.test(label)) {
+        if (value && EAN_ONLY_RE.test(value)) { eanComercial = value; i++; }
+        continue;
+      }
+      if (/^C[oó]digo EAN Tribut[áa]vel$/i.test(label)) {
+        if (value && EAN_ONLY_RE.test(value)) { eanTributavel = value; i++; }
+        continue;
+      }
+      if (/^Unidade Comercial$/i.test(label)) {
+        if (value && UNIT_ANY_RE.test(value)) { unitComercial = value; i++; }
+        continue;
+      }
+      if (/^Unidade Tribut[áa]vel$/i.test(label)) {
+        if (value && UNIT_ANY_RE.test(value)) { unitTributavel = value; i++; }
+        continue;
+      }
+      if (/^Quantidade Comercial$/i.test(label)) {
+        if (value && QTY_ANY_RE.test(value)) {
+          const q = qtyOf(value);
+          if (q != null) cur.qty = q;
+          i++;
+        }
+        continue;
+      }
+      if (/^Quantidade Tribut[áa]vel$/i.test(label)) {
+        if (value && QTY_ANY_RE.test(value)) i++;
+        continue;
+      }
+      if (/^Valor do Desconto$/i.test(label)) {
+        if (hasValue) { cur.discountCents = parseMoneyToCents(value!); i++; }
+        continue;
+      }
+      if (/^Valor unit[áa]rio de comercializa/i.test(label)) {
+        if (hasValue) { cur.unitPriceCents = parseMoneyToCents(value!); i++; }
+        continue;
+      }
+      if (/^C[oó]digo do Produto$/i.test(label)) {
+        if (value && /^[A-Za-z0-9][A-Za-z0-9.-]{0,24}$/.test(value)) { storeCode = value; i++; }
+        continue;
+      }
+    }
+
+    // ---- Linha de item: Num. · Descrição · Qtd. · Unidade · Valor(R$)
+    if (!/^\d{1,3}$/.test(t)) continue;
+    const description = tokens[i + 1];
+    const qtyRaw = tokens[i + 2];
+    const unitRaw = tokens[i + 3];
+    const totalRaw = tokens[i + 4];
+    if (!description || description.length < 2 || !/[A-Za-zÀ-ÿ]/.test(description)) continue;
+    if (DETAIL_LABEL_RE.test(description)) continue;
+    if (!qtyRaw || !QTY_ANY_RE.test(qtyRaw)) continue;
+    if (!unitRaw || !UNIT_ANY_RE.test(unitRaw)) continue;
+    if (!totalRaw || !MONEY_ANY_RE.test(totalRaw)) continue;
+    const qty = qtyOf(qtyRaw);
+    const totalCents = parseMoneyToCents(totalRaw);
+    if (qty == null || totalCents == null) continue;
+    flush();
+    cur = {
+      lineNumber: 0,
+      description,
+      eanExtracted: null,
+      storeProductCode: null,
+      qty,
+      unitOriginal: normalizeUnitToken(unitRaw),
+      totalCents,
+      unitPriceCents: null,
+      discountCents: null,
+    };
+    i += 4; // consome qtd/unidade/valor da linha
+  }
+  flush();
+  return items;
+}
+
 /**
  * v18: extrai o VALOR que vem logo depois de um rótulo na página SEFAZ.
  * Suporta os três formatos conhecidos:
@@ -413,10 +581,32 @@ function textAfterLabel(html: string, labelPattern: RegExp): string | null {
   return null;
 }
 
+/**
+ * v33 — valor monetário que vem logo depois de um rótulo EXATO (o texto do nó
+ * é só o rótulo), em ordem de documento. Serve para distinguir o "Desconto" da
+ * NOTA do "Valor do Desconto" do ITEM — `textAfterLabel` não distingue.
+ */
+function tokenMoneyAfter(html: string, label: RegExp): string | null {
+  const tokens = htmlTextTokens(html);
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    // valor no MESMO nó: "Desconto: R$ 5,00" / "Desconto 5,00"
+    const inline = t.match(/^(.+?)\s*:?\s*(?:R\$\s*)?(\d{1,3}(?:\.\d{3})*,\d{2,10})\s*$/);
+    if (inline && label.test(inline[1].replace(/:\s*$/, '').trim())) return inline[2];
+    if (!label.test(t.replace(/:\s*$/, '').trim())) continue;
+    const next = tokens[i + 1];
+    if (next && MONEY_ANY_RE.test(next)) return next;
+  }
+  return null;
+}
+
 function parseMoneyToCents(raw: string): number | null {
   const m = raw.replace(/[^\d,.-]/g, '');
   if (!m) return null;
-  const br = /^\d{1,3}(\.\d{3})+(,\d{1,2})?$/.test(m) || /,\d{2}$/.test(m);
+  // v33: aceita 3+ decimais ("23,800" / "11,9000000000" — a aba
+  // "Produto/Serviços" imprime o valor com 3 casas e o unitário com 10).
+  // Antes, "23,800" caía no parseFloat("23,800") = 23 → R$ 23,00 (errado).
+  const br = /^\d{1,3}(\.\d{3})+(,\d{1,10})?$/.test(m) || /,\d{1,10}$/.test(m);
   const normalized = br ? m.replace(/\./g, '').replace(',', '.') : m;
   const v = Number.parseFloat(normalized);
   if (!Number.isFinite(v)) return null;
@@ -478,22 +668,28 @@ export function parseNfceHeader(html: string, accessKey: string): NfceHeader {
       return m ? parseBrDateTime(m[1]) : null;
     })();
 
-  const gross =
-    // v30 (layout Axure): "Valor a pagar R$:131,47" — o "R$:" entre o rótulo e o
-    // valor quebra o textAfterLabel (exige ":" logo após o rótulo) e o fallback
-    // genérico acabaria lendo o número do nó SEGUINTE (forma de pagamento).
-    // A regex dedicada exige o número colado ao rótulo — nos layouts clássicos
-    // o valor vem em outro nó e ela nem dispara.
-    html.match(/Valor\s+a\s+pagar\s*(?:R\$)?\s*:?\s*([\d.]+,\d{2}|\d+,\d{2})/i)?.[1] ??
-    textAfterLabel(html, /Valor\s+Total\b/i) ??
-    textAfterLabel(html, /Valor\s+Total\s+dos?\s+Produtos/i) ??
+  // v33: "Valor a pagar R$:" é o LÍQUIDO da nota e ganha campo próprio. Antes
+  // ele era gravado em grossTotalCents, e a conferência de soma comparava os
+  // itens BRUTOS com o total LÍQUIDO (diferença falsa quando havia desconto).
+  const payableRaw =
+    html.match(/Valor\s+a\s+pagar\s*(?:R\$)?\s*:?\s*([\d.]+,\d{2,10}|\d+,\d{2,10})/i)?.[1] ??
     textAfterLabel(html, /Valor\s+a\s+Pagar/i);
-  const paid = textAfterLabel(html, /Valor\s+(?:Pago|Recebido)\b/i) ?? gross;
-  const discount = textAfterLabel(html, /Desconto\b/i);
+  const payableCents = payableRaw ? parseMoneyToCents(payableRaw) : null;
 
-  const grossTotalCents = gross ? parseMoneyToCents(gross) : null;
-  const amountPaidCents = paid ? parseMoneyToCents(paid) : null;
-  const discountCents = discount ? (parseMoneyToCents(discount) ?? 0) : 0;
+  const grossRaw =
+    textAfterLabel(html, /Valor\s+Total\s+dos?\s+Produtos/i) ??
+    textAfterLabel(html, /Valor\s+Total\s+(?:da|de)\s+(?:Nota|Compra)/i) ??
+    textAfterLabel(html, /Valor\s+Total\b(?!\s+(?:do|da|dos|das)\s+(?:Frete|Seguro|Tributos|Item|ICMS))/i);
+  const grossTotalCents = grossRaw ? parseMoneyToCents(grossRaw) : payableCents;
+
+  const paidRaw = textAfterLabel(html, /Valor\s+(?:Pago|Recebido)\b/i);
+  const amountPaidCents =
+    (paidRaw ? parseMoneyToCents(paidRaw) : null) ?? payableCents ?? grossTotalCents;
+
+  // v33: o desconto da NOTA é só o nó "Desconto" — "Valor do Desconto" é do
+  // ITEM (bloco de detalhes) e não pode virar desconto da nota.
+  const discountRaw = tokenMoneyAfter(html, /^Desconto(?:\s+Total)?$/i);
+  const discountCents = (discountRaw ? parseMoneyToCents(discountRaw) : null) ?? 0;
 
   return {
     accessKey,
@@ -503,13 +699,15 @@ export function parseNfceHeader(html: string, accessKey: string): NfceHeader {
     grossTotalCents,
     amountPaidCents,
     discountCents,
+    payableCents,
   };
 }
 
 /** Converte unidade da nota para unidade base do catálogo (G|ML|UN). */
 export function convertToBaseUnit(qty: number, unitOriginal: string | null): { deltaBase: number; baseUnit: 'G' | 'ML' | 'UN' } | null {
   // v31: ignora ponto/espaços no fim ("UN.", "PCT.") e normaliza maiúsculas
-  const unit = (unitOriginal || 'UN').trim().toUpperCase().replace(/[.\s]+$/, '');
+  // v33: ignora também o dígito de nota de rodapé ("BDJ9" → "BDJ")
+  const unit = normalizeUnitToken(unitOriginal) ?? 'UN';
   const factorMap: Record<string, { factor: number; base: 'G' | 'ML' | 'UN' }> = {
     G: { factor: 1, base: 'G' },
     GR: { factor: 1, base: 'G' },
@@ -577,7 +775,8 @@ const HEADER_ROW_RE =
  */
 export function pageHasItems(html: string): boolean {
   // v30: a tabela grdItens do layout Axure também é lista de itens
-  return /id="tabResult"|class="txtTit"|class="Rqtd"|class="RvlUnit"|Qtde\.?\s*total\s*de\s*itens|C[oó]digo\s+do\s+produto|id=["']grdItens["']/i.test(html);
+  // v33: a aba "Produto/Serviços" ("Visualizar em Abas") também é
+  return /id="tabResult"|class="txtTit"|class="Rqtd"|class="RvlUnit"|Qtde\.?\s*total\s*de\s*itens|C[oó]digo\s+do\s+produto|id=["']grdItens["']|Dados\s+dos\s+Produtos\s+e\s+Servi|C[oó]digo\s+EAN\s+Tribut/i.test(html);
 }
 
 /**
@@ -651,6 +850,7 @@ export function parseNfceItemsByClass(html: string): NfceRawItem[] {
       unitOriginal: unit ? unit.toUpperCase() : null,
       totalCents,
       unitPriceCents,
+      discountCents: null,
     });
   }
   return items;
@@ -745,6 +945,7 @@ export function parseNfceItemsAxure(html: string): NfceRawItem[] {
       unitOriginal: unit,
       totalCents,
       unitPriceCents,
+      discountCents: null,
     });
   }
   return items;
@@ -759,7 +960,13 @@ export function parseNfceItemsAxure(html: string): NfceRawItem[] {
  * MESCLADOS no mesmo item; nunca há itens duplicados nem rótulos como descrição.
  */
 export function parseNfceItems(html: string): NfceRawItem[] {
-  // v30: layout Axure da página de consulta por QR (tabela grdItens) primeiro —
+  // v33: layout "Visualizar em Abas" › aba "Produto/Serviços" (site 1.2.7.1) —
+  // tabela Num./Descrição/Qtd./Unidade Comercial/Valor(R$) + bloco de detalhes
+  // com EAN/Unidade TRIBUTÁVEIS. Primeiro porque nenhum outro leitor conhece
+  // esse layout (o genérico inventaria itens a partir dos rótulos).
+  const produtosServicos = parseNfceItemsProdutosServicos(html);
+  if (produtosServicos.length > 0) return produtosServicos;
+  // v30: layout Axure da página de consulta por QR (tabela grdItens) —
   // o leitor genérico não conhece esse layout e sujaria a extração.
   const axure = parseNfceItemsAxure(html);
   if (axure.length > 0) return axure;
@@ -850,6 +1057,7 @@ export function parseNfceItems(html: string): NfceRawItem[] {
         unitOriginal: null,
         totalCents: null,
         unitPriceCents: null,
+        discountCents: null,
       };
     } else if (current) {
       // Detalhes enriquecem o item aberto — a descrição só é substituída pelo
@@ -866,6 +1074,7 @@ export function parseNfceItems(html: string): NfceRawItem[] {
         unitOriginal: null,
         totalCents: null,
         unitPriceCents: null,
+        discountCents: null,
       };
     }
     if (!current) continue;
