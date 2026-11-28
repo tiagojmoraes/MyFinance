@@ -16,7 +16,7 @@
  */
 
 import type { DbDriver } from '../db/types';
-import { monthRange } from './dates';
+import { dayInMonth, lastDayNumberOf, monthAdd, monthOf, monthRange, todaySP } from './dates';
 
 /** Lançamento na tela Fluxo (linhas de transactions + metadados de exibição). */
 export interface FlowTx {
@@ -42,6 +42,156 @@ export interface FlowTx {
   plan_id: string | null;
   plan_total_installments: number | null;
   plan_paid_count: number | null;
+}
+
+export interface ItemFluxo<T = unknown> {
+  id: string;
+  data: string;
+  /** Valor líquido assinado em centavos: crédito positivo, débito negativo. */
+  valorCents: number;
+  /** Parcela já efetivada quando um item visual agrega vários movimentos. */
+  efetivadoCents?: number;
+  status: string;
+  pago: boolean;
+  ordem: number;
+  payload: T;
+}
+
+export interface SaldoDia<T = unknown> {
+  data: string;
+  itens: ItemFluxo<T>[];
+  saldoPrevistoCents: number;
+  saldoEfetivadoCents: number;
+}
+
+export interface ResultadoFluxo<T = unknown> {
+  itens: ItemFluxo<T>[];
+  dias: SaldoDia<T>[];
+  saldoPrevistoFimCents: number;
+  saldoEfetivadoFimCents: number;
+}
+
+export interface PlanoPoupancaMensal {
+  id: string;
+  amountCents: number;
+  dayOfMonth: number;
+}
+
+export interface OcorrenciaPoupanca {
+  planId: string;
+  month: string;
+  date: string;
+  amountCents: number;
+}
+
+/**
+ * gerarOcorrenciasPoupanca — regra ÚNICA de vigência do plano MENSAL (v35).
+ *
+ *  · SEM RETROATIVO: a data planejada NAQUELE mês tem que ser ≥ hoje e ≥ dataCriacao.
+ *    Se o dia planejado do mês corrente já passou, NÃO gera ocorrência naquele mês —
+ *    ela só entra a partir do mês seguinte.
+ *  · `suprimirDatas` (regra 5): chaves 'YYYY-MM-DD' já canceladas pelo usuário.
+ *    Aquela ocorrência é pulada, mas o plano segue valendo nos meses seguintes.
+ *
+ *  Exemplo — hoje 2026-11-28, plano criado hoje para o dia 05:
+ *  · novembro/2026: data 2026-11-05 < 2026-11-28 → pulada (sem retroativo);
+ *  · dezembro/2026: data 2026-12-05 → entra; janeiro/2027 → entra; ...
+ *
+ *  Esta regra vale NA GERAÇÃO DA LISTA. O calcularFluxo não precisa saber de
+ *  vigência — ele só calcula o que está na lista. Quem decide o que entra é
+ *  esta função: sem retroativo, sem dia já passado.
+ */
+export function gerarOcorrenciasPoupanca(
+  plano: PlanoPoupancaMensal,
+  dataCriacao: string,
+  hoje: string = todaySP(),
+  suprimirDatas: ReadonlySet<string> = new Set()
+): OcorrenciaPoupanca[] {
+  const criadoEm = dataCriacao.slice(0, 10);
+  const mesAtual = monthOf(hoje);
+  const ocorrencias: OcorrenciaPoupanca[] = [];
+
+  for (let offset = 0; offset <= 24; offset++) {
+    const month = monthAdd(mesAtual, offset);
+    const date = dayInMonth(month, plano.dayOfMonth);
+    // v35: a ocorrência só existe se (a) sua data ≥ hoje (sem retroativo no
+    // mês corrente), (b) sua data ≥ criadoEm (sem ocorrências anteriores à
+    // criação do plano) e (c) ainda não foi suprimida pelo usuário.
+    if (date < hoje || date < criadoEm || suprimirDatas.has(date)) continue;
+    ocorrencias.push({ planId: plano.id, month, date, amountCents: plano.amountCents });
+  }
+  return ocorrencias;
+}
+
+/** v35: status que NUNCA entram no cálculo do saldo do dia — cancelar = sair do cálculo. */
+export const CANCEL_STATUSES: readonly string[] = ['CANCELADO', 'CANCELLED', 'VOIDED'];
+const CANCEL_STATUSES_SET = new Set(CANCEL_STATUSES.map((s) => s.toUpperCase()));
+
+/**
+ * calcularFluxo — fonte ÚNICA do "Saldo do dia" na tela Fluxo (v35).
+ *
+ *  · centavos (inteiro), nunca float — sem R$ 0,01 de diferença;
+ *  · filtra CANCEL_STATUSES — CANCELADO/CANCELLED/VOIDED ficam fora do cálculo;
+ *  · ordem por data ascendente; dentro do mesmo dia, mantém a ordem da tela
+ *    (a lista em memória chega na ordem da tela; `localeCompare` é estável);
+ *  · Saldo do dia Previsto  = saldoAbertura + Σ valorCents até o dia (pago + pendente);
+ *  · Saldo do dia Efetivado = saldoAbertura + Σ só PAGOS até o dia;
+ *  · primeiro dia: saldo = saldoAbertura + Σ do dia 1 — nunca começa do zero;
+ *  · último dia:  saldo do dia anterior + Σ do último dia — sem fórmula especial;
+ *  · mês vazio:    todos os dias saem com saldo de abertura — nunca zero, nunca em branco;
+ *  · o saldo de abertura vem CARREGADO 1× por mês pelo BalanceService (nunca
+ *    recalculado em scroll, expansão ou toque — `useDataEffect` lê uma vez e
+ *    `useAppStore` segura).
+ *  · NENHUM outro lugar pode calcular saldo do dia. Serviços só entregam
+ *    dados; quem calcula é esta função, e só ela.
+ */
+export function calcularFluxo<T>(
+  listaEmMemoria: ItemFluxo<T>[],
+  saldoAberturaCents: number,
+  month?: string
+): ResultadoFluxo<T> {
+  const itens = listaEmMemoria
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => !CANCEL_STATUSES_SET.has(item.status.toUpperCase()))
+    // v35: ordem por data asc + preserva a ordem da tela dentro do mesmo dia.
+    .sort((a, b) => a.item.data.localeCompare(b.item.data) || a.index - b.index)
+    .map(({ item, index }) => ({ ...item, ordem: index }));
+  const porDia = new Map<string, ItemFluxo<T>[]>();
+  if (month) {
+    // v35: cria TODOS os dias do mês — o saldo permanece = saldoAbertura
+    // quando não há item (mês vazio), e propaga corretamente do 1º ao último.
+    const totalDias = lastDayNumberOf(month);
+    for (let idx = 0; idx < totalDias; idx++) porDia.set(dayInMonth(month, idx + 1), []);
+  }
+  for (const item of itens) {
+    const dia = porDia.get(item.data) ?? [];
+    dia.push(item);
+    porDia.set(item.data, dia);
+  }
+
+  let previsto = saldoAberturaCents;
+  let efetivado = saldoAberturaCents;
+  const dias: SaldoDia<T>[] = [...porDia.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([data, items]) => {
+      for (const item of items) {
+        previsto += item.valorCents;
+        efetivado += item.efetivadoCents ?? (item.pago ? item.valorCents : 0);
+      }
+      return {
+        data,
+        itens: items,
+        saldoPrevistoCents: previsto,
+        saldoEfetivadoCents: efetivado,
+      };
+    });
+
+  return {
+    itens,
+    dias,
+    saldoPrevistoFimCents: previsto,
+    saldoEfetivadoFimCents: efetivado,
+  };
 }
 
 /** Parcela de plano (em conta) agregada na tela Fluxo. */
@@ -70,6 +220,30 @@ export interface GroupMonth {
   /** O cabeçalho é deste mês? (as linhas à vista só existem nele) */
   isHeaderMonth: boolean;
 }
+
+export interface InvoiceAgg {
+  invoiceId: string;
+  cardId: string;
+  cardName: string;
+  dueDate: string;
+  referenceMonth: string;
+  dueCents: number;
+  liveStatus: string;
+  items: Array<{
+    description: string;
+    date: string | null;
+    amountCents: number;
+    sequenceNumber: number | null;
+    totalInstallments: number | null;
+    sourceSystem: string | null;
+  }>;
+}
+
+export type FlowEntry =
+  | { kind: 'tx'; date: string; tx: FlowTx }
+  | { kind: 'group'; date: string; grp: GroupMonth }
+  | { kind: 'invoice'; date: string; inv: InvoiceAgg }
+  | { kind: 'installment'; date: string; inst: InstAgg };
 
 // v50 — FLOW_COLUMNS sem subquery correlacionada por linha (200 linhas = 800 subqueries antes).
 // Agora: 2 LEFT JOIN pré-agregados (1 GROUP BY cada) — mesmo resultado, 2 scans, não 800.

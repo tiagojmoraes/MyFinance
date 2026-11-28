@@ -107,6 +107,21 @@
  *       encadeado mês a mês: o `closing` de um mês é a abertura do seguinte).
  *       Nada de override `saldoPrevistoAjustadoFimCents` nem do `startMonth`
  *       como "hoje do dispositivo" — o livro-razão é a fonte única.
+ *  · v35 (regras do usuário): SALDO DO DIA tem fonte ÚNICA.
+ *    · 1 `useAppStore` segura a lista do mês + o saldo de abertura (carregado
+ *      1× por mês antes do primeiro render).
+ *    · `calcularFluxo(lista, saldoAbertura)` em `src/lib/flowModel.ts` é a
+ *      ÚNICA função que calcula o saldo do dia. Nenhum outro lugar pode
+ *      calculá-lo — nem BalanceService nem SavingsService nem BudgetService
+ *      nem WishlistService (eles só entregam dados).
+ *    · A ordem é sempre: mexe na lista em memória → `calcularFluxo`
+ *      recalcula → renderiza → salva no banco em background. Se foi excluído,
+ *      sai da lista e o próximo cálculo já não tem o item.
+ *    · Saldo do dia nunca consulta o banco; nunca usa cache ou projeção
+ *      antiga; nunca é calculado em 2 lugares.
+ *    · Poupança: vigência sem retroativo. Dia planejado do mês corrente já
+ *      passado → NÃO gera naquele mês, entra no próximo. Cancelar a
+ *      ocorrência de UM mês não cancela o plano inteiro.
  *  · Mantém v11–v13: Fixo/Parcelado perpetuando nos meses seguintes; saldos do
  *    dia (Previsto/Efetivado); compras no CARTÃO estritamente na fatura;
  *    duplicar (segurar 3 s).
@@ -125,16 +140,19 @@ import { MonthScroller } from '../src/components/MonthScroller';
 import { useDataEffect } from '../src/components/useDataEffect';
 import { formatBRL } from '../src/lib/money';
 import { orcadoPrevistoGastoLinha, orcadoGastoLinha } from '../src/lib/fluxoFormat'; // v69: linha única com % por movimento | v94: sem Previsto
-import { mergeDailyAdjust } from '../src/lib/monthEndBalance';
 import { sourceLabel } from '../src/lib/text';
-import { todaySP, monthOf, ymdToBr, partsOf, lastDayNumberOf } from '../src/lib/dates';
+import { todaySP, monthOf, ymdToBr, partsOf } from '../src/lib/dates';
 import {
   buildGroupMonths,
+  calcularFluxo,
   groupMonthDate,
   groupMonthTotals,
   groupStatusInfo,
   groupStatusItems,
   sortGroupItems,
+  type FlowEntry,
+  type InvoiceAgg,
+  type ItemFluxo,
   type FlowTx,
   type GroupMonth,
   type InstAgg,
@@ -148,23 +166,7 @@ import { projectionMonthPlan } from '../src/services/WishlistService'; // v95: p
 import { ICONS } from '../src/theme/icons';
 
 type Filter = 'ALL' | 'INCOME' | 'EXPENSE';
-
-interface InvoiceAgg {
-  invoiceId: string;
-  cardId: string;
-  cardName: string;
-  dueDate: string;
-  referenceMonth: string;
-  dueCents: number;
-  liveStatus: string;
-  items: Array<{ description: string; date: string | null; amountCents: number; sequenceNumber: number | null; totalInstallments: number | null; sourceSystem: string | null }>;
-}
-
-type Entry =
-  | { kind: 'tx'; date: string; tx: FlowTx }
-  | { kind: 'group'; date: string; grp: GroupMonth }
-  | { kind: 'invoice'; date: string; inv: InvoiceAgg }
-  | { kind: 'installment'; date: string; inst: InstAgg };
+type Entry = FlowEntry;
 
 const WEEK = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
 function weekdayOf(ymd: string): string {
@@ -172,36 +174,73 @@ function weekdayOf(ymd: string): string {
   return WEEK[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
 }
 
+function fluxoItemsFromEntries(entries: Entry[], childrenByGroup: Record<string, FlowTx[]>): ItemFluxo<Entry>[] {
+  return entries.map((entry, ordem) => {
+    let valorCents = 0;
+    let efetivadoCents = 0;
+    let status = 'PENDING';
+    let pago = false;
+    let id = '';
+
+    if (entry.kind === 'tx') {
+      const tx = entry.tx;
+      id = `tx:${tx.id}`;
+      const magnitude = tx.kind === 'CONSOLIDATED'
+        ? tx.group_credits_cents - tx.group_debits_cents
+        : tx.amount_cents;
+      valorCents = tx.type === 'INCOME' ? magnitude : -magnitude;
+      if (tx.type === 'TRANSFER') valorCents = -tx.amount_cents;
+      status = tx.status;
+      pago = tx.status === 'CONFIRMED';
+      efetivadoCents = pago ? valorCents : 0;
+    } else if (entry.kind === 'group') {
+      const group = entry.grp;
+      const totals = groupMonthTotals(group);
+      id = `grp:${group.header.id}`;
+      valorCents = totals.credits - totals.debits;
+      const members = groupStatusItems(group, childrenByGroup[group.header.id] ?? []);
+      efetivadoCents = members.txs
+        .filter((tx) => tx.status === 'CONFIRMED')
+        .reduce((sum, tx) => sum + (tx.type === 'INCOME' ? tx.amount_cents : -tx.amount_cents), 0)
+        + members.insts
+          .filter((inst) => inst.status === 'PAID')
+          .reduce((sum, inst) => sum + (inst.type === 'INCOME' ? inst.amountCents : -inst.amountCents), 0);
+      status = efetivadoCents === valorCents ? 'CONFIRMED' : 'PENDING';
+      pago = status === 'CONFIRMED';
+    } else if (entry.kind === 'invoice') {
+      id = `inv:${entry.inv.invoiceId}`;
+      valorCents = -entry.inv.dueCents;
+      status = entry.inv.liveStatus;
+      pago = status === 'PAID';
+      efetivadoCents = pago ? valorCents : 0;
+    } else {
+      id = `inst:${entry.inst.installmentId}`;
+      valorCents = entry.inst.type === 'INCOME' ? entry.inst.amountCents : -entry.inst.amountCents;
+      status = entry.inst.status === 'CANCELED' ? 'CANCELADO' : entry.inst.status;
+      pago = status === 'PAID';
+      efetivadoCents = pago ? valorCents : 0;
+    }
+
+    return { id, data: entry.date, valorCents, efetivadoCents, status, pago, ordem, payload: entry };
+  });
+}
+
 export default function FluxoScreen() {
   const services = useDataEffect();
   const bump = useAppStore((s) => s.bump);
   const dataVersion = useAppStore((s) => s.dataVersion); // v49 — GARANTIA: qualquer alteração chama bump() -> dataVersion++ -> cache invalidado
+  const flowItems = useAppStore((s) => s.flowItems);
+  const flowMonth = useAppStore((s) => s.flowMonth);
+  const saldoAberturaCents = useAppStore((s) => s.flowOpeningBalanceCents);
+  const setFlowSnapshot = useAppStore((s) => s.setFlowSnapshot);
+  const updateFlowItems = useAppStore((s) => s.updateFlowItems);
   const [month, setMonth] = React.useState(monthOf(todaySP()));
   const [filter, setFilter] = React.useState<Filter>('ALL');
-  const [txs, setTxs] = React.useState<FlowTx[]>([]);
-  const [invoicesDue, setInvoicesDue] = React.useState<InvoiceAgg[]>([]);
-  const [accountInst, setAccountInst] = React.useState<InstAgg[]>([]);
-  // v11: saldos por dia nas DUAS visões (Previsto / Efetivado) — contas "SIM"
-  const [dailyBal, setDailyBal] = React.useState<{
-    efetivado: Record<string, number>;
-    previsto: Record<string, number>;
-    openingPrevisto?: number;
-    openingEfetivado?: number;
-  }>({ efetivado: {}, previsto: {} });
-  const [lastActivityDate, setLastActivityDate] = React.useState<string | null>(null);
-  // v17: linha do livro-razão do mês (Persistida em SQLite, encadeada).
-  // Quando presente, é a fonte da verdade do saldo do dia Previsto/Efetivado
-  // E da cascata da Programação de Compra (lida via
-  // `MonthLedgerService.getMonthWishlistEntries` — não passa mais o
-  // `saldoPrevistoAjustadoFimCents` para a tela).
-  const [monthLedgerRow, setMonthLedgerRow] = React.useState<import('../src/services/MonthLedgerService').MonthLedgerRow | null>(null);
   const [showDaily, setShowDaily] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   // v7.1: grupos consolidados
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
   const [childrenMap, setChildrenMap] = React.useState<Record<string, FlowTx[]>>({});
-  // v12 (bug A): o consolidado por mês — cabeçalho + ocorrências/parcelas do mês
-  const [groupMonths, setGroupMonths] = React.useState<Record<string, GroupMonth>>({});
   // v9: expansor das faturas de cartão
   const [expandedInv, setExpandedInv] = React.useState<Record<string, boolean>>({});
   /**
@@ -232,10 +271,6 @@ export default function FluxoScreen() {
   const [wishClassOpen, setWishClassOpen] = React.useState<Record<string, boolean>>({});
   const [budgetSum, setBudgetSum] = React.useState<BudgetMonthSummary | null>(null);
   const [savingsSum, setSavingsSum] = React.useState<SavingsMonthOverview | null>(null);
-  // v68: ajustes DIÁRIOS do saldo do dia vindos de Orçamento/Poupança (null = módulo desligado)
-  type DayAdjust = { previsto: Record<string, number>; efetivado: Record<string, number> };
-  const [budAdj, setBudAdj] = React.useState<DayAdjust | null>(null);
-  const [savAdj, setSavAdj] = React.useState<DayAdjust | null>(null);
   const [budgetOpen, setBudgetOpen] = React.useState(false);
   const [resumoOpen, setResumoOpen] = React.useState(false);
   const [savingsOpen, setSavingsOpen] = React.useState(false);
@@ -297,24 +332,14 @@ export default function FluxoScreen() {
       }
       if (!isCurrent()) return;
       perf.lap('manutenção');
-      // v86 (DESEMPENHO): as preferências são lidas PRIMEIRO (leituras baratas) e
-      // o saldo por dia só é calculado quando vai ser exibido — ou quando a
-      // Programação de Compra depende dele. Antes, a rotina pesada (5 agregações
-      // sobre o histórico inteiro) rodava em toda abertura do Fluxo, mesmo com a
-      // opção "Exibir saldo por dia" desligada.
-      type DailyDual = {
-        efetivado: Record<string, number>;
-        previsto: Record<string, number>;
-        openingPrevisto?: number;
-      };
+      // Preferências e dados da tela são carregados uma vez por mês/versão.
       let showDailyFlag = false;
       let budgetsFlag = false;
       let savingsFlag = false;
       let wishlistFlag = false;
       try {
-        const [show, lastDate, bFlag, sFlag, wFlag] = await Promise.all([
+        const [show, bFlag, sFlag, wFlag] = await Promise.all([
           svc.settings.getBool(SETTING_KEYS.fluxoSaldoPorDia, false),
-          svc.balance.getLastActivityDate(month),
           svc.settings.getBool(SETTING_KEYS.budgetsAtivado, false),
           svc.settings.getBool(SETTING_KEYS.poupancaAtivado, false),
           svc.settings.getBool(SETTING_KEYS.wishlistNaHome, false),
@@ -328,46 +353,10 @@ export default function FluxoScreen() {
         setBudgetsOn(bFlag);
         setSavingsOn(sFlag);
         setWishlistOn(wFlag);
-        setLastActivityDate(lastDate);
       } catch (err) {
         console.warn('[Fluxo] preferências falharam:', err);
       }
       perf.lap('preferências');
-
-      // v26: o SALDO DO DIA é calculado e pintado PRIMEIRO, isolado do resto da
-      // carga - uma falha na lista/grupos/faturas não deixa mais o saldo parado
-      // com o valor antigo (as etapas seguintes escreviam o saldo por último).
-      let dailyDual: DailyDual | null = null;
-      try {
-        if (showDailyFlag || wishlistFlag) {
-          dailyDual = (await svc.balance.getDailyBalancesDual(month, dataVersion)) ?? null; // v49: mesma versão=cache, versão nova=recalcula
-          if (!isCurrent()) return;
-          setDailyBal(dailyDual);
-        } else {
-          // Sem exibição e sem dependência: não recalcula nada.
-          setDailyBal({ efetivado: {}, previsto: {} });
-        }
-      } catch (err) {
-        console.warn('[Fluxo] saldo do dia falhou:', err);
-      }
-      perf.lap('saldo do dia');
-
-      // v16 — LIVRO-RAZÃO: a linha do mês (Persistida em SQLite, encadeada
-      // com o mês anterior) entra no state para uso no `dailyShown` e no
-      // saldo passado à Programação de Compra.
-      let monthRow: import('../src/services/MonthLedgerService').MonthLedgerRow | null = null;
-      try {
-        if (showDailyFlag || wishlistFlag || budgetsFlag || savingsFlag) {
-          monthRow = await svc.monthLedger.getMonthLedgerSummary(month);
-          if (!isCurrent()) return;
-          setMonthLedgerRow(monthRow);
-        } else {
-          setMonthLedgerRow(null);
-        }
-      } catch (err) {
-        console.warn('[Fluxo] livro-razão falhou:', err);
-      }
-      perf.lap('livro-razão');
 
       // v42 - cards de ORÇAMENTO e POUPANÇA (só quando a flag está ligada em Ajustes)
       try {
@@ -401,36 +390,12 @@ export default function FluxoScreen() {
           setWishClasses([]);
         }
 
-        // v68 - ajustes do SALDO DO DIA: os módulos ativos entram no número
-        // (Previsto = base + previsto Orçamento + previsto Poupança; Efetivado
-        // idem). No último lançamento do mês, as reservas seguem a hierarquia abaixo.
-        let ba: DayAdjust | null = null;
-        let sa: DayAdjust | null = null;
-        if (budgetsFlag || savingsFlag) {
-          const scope = await svc.db.getAllAsync<{ id: string }>(
-            'SELECT id FROM accounts WHERE include_in_general_balance = 1 AND archived_at IS NULL'
-          );
-          const scopeIds = scope.map((r) => r.id);
-          [ba, sa] = await Promise.all([
-            budgetsFlag ? svc.budgets.getMonthFluxAdjust(month, scopeIds, dataVersion) : Promise.resolve(null),
-            savingsFlag ? svc.savings.getMonthFluxAdjust(month, scopeIds, dataVersion) : Promise.resolve(null),
-          ]);
-          if (!isCurrent()) return;
-          setBudAdj(ba);
-          setSavAdj(sa);
-          perf.lap('cards:ajustes');
-        } else {
-          setBudAdj(null);
-          setSavAdj(null);
-        }
-
         if (wishlistFlag) {
           try {
             // v17: a Programação de Compra LE DIRETAMENTE do
             // `MonthLedgerService` (cascade persistida em
             // `month_ledger_wishlist`). Não há mais cálculo em memória nem
             // override de saldo — o livro é a fonte única.
-            void monthRow;
             const wm = await svc.wishlist.getMethodology(month, {
               dataVersion,
             });
@@ -453,10 +418,11 @@ export default function FluxoScreen() {
       }
       perf.lap('cards');
 
-      const [rows, invRows, instRows] = await Promise.all([
+      const [rows, invRows, instRows, openingCents] = await Promise.all([
         svc.transactions.listFlow(month),
         svc.invoices.listInvoicesDueInMonth(month),
         svc.installments.listAccountInstallmentsDueInMonth(month),
+        svc.balance.getOpeningBalanceCents(month),
       ]);
       if (!isCurrent()) return;
       const allRows = rows as unknown as FlowTx[];
@@ -473,8 +439,8 @@ export default function FluxoScreen() {
     // INSTALLMENT) NÃO é um lançamento consolidado do usuário — sai da raiz.
     // Era ela que aparecia como um "Consolidado" extra ao criar um parcelado
     // normal (o parcelado em conta já aparece pela própria parcela no mês).
-    setTxs(allRows.filter((t) => !t.card_id && t.source_system !== 'INSTALLMENT' && !occIds.has(t.id) && !isGroupHeader(t)));
-    setInvoicesDue(
+    const txsForMonth = allRows.filter((t) => !t.card_id && t.source_system !== 'INSTALLMENT' && !occIds.has(t.id) && !isGroupHeader(t));
+    const invoicesForMonth: InvoiceAgg[] =
       (invRows as Array<{
         invoice: { id: string; card_id: string; reference_month: string; due_date: string | null };
         cardId: string; cardName: string; dueDate: string; dueCents: number; liveStatus: string;
@@ -488,11 +454,16 @@ export default function FluxoScreen() {
         dueCents: i.dueCents,
         liveStatus: i.liveStatus,
         items: i.items,
-      }))
-    );
-    setAccountInst((instRows as unknown as InstAgg[]).filter((i) => !instIds.has(i.installmentId)));
+      }));
+    const installmentsForMonth = (instRows as unknown as InstAgg[]).filter((i) => !instIds.has(i.installmentId));
     if (!isCurrent()) return;
-    setGroupMonths(gm);
+    const monthEntries: Entry[] = [
+      ...txsForMonth.map((tx) => ({ kind: 'tx' as const, date: tx.occurred_on, tx })),
+      ...Object.values(gm).map((grp) => ({ kind: 'group' as const, date: groupMonthDate(grp), grp })),
+      ...invoicesForMonth.map((inv) => ({ kind: 'invoice' as const, date: inv.dueDate, inv })),
+      ...installmentsForMonth.map((inst) => ({ kind: 'installment' as const, date: inst.dueDate, inst })),
+    ];
+    setFlowSnapshot(month, fluxoItemsFromEntries(monthEntries, childrenByGroup), openingCents);
     // v13 (2.B): filhos já carregados — o chip de status funciona RECOLHIDO
     setChildrenMap(childrenByGroup);
     // v87 (BUG): antes a_expansão era LIMPA em TODA recarga — recarregar o
@@ -516,19 +487,28 @@ export default function FluxoScreen() {
 
   const isGroup = (t: FlowTx) => t.child_count > 0;
 
-  // ---------- Saldo do dia com hierarquia mensal (memoizado) ----------
-  // No último lançamento: Orçamento → Programação de Compras → Poupança Mensal →
-  // Fechamento do Mês. Os demais dias continuam mostrando os ajustes diários.
-  // v70 (BUGS 1.2/1.3): com Poupança + "Fechamento do mês" ativos, o mês visto
-  // a partir da criação do plano é REGIDO pelo fechamento — o saldo carregado
-  // dos meses anteriores foi RETIDO para a poupança, então o "Saldo do dia
-  // Previsto" NÃO começa com ele (abertura zerada) e o ÚLTIMO dia com
-  // lançamento do mês subsequente começa sem carregar saldo positivo.
-  const closingRegendo = React.useMemo(() => {
-    if (!savingsOn) return false;
-    const since = savingsSum?.closingSinceMonth ?? null;
-    return since != null && month >= since;
-  }, [savingsOn, savingsSum, month]);
+  // ---------- Dados derivados da lista única do mês ----------
+  const entries = React.useMemo<Entry[]>(
+    () => flowMonth === month ? flowItems.map((item) => item.payload) : [],
+    [flowItems, flowMonth, month]
+  );
+  const txs = React.useMemo(
+    () => entries.filter((entry): entry is Extract<Entry, { kind: 'tx' }> => entry.kind === 'tx').map((entry) => entry.tx),
+    [entries]
+  );
+  const groupMonths = React.useMemo(
+    () => Object.fromEntries(entries.filter((entry): entry is Extract<Entry, { kind: 'group' }> => entry.kind === 'group')
+      .map((entry) => [entry.grp.header.id, entry.grp])),
+    [entries]
+  );
+  const invoicesDue = React.useMemo(
+    () => entries.filter((entry): entry is Extract<Entry, { kind: 'invoice' }> => entry.kind === 'invoice').map((entry) => entry.inv),
+    [entries]
+  );
+  const accountInst = React.useMemo(
+    () => entries.filter((entry): entry is Extract<Entry, { kind: 'installment' }> => entry.kind === 'installment').map((entry) => entry.inst),
+    [entries]
+  );
 
   /** v95: plano do mês visto (plano = parte do plano que cabe/foi abatida
    *  neste mês). Declarado AQUI porque o `dailyShown` (hierarquia do Saldo
@@ -541,70 +521,21 @@ export default function FluxoScreen() {
     [wishProjection, month]
   );
 
-  // ---------- Agrupamento por dia (v9 + v12) ----------
+  // v35: fonte ÚNICA do saldo do dia. Lista em memória + saldo de abertura
+  // carregado uma vez por mês → calcularFluxo → render abaixo. Nada mais
+  // calcula saldo do dia nesta tela.
+  const resultadoFluxo = React.useMemo(
+    () => calcularFluxo(flowMonth === month ? flowItems : [], saldoAberturaCents ?? 0, month),
+    [flowItems, flowMonth, saldoAberturaCents, month]
+  );
+
+  // ---------- Agrupamento por dia ----------
   // v48 #1 — totais por grupo calculados 1x, não 400x (1 por card). Sem mudar layout: mesmo valor, só cacheado.
-  // v63.1 FIX — o useMemo referenciava `gm` (variável que NUNCA existiu como
-  // estado — era o destrutura da função de carga) e crashava o Fluxo com
-  // ReferenceError no render. O estado correto é `groupMonths` (setGroupMonths(gm)).
   const totalsByGroupV48 = React.useMemo(() => {
     const m = new Map<string, { debits: number; credits: number }>();
     for (const gid of Object.keys(groupMonths)) { m.set(gid, groupMonthTotals(groupMonths[gid])); }
     return m;
   }, [groupMonths]); // v49 GARANTIA: groupMonths é reconstruído do banco a cada bump, então cache invalida quando valor/data muda. Sem valor novo, sem cache velho.
-  const entries: Entry[] = React.useMemo(() => {
-    const list: Entry[] = [];
-    for (const t of txs) list.push({ kind: 'tx', date: t.occurred_on, tx: t });
-    // v12 (bug A): o consolidado aparece EM TODO mês com conteúdo — no mês do
-    // cabeçalho (linhas à vista) ou onde houver ocorrência/parcela daquele mês.
-    for (const grp of Object.values(groupMonths)) {
-      // v88 (BUG): a data do card é a DO MÊS VISTO (groupMonthDate) — no mês
-      // do cabeçalho a data do lançamento; nos outros meses a 1ª ocorrência/
-      // parcela do mês. Antes o card ficava preso na data do lançamento.
-      list.push({ kind: 'group', date: groupMonthDate(grp), grp });
-    }
-    for (const inv of invoicesDue) list.push({ kind: 'invoice', date: inv.dueDate, inv });
-    for (const inst of accountInst) list.push({ kind: 'installment', date: inst.dueDate, inst });
-    return list;
-  }, [txs, groupMonths, invoicesDue, accountInst]);
-
-  // ---------- Saldo do dia com hierarquia mensal (memoizado) ----------
-  // v16 — livro-razão: a abertura do mês vem do closing do mês anterior
-  // (persistido em `month_ledger`), e o saldo do dia-alvo vem do closing
-  // do próprio mês (depois de orçamento → programação → poupança → fechamento).
-  // Os dias do mês são construídos em cima da nova abertura + budAdj diário.
-  const dailyShown = React.useMemo(() => {
-    const basePrev: Record<string, number> = { ...dailyBal.previsto };
-    const baseEfet: Record<string, number> = { ...dailyBal.efetivado };
-    // 1) abertura nova (do ledger): diferença entre a abertura do ledger
-    //    (que JÁ carrega o saldo líquido do mês anterior) e a abertura
-    //    bruta do dual. O sinal é aplicado a TODOS os dias do mês.
-    const openPrevDelta = (monthLedgerRow?.openingPrevCents ?? 0)
-      - (dailyBal.openingPrevisto ?? 0);
-    const openEfetDelta = (monthLedgerRow?.openingEfetCents ?? 0)
-      - (dailyBal.openingEfetivado ?? 0);
-    let prev: Record<string, number> = {};
-    let efet: Record<string, number> = {};
-    for (const ymd of Object.keys(basePrev)) {
-      prev[ymd] = (basePrev[ymd] ?? 0) + openPrevDelta;
-    }
-    for (const ymd of Object.keys(baseEfet)) {
-      efet[ymd] = (baseEfet[ymd] ?? 0) + openEfetDelta;
-    }
-    // 2) ajustes diários do Orçamento (cartão reserva da compra até a
-    //    véspera da fatura; fora do escopo reserva da data em diante).
-    prev = mergeDailyAdjust(prev, budAdj?.previsto);
-    efet = mergeDailyAdjust(efet, budAdj?.efetivado);
-    // 3) dia-alvo: a hierarquia completa já foi aplicada no livro —
-    //    o closing_prev/efet é o saldo exibido nesse dia.
-    if (monthLedgerRow && lastActivityDate
-        && monthLedgerRow.targetDate === lastActivityDate) {
-      prev[lastActivityDate] = monthLedgerRow.closingPrevCents;
-      efet[lastActivityDate] = monthLedgerRow.closingEfetCents;
-    }
-    return { previsto: prev, efetivado: efet };
-  }, [
-    dailyBal, budAdj, monthLedgerRow, lastActivityDate, month,
-  ]);
 
   const passesFilter = (e: Entry): boolean => {
     if (filter === 'ALL') return true;
@@ -626,18 +557,6 @@ export default function FluxoScreen() {
     return t.type === 'EXPENSE' || t.type === 'TRANSFER';
   };
 
-  const days = React.useMemo(() => {
-    const byDay = new Map<string, Entry[]>();
-    for (const e of entries) {
-      if (!passesFilter(e)) continue;
-      const arr = byDay.get(e.date) ?? [];
-      arr.push(e);
-      byDay.set(e.date, arr);
-    }
-    return Array.from(byDay.entries()).sort((a, b) => (a[0] < b[0] ? 1 : -1));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries, filter, showDaily, closingRegendo, month]);
-
   // ---------- v86: linhas da lista virtualizada ----------
   // Cada linha é OU o cabeçalho de um dia OU um lançamento. O FlashList monta
   // só o que está na tela; trocar mês/filtro não remonta o mês inteiro.
@@ -654,20 +573,24 @@ export default function FluxoScreen() {
           ? `grp:${e.grp.header.id}`
           : `tx:${e.tx.id}`;
 
+  // v35: a tela só renderiza o resultado — NUNCA calcula. Cada "Saldo do dia"
+  // é o `saldoPrevistoCents`/`saldoEfetivadoCents` que `calcularFluxo` devolveu.
   const flowRows = React.useMemo<FlowRow[]>(() => {
     const rows: FlowRow[] = [];
-    for (const [day, list] of days) {
+    for (const saldoDia of [...resultadoFluxo.dias].reverse()) {
+      const day = saldoDia.data;
+      const list = saldoDia.itens.map((item) => item.payload).filter(passesFilter);
       rows.push({
         kind: 'day',
         key: `day:${day}`,
         day,
-        prev: dailyShown.previsto[day],
-        efet: dailyShown.efetivado[day],
+        prev: saldoDia.saldoPrevistoCents,
+        efet: saldoDia.saldoEfetivadoCents,
       });
       list.forEach((entry, i) => rows.push({ kind: 'entry', key: `${day}:${i}:${entryId(entry)}`, entry }));
     }
     return rows;
-  }, [days, dailyShown]);
+  }, [resultadoFluxo, filter, totalsByGroupV48]);
 
   const renderRow = ({ item }: { item: FlowRow }) => {
     if (item.kind === 'day') {
@@ -694,13 +617,42 @@ export default function FluxoScreen() {
     return <View className="pb-1.5">{renderEntry(item.entry)}</View>;
   };
 
+  const setTxPaidInMemory = (txId: string, paid: boolean) => {
+    updateFlowItems((items) => items.map((item) => {
+      if (item.id !== `tx:${txId}`) return item;
+      const value = item.valorCents;
+      const status = paid ? 'CONFIRMED' : 'PENDING';
+      return {
+        ...item,
+        status,
+        pago: paid,
+        efetivadoCents: paid ? value : 0,
+        payload: item.payload.kind === 'tx'
+          ? { ...item.payload, tx: { ...item.payload.tx, status } }
+          : item.payload,
+      };
+    }));
+  };
 
   // ---------- Exclusão FÍSICA (v10) — v21 (bug 4): exige CONFIRMAÇÃO ----------
+  // v35: ordem ÚNICA — (1) sai da lista em memória (a tela re-renderiza o
+  // saldo do dia agora), (2) serviço persiste em background, (3) bump() para
+  // propagar. NUNCA calcular saldo durante esta função.
   const doExcluirTx = async (tx: FlowTx) => {
+    const savingsEntry = savingsSum?.entries.find(
+      (entry) => entry.kind === 'MONTHLY' && entry.planId != null && entry.transactionId === tx.id
+    );
+    updateFlowItems((items) => items.filter((item) =>
+      item.id !== `tx:${tx.id}` && item.id !== `grp:${tx.id}`
+    ));
     try {
-      // v12 (UX): CONSOLIDADO → exclusão do GRUPO INTEIRO (linhas à vista +
+      if (savingsEntry?.planId) {
+        // v35 (regra 5): exclui só aquela ocorrência do plano — o plano segue
+        // valendo nos meses seguintes; ocorrências CONFIRMED permanecem.
+        await services.savings.cancelarOcorrenciaDoMes(savingsEntry.planId, savingsEntry.month);
+      } else if (tx.kind === 'CONSOLIDATED' && tx.source_system !== 'INSTALLMENT') {
+        // v12 (UX): CONSOLIDADO → exclusão do GRUPO INTEIRO (linhas à vista +
       // contas fixas criadas dentro + parcelamentos criados dentro).
-      if (tx.kind === 'CONSOLIDATED' && tx.source_system !== 'INSTALLMENT') {
         await services.transactions.deleteGroupDeep(tx.id);
       } else {
         // v10: exclusão física — o registro sai de vez do banco de dados.
@@ -710,6 +662,7 @@ export default function FluxoScreen() {
       }
       bump();
     } catch (err) {
+      bump();
       showToast(err instanceof Error ? err.message : String(err), 'err');
     }
   };
@@ -718,10 +671,17 @@ export default function FluxoScreen() {
    *  diante (pagas ficam intactas e o custo total é recalculado).
    *  v21 (bug 4): só roda após a confirmação, que também oferece "apenas esta". */
   const doExcluirParcela = async (info: { planId: string; sequence: number }, onlyOne: boolean) => {
+    updateFlowItems((items) => items.filter((item) =>
+      !(item.payload.kind === 'installment'
+        && item.payload.inst.planId === info.planId
+        && item.payload.inst.sequenceNumber >= info.sequence
+        && (onlyOne ? item.payload.inst.sequenceNumber === info.sequence : true))
+    ));
     try {
       await services.installments.cancelFromSequence(info.planId, info.sequence, { onlyOne });
       bump();
     } catch (err) {
+      bump();
       showToast(err instanceof Error ? err.message : String(err), 'err');
     }
   };
@@ -746,6 +706,15 @@ export default function FluxoScreen() {
     if (!info) return;
     const next = !info.allDone;
     const { txs, insts } = groupStatusItems(grp, children);
+    updateFlowItems((items) => items.map((item) => {
+      if (item.id !== `grp:${grp.header.id}`) return item;
+      return {
+        ...item,
+        status: next ? 'CONFIRMED' : 'PENDING',
+        pago: next,
+        efetivadoCents: next ? item.valorCents : 0,
+      };
+    }));
     try {
       // v87 (BUG MÉDIA): o grupo era marcado item a item SEM transação — uma
       // falha no meio deixava o grupo PARCIALMENTE pago. Agora é tudo ou nada.
@@ -759,6 +728,7 @@ export default function FluxoScreen() {
       });
       bump();
     } catch (err) {
+      bump();
       showToast(err instanceof Error ? err.message : String(err), 'err');
     }
   };
@@ -794,10 +764,12 @@ export default function FluxoScreen() {
   /** v9: alternar Pago/Não pago (despesa) e Recebido/Não recebido (receita). */
   const togglePayment = async (tx: FlowTx) => {
     const nowPaid = tx.status !== 'PENDING';
+    setTxPaidInMemory(tx.id, !nowPaid);
     try {
       await services.transactions.setPaymentStatus(tx.id, !nowPaid);
       bump();
     } catch (err) {
+      bump();
       showToast(err instanceof Error ? err.message : String(err), 'err');
     }
   };
@@ -872,20 +844,37 @@ export default function FluxoScreen() {
   /** v89: alterna Transferido/Não transferido da transferência do plano. */
   const toggleTransfer = async (tx: FlowTx) => {
     const nowTransferred = tx.status !== 'CONFIRMED';
+    setTxPaidInMemory(tx.id, !nowTransferred);
     try {
       await services.transactions.setTransferStatus(tx.id, nowTransferred);
       bump();
     } catch (err) {
+      bump();
       showToast(err instanceof Error ? err.message : String(err), 'err');
     }
   };
 
   /** v10: toggle Pago/Não pago das PARCELAS em conta (mesmo visual dos comuns). */
   const toggleInstallment = async (inst: InstAgg) => {
+    const paid = inst.status !== 'PAID';
+    updateFlowItems((items) => items.map((item) => {
+      if (item.id !== `inst:${inst.installmentId}`) return item;
+      const value = item.valorCents;
+      return {
+        ...item,
+        status: paid ? 'PAID' : 'PENDING',
+        pago: paid,
+        efetivadoCents: paid ? value : 0,
+        payload: item.payload.kind === 'installment'
+          ? { ...item.payload, inst: { ...item.payload.inst, status: paid ? 'PAID' : 'PENDING' } }
+          : item.payload,
+      };
+    }));
     try {
-      await services.installments.setPaymentStatus(inst.installmentId, inst.status !== 'PAID');
+      await services.installments.setPaymentStatus(inst.installmentId, paid);
       bump();
     } catch (err) {
+      bump();
       showToast(err instanceof Error ? err.message : String(err), 'err');
     }
   };
@@ -1556,7 +1545,7 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
                   <Text className="text-slate-500">Carregando...</Text>
                 </Card>
               ) : null}
-              {!loading && days.length === 0 ? (
+              {!loading && resultadoFluxo.itens.length === 0 ? (
                 <EmptyState
                   icon="🗓️"
                   title="Sem lançamentos no mês"

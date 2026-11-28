@@ -18,7 +18,8 @@
 
 import type { DbDriver } from '../db/types';
 import { genId } from '../lib/id';
-import { nowIso, todaySP, monthOf, monthAdd, dayInMonth, lastDayNumberOf, monthRange } from '../lib/dates';
+import { nowIso, todaySP, monthOf, dayInMonth, lastDayNumberOf, monthRange, spDateOfIso } from '../lib/dates';
+import { gerarOcorrenciasPoupanca } from '../lib/flowModel';
 import { BalanceService } from './BalanceService';
 import { TransactionService } from './TransactionService';
 import { BudgetService } from './BudgetService';
@@ -106,8 +107,6 @@ export interface SavingsPlanView {
    *  com "N plano(s) cadastrado(s)" mesmo em meses onde o plano não existia). */
   createdMonth: string;
 }
-
-const FORECAST_MONTHS_AHEAD = 24;
 
 export class SavingsService {
   private balance: BalanceService;
@@ -224,51 +223,98 @@ export class SavingsService {
     });
   }
 
+  /** Cancela só a previsão daquele mês; o registro impede a geração futura dela. */
+  async cancelarOcorrenciaDoMes(planId: string, month: string): Promise<void> {
+    await this.db.transactionAsync(async () => {
+      const entry = await this.db.getFirstAsync<{
+        id: string;
+        transaction_id: string | null;
+        tx_status: string | null;
+      }>(
+        `SELECT se.id, se.transaction_id, t.status AS tx_status
+           FROM savings_entries se
+           LEFT JOIN transactions t ON t.id = se.transaction_id
+          WHERE se.plan_id = ? AND se.month = ? AND se.kind = 'MONTHLY'`,
+        [planId, month]
+      );
+      if (!entry) throw new Error('Ocorrência mensal não encontrada');
+      if (entry.tx_status === 'CONFIRMED') throw new Error('Uma ocorrência já transferida não pode ser cancelada');
+      if (entry.transaction_id) {
+        await this.db.runAsync('DELETE FROM financial_moves WHERE transaction_id = ?', [entry.transaction_id]);
+        await this.db.runAsync('DELETE FROM transactions WHERE id = ?', [entry.transaction_id]);
+      }
+      await this.db.runAsync(
+        `UPDATE savings_entries
+            SET status = 'SKIPPED', transaction_id = NULL
+          WHERE id = ?`,
+        [entry.id]
+      );
+    });
+  }
+
   // ------------------------------------------------- previsão mensal ----
 
   /**
-   * v90 — Gera as PREVISÕES dos planos MENSAL ativos (idempotente — UNIQUE por
-   * plano/mês). Janela: do mês CORRENTE (sempre nasce um lançamento, mesmo
-   * que o dia escolhido já tenha passado neste mês — o usuário pode QUERER
-   * transferir o valor retroativamente; antes da v90 o lançamento só nascia
-   * a partir do mês seguinte e o mês corrente sumia) até +24 meses, igual ao
-   * padrão das contas fixas. Dias 29/30/31 em mês curto caem no ÚLTIMO dia.
+   * Gera somente ocorrências vigentes: não cria dias vencidos nem datas
+   * anteriores à criação do plano.
    */
   async generateForecast(today?: string): Promise<number> {
     const todayYmd = today ?? todaySP();
     const curMonth = monthOf(todayYmd);
-    const plans = await this.db.getAllAsync<{ id: string; amount_cents: number | null; day_of_month: number | null }>(
-      `SELECT id, amount_cents, day_of_month FROM savings_plans
+    const plans = await this.db.getAllAsync<{
+      id: string;
+      amount_cents: number | null;
+      day_of_month: number | null;
+      created_at: string;
+    }>(
+      `SELECT id, amount_cents, day_of_month, created_at FROM savings_plans
         WHERE mode = 'MONTHLY' AND is_active = 1
           AND amount_cents IS NOT NULL AND day_of_month IS NOT NULL`
     );
     let created = 0;
     for (const plan of plans) {
-      const day = Math.min(31, Math.max(1, plan.day_of_month ?? 1));
+      const createdDate = spDateOfIso(plan.created_at);
+      const occurrences = gerarOcorrenciasPoupanca(
+        { id: plan.id, amountCents: plan.amount_cents!, dayOfMonth: plan.day_of_month! },
+        createdDate,
+        todayYmd
+      );
       const accounts = await this.planAccount(plan.id);
-      // v90 — mês corrente SEMPRE recebe uma previsão (mesmo se o dia já
-      // passou). Antes (v89) o início era 1 quando o dia já passou — o mês
-      // corrente sumia e só aparecia nos meses seguintes.
-      const startOffset = 0;
-      for (let i = startOffset; i <= FORECAST_MONTHS_AHEAD; i++) {
-        const month = monthAdd(curMonth, i);
-        const date = dayInMonth(month, day);
+      const stale = await this.db.getAllAsync<{
+        entryId: string;
+        transactionId: string;
+        date: string;
+      }>(
+        `SELECT se.id AS entryId, t.id AS transactionId, t.occurred_on AS date
+           FROM savings_entries se
+           JOIN transactions t ON t.id = se.transaction_id
+          WHERE se.plan_id = ? AND se.kind = 'MONTHLY' AND se.status = 'FORECAST'
+            AND t.status = 'PENDING' AND se.month = ?`,
+        [plan.id, curMonth]
+      );
+      for (const row of stale) {
+        if (row.date >= todayYmd && row.date >= createdDate) continue;
+        await this.db.runAsync('DELETE FROM financial_moves WHERE transaction_id = ?', [row.transactionId]);
+        await this.db.runAsync('DELETE FROM transactions WHERE id = ?', [row.transactionId]);
+        await this.db.runAsync('DELETE FROM savings_entries WHERE id = ?', [row.entryId]);
+      }
+      for (const occurrence of occurrences) {
         const exists = await this.db.getFirstAsync<{ id: string }>(
           `SELECT id FROM savings_entries WHERE plan_id = ? AND month = ? AND kind = 'MONTHLY'`,
-          [plan.id, month]
+          [plan.id, occurrence.month]
         );
         if (exists) continue;
         const tx = await this.transactions.createTransfer({
           fromAccountId: accounts.source_account_id,
           toAccountId: accounts.target_account_id,
-          amountCents: plan.amount_cents!,
-          date,
+          amountCents: occurrence.amountCents,
+          date: occurrence.date,
           description: 'Poupança mensal',
         });
         await this.db.runAsync(
           `INSERT INTO savings_entries (id, plan_id, month, kind, amount_cents, status, transaction_id, created_at)
            VALUES (?, ?, ?, 'MONTHLY', ?, 'FORECAST', ?, ?)`,
-          [genId(), plan.id, month, plan.amount_cents!, tx.id, nowIso()]
+          [genId(), plan.id, occurrence.month, occurrence.amountCents, tx.id, nowIso()]
         );
         created++;
       }
