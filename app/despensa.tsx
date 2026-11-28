@@ -159,10 +159,20 @@ export default function DespensaScreen() {
   };
 
   // ---------- v104: formatação dos preços da lista ----------
-  const priceLabel = (dim: 'G' | 'ML' | 'UN', unitPriceBaseCents: number): string => {
-    if (dim === 'G') return `${formatBRL(Math.round(unitPriceBaseCents * 1000))}/kg`;
-    if (dim === 'ML') return `${formatBRL(Math.round(unitPriceBaseCents * 1000))}/L`;
-    return `${formatBRL(Math.round(unitPriceBaseCents * 100) / 100)}/un`;
+  const priceLabel = (offer: ListaCompraOffer): string => {
+    if (offer.dim === 'G') return `${formatBRL(Math.round(offer.unitPriceBaseCents * 1000))}/kg`;
+    if (offer.dim === 'ML') return `${formatBRL(Math.round(offer.unitPriceBaseCents * 1000))}/L`;
+    // v32: mostra a embalagem da nota (BDJ, PCT, CX...) quando o preço por
+    // unidade base é o mesmo da embalagem; para DZ (12 un) mostra os dois.
+    const u = (offer.unitOriginal ?? '').trim().toUpperCase();
+    const isPackaging = !!u && !['UN', 'UND', 'UNIDADE', 'UNIDADES'].includes(u);
+    if (isPackaging && offer.notePriceCents > 0) {
+      if (Math.abs(offer.unitFactor - 1) < 0.001) {
+        return `${formatBRL(Math.round(offer.notePriceCents))}/${u}`;
+      }
+      return `${formatBRL(Math.round(offer.unitPriceBaseCents * 100) / 100)}/un · ${formatBRL(Math.round(offer.notePriceCents))}/${u}`;
+    }
+    return `${formatBRL(Math.round(offer.unitPriceBaseCents * 100) / 100)}/un`;
   };
 
   /** v104 — helper de cálculo: preço do ITEM na loja = qty × unitPriceBase,
@@ -248,7 +258,7 @@ export default function DespensaScreen() {
               qty: formatQtyForPdf(p),
               // v106 — "R$ 19,90/kg · R$ 9,95" (preço unitário + total do item).
               priceLabel: melhor
-                ? `${priceLabel(melhor.dim, melhor.unitPriceBaseCents)} · ${formatBRL(Math.round(subtotalCents * 100) / 100)}`
+                ? `${priceLabel(melhor)} · ${formatBRL(Math.round(subtotalCents * 100) / 100)}`
                 : undefined,
               categoryLabel: melhor?.storeName ?? undefined,
             })),
@@ -259,7 +269,7 @@ export default function DespensaScreen() {
             lines: g.cats.flatMap(([cat, prods]) => prods.map(({ p, offer, subtotalCents }) => ({
               productName: p.name,
               qty: formatQtyForPdf(p),
-              priceLabel: `${priceLabel(offer.dim, offer.unitPriceBaseCents)} · ${formatBRL(Math.round(subtotalCents * 100) / 100)}`,
+              priceLabel: `${priceLabel(offer)} · ${formatBRL(Math.round(subtotalCents * 100) / 100)}`,
               categoryLabel: cat,
             }))),
           }));
@@ -571,7 +581,7 @@ function ListPreview(props: {
   setVisao: (v: 'CATEGORIA' | 'LOJA') => void;
   porCategoria: Array<{ cat: string; items: Array<{ p: ListaCompraProduct; melhor: ListaCompraOffer | null; subtotalCents: number }>; totalCents: number }>;
   porLoja: PorLojaGroup[];
-  priceLabel: (dim: 'G' | 'ML' | 'UN', unitPriceBaseCents: number) => string;
+  priceLabel: (offer: ListaCompraOffer) => string;
   formatBRL: (cents: number) => string;
   pdfBusy: boolean;
   onClose: () => void;
@@ -632,7 +642,7 @@ function ListPreview(props: {
                     <PreviewItemCard
                       key={p.productId}
                       p={p}
-                      rightLabel={melhor ? props.priceLabel(melhor.dim, melhor.unitPriceBaseCents) : 'sem preço em notas lidas'}
+                      rightLabel={melhor ? props.priceLabel(melhor) : 'sem preço em notas lidas'}
                       rightSubLabel={melhor ? `${melhor.storeName} · ${melhor.date ? ymdToBr(melhor.date) : '—'}` : undefined}
                       subtotalLabel={melhor ? props.formatBRL(Math.round(subtotalCents * 100) / 100) : undefined}
                       priceLabel={props.priceLabel}
@@ -667,7 +677,7 @@ function ListPreview(props: {
 function ListPreviewPorLoja(props: {
   data: ListaCompraProduct[];
   porLoja: PorLojaGroup[];
-  priceLabel: (dim: 'G' | 'ML' | 'UN', unitPriceBaseCents: number) => string;
+  priceLabel: (offer: ListaCompraOffer) => string;
   formatBRL: (cents: number) => string;
   onRemoveItem: (productId: string) => Promise<void>;
   onSetQty: (productId: string, qtyBase: number) => Promise<void>;
@@ -690,7 +700,7 @@ function ListPreviewPorLoja(props: {
                 <PreviewItemCard
                   key={p.productId}
                   p={p}
-                  rightLabel={props.priceLabel(offer.dim, offer.unitPriceBaseCents)}
+                  rightLabel={props.priceLabel(offer)}
                   rightSubLabel={offer.date ? `compra em ${ymdToBr(offer.date)}` : undefined}
                   subtotalLabel={props.formatBRL(Math.round(subtotalCents * 100) / 100)}
                   priceLabel={props.priceLabel}
@@ -738,7 +748,7 @@ function PreviewItemCard(props: {
   rightLabel: string;
   rightSubLabel?: string;
   subtotalLabel?: string;
-  priceLabel: (dim: 'G' | 'ML' | 'UN', unitPriceBaseCents: number) => string;
+  priceLabel: (offer: ListaCompraOffer) => string;
   onRemove: () => void | Promise<void>;
   onSetQty: (qtyBase: number) => void | Promise<void>;
 }) {

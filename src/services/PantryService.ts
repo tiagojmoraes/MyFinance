@@ -204,9 +204,12 @@ export class PantryService {
    *  UN). O retorno inclui o preço unitário por BASE para cada loja, com a
    *  MELHOR oferta destacada (menor preço entre lojas).
    *
-   *  v104 — preço por kg/L: usa `nfce_items.unit_price_cents` (em R$/kg ou R$/L
-   *  — lido desde a v98) quando existir; senão cai para `total_cents /
-   *  qtyBase`. KG nunca mistura com UN. */
+   *  v32 — preço por base = `total_cents / deltaBase` (preço EFETIVO pago).
+   *  Antes usava `nfce_items.unit_price_cents` cru com /1000 fixo para peso/
+   *  volume, o que errava por DZ (12×), por nota com unidade em gramas
+   *  (1000×) e quando o "Vl. Unit." vinha arredondado/inconsistente. O total
+   *  é o campo conferido contra o total da nota na leitura. KG nunca mistura
+   *  com UN. */
   async getListaCompraData(items: ListaCompraItemInput[]): Promise<ListaCompraProduct[]> {
     if (items.length === 0) return [];
     const ids = items.map((i) => i.productId);
@@ -281,21 +284,29 @@ export class PantryService {
       if (lojas.has(storeKey)) continue;
       lojas.add(storeKey);
       seenStore.set(r.product_id, lojas);
-      // v104: nfce_items.unit_price_cents está em R$/kg, R$/L ou R$/un. Para
-      // cair em R$/BASE (g, ml, un), KG/ML divide por 1000; UN fica igual.
-      const unitPriceBase = (conv.baseUnit === 'UN')
-        ? (r.unit_price_cents ?? 0)
-        : ((r.unit_price_cents ?? 0) / 1000);
-      const fallback = (r.total_cents ?? 0) / conv.deltaBase;
-      const priceBase = r.unit_price_cents != null && r.unit_price_cents > 0
-        ? unitPriceBase
-        : fallback;
+      // v32 (BUG): o preço unitário vinha do "Vl. Unit." cru, com /1000 fixo
+      // para peso/volume. Isso errava por DZ (12×), por nota com unidade em
+      // gramas (1000×) e quando o "Vl. Unit." vinha arredondado/inconsistente.
+      // Agora o preço efetivo por unidade BASE é o TOTAL do item dividido pela
+      // quantidade convertida — o total é o campo conferido contra o total da
+      // nota na leitura. O preço por embalagem da nota (R$/BDJ, R$/DZ) fica
+      // separado para a tela poder mostrar a embalagem.
+      const qtyNota = r.qty ?? 0;
+      const priceBase = r.total_cents != null && r.total_cents > 0
+        ? r.total_cents / conv.deltaBase
+        : ((r.unit_price_cents ?? 0) * qtyNota) / conv.deltaBase;
+      const notePriceCents = r.total_cents != null && r.total_cents > 0 && qtyNota > 0
+        ? r.total_cents / qtyNota
+        : (r.unit_price_cents ?? 0);
       entry.offers.push({
         storeName: loja,
         cnpj: r.doc_cnpj,
         date: (r.issued_at ?? '').slice(0, 10),
         accessKey: r.access_key,
         unitPriceBaseCents: priceBase,
+        notePriceCents,
+        unitOriginal: r.unit_original,
+        unitFactor: qtyNota > 0 ? conv.deltaBase / qtyNota : 1,
         dim: conv.baseUnit,
       });
     }
@@ -327,6 +338,12 @@ export interface ListaCompraOffer {
   accessKey: string;
   /** Preço na UNIDADE BASE (R$/g · R$/ml · R$/un). */
   unitPriceBaseCents: number;
+  /** Preço por unidade da NOTA (R$/BDJ, R$/DZ, R$/KG). */
+  notePriceCents: number;
+  /** Unidade da nota (BDJ, DZ, KG...) — null quando veio sem unidade. */
+  unitOriginal: string | null;
+  /** Quantas unidades base há em 1 unidade da nota (BDJ=1, DZ=12, KG=1000). */
+  unitFactor: number;
   dim: 'G' | 'ML' | 'UN';
 }
 
