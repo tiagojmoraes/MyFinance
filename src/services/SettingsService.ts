@@ -63,6 +63,10 @@ export const SETTING_KEYS = {
   wishlistNaHome: 'wishlist_na_home',
   /** v72: carrinho da LISTA DE COMPRA da Despensa (JSON array de product_id). */
   despensaListaCompra: 'despensa_lista_compra',
+  /** v34: pasta (URI do seletor do Android) onde o backup é gravado. */
+  backupDirUri: 'backup_dir_uri',
+  /** v34: data/hora ISO do último backup salvo. */
+  backupLastAt: 'backup_last_at',
   // v88: a preferência "Começar do zero a cada abertura" (zerar_ao_abrir) foi
   // REMOVIDA — os dados nunca são apagados sozinhos ao abrir o app.
 } as const;

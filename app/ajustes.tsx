@@ -90,7 +90,9 @@ function AboutBlock({ children }: { children: React.ReactNode }) {
 export default function AjustesScreen() {
   const services = useDataEffect();
   const bump = useAppStore((s) => s.bump);
-  const [backups, setBackups] = React.useState<string[]>([]);
+  /** v34: só o ÚLTIMO backup (nome fixo na pasta escolhida) — sem histórico. */
+  const [lastBackup, setLastBackup] = React.useState<string | null>(null);
+  const [backupDirUri, setBackupDirUri] = React.useState<string | null>(null);
   const [schemaVersion, setSchemaVersion] = React.useState<number | null>(null);
   const [resetting, setResetting] = React.useState(false);
   /** v21 (bug 4): confirmação antes de LIMPAR tudo (exclusão em massa). */
@@ -116,8 +118,8 @@ export default function AjustesScreen() {
   const load = React.useCallback(async () => {
     const row = await services.db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
     setSchemaVersion(row?.user_version ?? null);
-    const backupSvc = makeBackupService(services);
-    setBackups(await backupSvc.listBackups());
+    setLastBackup(await services.settings.get(SETTING_KEYS.backupLastAt));
+    setBackupDirUri(await services.settings.get(SETTING_KEYS.backupDirUri));
     setShowDaily(await services.settings.getBool(SETTING_KEYS.fluxoSaldoPorDia, false));
     // v42: flags dos novos módulos
     setBudgetsOn(await services.settings.getBool(SETTING_KEYS.budgetsAtivado, false));
@@ -209,17 +211,114 @@ export default function AjustesScreen() {
       },
     });
 
+  /** v34: nome FIXO — cada backup substitui o anterior (sem histórico). */
+  const BACKUP_FILE = 'myfinance-backup.db';
+
+  /** Nome legível da pasta escolhida (content://.../tree/primary%3ADocuments%2FMyFinance → Documents/MyFinance). */
+  const pastaLabel = (uri: string | null) => {
+    if (!uri) return '';
+    try {
+      const t = decodeURIComponent(uri).split('/tree/')[1] ?? '';
+      return t.replace(/^primary:/, '').replace(/^[^:]+:/, '') || t;
+    } catch {
+      return '';
+    }
+  };
+
+  const fmtQuando = (iso: string | null) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const p2 = (n: number) => String(n).padStart(2, '0');
+    return `${p2(d.getDate())}/${p2(d.getMonth() + 1)}/${d.getFullYear()} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  };
+
+  /** Abre o seletor de pastas do Android e guarda a escolha. null = cancelou. */
+  const escolherPasta = async (): Promise<string | null> => {
+    const perm = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+    if (!perm.granted) return null;
+    await services.settings.set(SETTING_KEYS.backupDirUri, perm.directoryUri);
+    setBackupDirUri(perm.directoryUri);
+    return perm.directoryUri;
+  };
+
+  /** Substitui o backup anterior da pasta pelo novo (nome fixo). */
+  const gravarNaPasta = async (dirUri: string, srcUri: string) => {
+    const SAF = FileSystem.StorageAccessFramework;
+    for (const f of await SAF.readDirectoryAsync(dirUri)) {
+      let nome = '';
+      try {
+        nome = decodeURIComponent(f).split('/').pop() ?? '';
+      } catch {
+        nome = f;
+      }
+      if (/^myfinance-backup.*\.db$/i.test(nome)) await FileSystem.deleteAsync(f, { idempotent: true });
+    }
+    const destino = await SAF.createFileAsync(dirUri, BACKUP_FILE, 'application/octet-stream');
+    const b64 = await FileSystem.readAsStringAsync(srcUri, { encoding: FileSystem.EncodingType.Base64 });
+    await FileSystem.writeAsStringAsync(destino, b64, { encoding: FileSystem.EncodingType.Base64 });
+  };
+
+  /** Não deixa histórico escondido dentro do app: apaga as cópias internas de backup
+   *  (e guarda só a ÚLTIMA cópia de segurança da restauração). */
+  const limparCopiasInternas = async (backupSvc: BackupService) => {
+    const dir = `${FileSystem.documentDirectory}backups/`;
+    let guardouSeguranca = false;
+    for (const nome of await backupSvc.listBackups()) {
+      if (nome.startsWith('pre-restore') && !guardouSeguranca) {
+        guardouSeguranca = true;
+        continue;
+      }
+      await FileSystem.deleteAsync(`${dir}${nome}`, { idempotent: true });
+    }
+  };
+
   const backupNow = async () => {
     try {
       const backupSvc = makeBackupService(services);
       const path = await backupSvc.createBackup();
+      let salvo = false;
+      try {
+        let dir = backupDirUri ?? (await escolherPasta());
+        if (dir) {
+          try {
+            await gravarNaPasta(dir, path);
+          } catch {
+            // permissão da pasta perdida (ou pasta apagada): pede de novo uma vez
+            dir = await escolherPasta();
+            if (dir) await gravarNaPasta(dir, path);
+          }
+          if (dir) {
+            salvo = true;
+            await services.settings.set(SETTING_KEYS.backupLastAt, new Date().toISOString());
+            showToast(`Backup salvo em ${pastaLabel(dir) || 'pasta escolhida'}`);
+          }
+        } else {
+          showToast('Escolha uma pasta para guardar o backup');
+        }
+      } catch (err) {
+        // plano B: seletor de pastas indisponível → tela de compartilhar
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(path, { mimeType: 'application/x-sqlite3', dialogTitle: 'Backup do MyFinance' });
+          salvo = true;
+          await services.settings.set(SETTING_KEYS.backupLastAt, new Date().toISOString());
+        } else {
+          throw err;
+        }
+      }
+      if (salvo) await limparCopiasInternas(backupSvc);
+      else await FileSystem.deleteAsync(path, { idempotent: true });
       bump();
       await load();
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(path, { mimeType: 'application/x-sqlite3', dialogTitle: 'Backup do MyFinance' });
-      } else {
-        showToast('Backup criado com sucesso');
-      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), 'err');
+    }
+  };
+
+  const trocarPasta = async () => {
+    try {
+      const dir = await escolherPasta();
+      if (dir) showToast(`Pasta do backup: ${pastaLabel(dir) || 'escolhida'}`);
     } catch (err) {
       showToast(err instanceof Error ? err.message : String(err), 'err');
     }
@@ -415,25 +514,20 @@ export default function AjustesScreen() {
       <Group
         icon={ICONS.arquivar}
         title="Backup"
-        summary={backups.length > 0 ? `${backups.length} backup(s) no dispositivo` : 'Nenhum backup ainda'}
+        summary={lastBackup ? `Último backup: ${fmtQuando(lastBackup)}` : 'Nenhum backup ainda'}
       >
         <Button label="Criar Backup agora" onPress={backupNow} />
         <Text className="text-xs text-slate-500">
-          Copia todos os dados do app para um arquivo seguro que você pode guardar ou levar para outro aparelho.
+          {backupDirUri
+            ? `Salva em ${pastaLabel(backupDirUri) || 'sua pasta'} como ${BACKUP_FILE}, substituindo o anterior.`
+            : 'Na primeira vez, escolha (ou crie) uma pasta, como Documentos/MyFinance. O backup fica nela.'}
         </Text>
+        {backupDirUri ? <Button label="Trocar pasta" variant="outline" onPress={trocarPasta} /> : null}
         <View className="border-t border-dashed border-slate-100" />
         <Button label="Restaurar Dados" variant="danger" onPress={restore} />
         <Text className="text-xs text-slate-500">
           A restauração substitui o banco atual: depois de concluir, feche e reabra o app.
         </Text>
-        {backups.length > 0 ? (
-          <View className="gap-0.5 border-t border-dashed border-slate-100 pt-1.5">
-            <Text className="text-sm font-semibold text-slate-800">Backups no dispositivo</Text>
-            {backups.map((b) => (
-              <KeyValue key={b} k="•" v={b} />
-            ))}
-          </View>
-        ) : null}
       </Group>
 
       {/* v68/v69 — DADOS: limpeza com confirmação.

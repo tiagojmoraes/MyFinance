@@ -213,25 +213,31 @@ export default function DespensaScreen() {
    *  para KG/UN/ML). v104 — antes somava só `unitPriceBaseCents` (preço
    *  unitário) e ignorava a quantidade. */
   const porLoja = React.useMemo(() => {
-    const lojaMap = new Map<string, Map<string, Array<{ p: ListaCompraProduct; offer: ListaCompraOffer; subtotalCents: number }>>>();
+    // v34: cada item entra UMA vez, na loja do MENOR preço (a mesma regra do total da
+    // lista) — antes entrava em toda loja com preço e aparecia repetido. A loja é
+    // identificada por CNPJ + nome (filiais de mesmo nome não se misturam).
+    const lojaMap = new Map<string, { loja: string; cats: Map<string, PorLojaItem[]> }>();
     for (const p of previewListData) {
-      for (const o of p.offers) {
-        const cats = lojaMap.get(o.storeName) ?? new Map();
-        const key = catLabel(p);
-        const arr = cats.get(key) ?? [];
-        arr.push({ p, offer: o, subtotalCents: itemTotalCents(p, o) });
-        cats.set(key, arr);
-        lojaMap.set(o.storeName, cats);
-      }
+      const melhor = p.offers.reduce<ListaCompraOffer | null>(
+        (m, o) => (!m || o.unitPriceBaseCents < m.unitPriceBaseCents ? o : m),
+        null
+      );
+      if (!melhor) continue; // sem preço: aparece no card "Sem preço em notas lidas"
+      const id = `${melhor.cnpj ?? '_'}::${melhor.storeName}`;
+      const g = lojaMap.get(id) ?? { loja: melhor.storeName, cats: new Map<string, PorLojaItem[]>() };
+      const key = catLabel(p);
+      const arr = g.cats.get(key) ?? [];
+      arr.push({ p, offer: melhor, subtotalCents: itemTotalCents(p, melhor) });
+      g.cats.set(key, arr);
+      lojaMap.set(id, g);
     }
     return [...lojaMap.entries()]
-      .map(([loja, cats]) => {
-        const todos = [...cats.values()].flat();
+      .map(([id, g]) => {
+        const todos = [...g.cats.values()].flat();
         const total = todos.reduce((a, b) => a + b.subtotalCents, 0);
-        const faltam = previewListData.length - todos.length;
-        return { loja, cats: [...cats.entries()].sort((a, b) => a[0].localeCompare(b[0])), total, faltam };
+        return { id, loja: g.loja, cats: [...g.cats.entries()].sort((a, b) => a[0].localeCompare(b[0])), total };
       })
-      .sort((a, b) => a.total - b.total);
+      .sort((a, b) => a.loja.localeCompare(b.loja, 'pt-BR'));
   }, [previewListData]);
 
   // v104 — ações do menu "⋮" das listas salvas:
@@ -565,8 +571,8 @@ type PorLojaGroup = {
   loja: string;
   cats: Array<[string, PorLojaItem[]]>;
   total: number;
-  /** Itens da lista que NÃO têm oferta nesta loja (cobre o "rodapé N sem preço"). */
-  faltam: number;
+  /** v34: CNPJ + nome — chave estável (filiais de mesmo nome não se misturam). */
+  id: string;
 };
 
 /** v104 — preview de uma lista (mantém layout e visões atuais do v72 +
@@ -684,13 +690,13 @@ function ListPreviewPorLoja(props: {
 }) {
   return (
     <>
-      {props.porLoja.map(({ loja, cats, total, faltam }) => (
-        <Card key={loja} className="gap-1.5">
+      {props.porLoja.map(({ id, loja, cats, total }) => (
+        <Card key={id} className="gap-1.5">
           <View className="flex-row justify-between items-center">
             <Text className="font-semibold text-slate-900" numberOfLines={1}>{loja}</Text>
             <View className="items-end">
               <Text className="text-sm font-bold text-slate-900">{props.formatBRL(Math.round(total * 100) / 100)}</Text>
-              <Text className="text-xs text-slate-400">total da lista nesta loja</Text>
+              <Text className="text-xs text-slate-400">total nesta loja</Text>
             </View>
           </View>
           {cats.map(([cat, prods]) => (
@@ -710,11 +716,6 @@ function ListPreviewPorLoja(props: {
               ))}
             </View>
           ))}
-          {faltam > 0 ? (
-            <Text className="text-xs text-slate-400 px-1">
-              {faltam} item(ns) sem preço nesta loja
-            </Text>
-          ) : null}
         </Card>
       ))}
       {props.data.filter((p) => p.offers.length === 0).length > 0 ? (
