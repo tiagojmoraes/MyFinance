@@ -527,6 +527,58 @@ export class BudgetService {
     const out = { previsto: {} as Record<string, number>, efetivado: {} as Record<string, number> };
     if (budgets.length === 0) return out;
     const ids = budgets.map((b) => b.category_id);
+    const rows = await this.fetchCommitmentRows(month, scopeAccountIds, ids);
+    const lastDay = lastDayNumberOf(month);
+
+    // v68: contribuição por INTERVALO — no cartão o ajuste vale da COMPRA até
+    // a véspera do vencimento da fatura (a partir daí o saldo base já reserva
+    // a fatura inteira — sem dupla contagem). Em conta fora do escopo, vale
+    // da data do lançamento em diante (o saldo do Fluxo nunca sente).
+    const prevIv: Array<{ s: string; e: string | null; v: number }> = [];
+    const efetIv: Array<{ s: string; e: string | null; v: number }> = [];
+    for (const c of rows) {
+      const iv = c.status === 'PENDENTE' ? prevIv : efetIv;
+      iv.push({ s: c.data, e: c.invoiceDue, v: c.valorCents });
+    }
+    const at = (iv: Array<{ s: string; e: string | null; v: number }>, d: string): number =>
+      iv.reduce((a, x) => (x.s <= d && (x.e == null || d < x.e) ? a + x.v : a), 0);
+
+    for (let day = 1; day <= lastDay; day++) {
+      const ymd = `${month}-${String(day).padStart(2, '0')}`;
+      out.previsto[ymd] = at(prevIv, ymd);
+      out.efetivado[ymd] = at(efetIv, ymd);
+    }
+    return out;
+  }
+
+  /**
+   * v36 — COMPROMISSOS DO ORÇAMENTO como ITENS (Fluxo: 1 carga, 1 lista, 1
+   * cálculo). Mesma consulta do ajuste diário, em forma de lista: cada linha
+   * é um compromisso com data, valor assinado e status — o Fluxo converte em
+   * `ItemFluxo` de origem ORCAMENTO (a reserva no cartão vira item na compra +
+   * item de reversão no vencimento da fatura, reproduzindo o intervalo).
+   *
+   * VIGÊNCIA (regra do usuário): orçamento vale DO MÊS DE CRIAÇÃO pra frente
+   * — mês anterior ao `created_at` do orçamento não gera compromisso (não
+   * desconta retroativo).
+   */
+  async listCommitments(month: string, scopeAccountIds: string[]): Promise<BudgetCommitment[]> {
+    const monthStart = `${month}-01`;
+    const budgets = (await this.list()).filter(
+      (b) => b.is_active === 1 && (b.created_at ?? '').slice(0, 7) <= monthStart.slice(0, 7)
+    );
+    if (budgets.length === 0) return [];
+    const ids = budgets.map((b) => b.category_id);
+    const rows = await this.fetchCommitmentRows(month, scopeAccountIds, ids);
+    return rows;
+  }
+
+  /** Consulta compartilhada do ajuste diário e da lista de compromissos. */
+  private async fetchCommitmentRows(
+    month: string,
+    scopeAccountIds: string[],
+    ids: string[]
+  ): Promise<BudgetCommitment[]> {
     const marks = ids.map(() => '?').join(',');
     const lastDay = lastDayNumberOf(month);
     const endDate = `${month}-${String(lastDay).padStart(2, '0')}`;
@@ -538,10 +590,11 @@ export class BudgetService {
     // — antes, cada linha abria um scan em `invoice_items` e somava ~20-50 ms
     // cada, deixando `getMonthFluxAdjust` em ~2 s com histórico cheio.
     const rows = await this.db.getAllAsync<{
-      d: string; type: string; status: string; card_id: string | null; account_id: string | null; amount: number; invoice_due: string | null;
+      d: string; type: string; status: string; card_id: string | null; account_id: string | null; amount: number; invoice_due: string | null; description: string; tx_id: string;
     }>(
       `SELECT t.occurred_on AS d,
               t.type, t.status, t.card_id, t.account_id, t.amount_cents AS amount,
+              t.description, t.id AS tx_id,
               MAX(i.due_date) AS invoice_due
          FROM transactions t
          LEFT JOIN invoice_items ii ON ii.transaction_id = t.id
@@ -562,12 +615,7 @@ export class BudgetService {
     );
 
     const scopeSet = new Set(scopeAccountIds);
-    // v68: contribuição por INTERVALO — no cartão o ajuste vale da COMPRA até
-    // a véspera do vencimento da fatura (a partir daí o saldo base já reserva
-    // a fatura inteira — sem dupla contagem). Em conta fora do escopo, vale
-    // da data do lançamento em diante (o saldo do Fluxo nunca sente).
-    const prevIv: Array<{ s: string; e: string | null; v: number }> = [];
-    const efetIv: Array<{ s: string; e: string | null; v: number }> = [];
+    const out: BudgetCommitment[] = [];
     for (const r of rows) {
       const net = r.type === 'INCOME' ? r.amount : -r.amount;
       const isCard = !!r.card_id;
@@ -577,25 +625,44 @@ export class BudgetService {
         // PENDING (v68) e TAMBÉM para CONFIRMED (regra do usuário: o saldo
         // desce NA COMPRA e fica descido ATÉ O PAGAMENTO — depois da fatura
         // vencer, o saldo base já sente a fatura inteira, sem dupla contagem).
-        const iv = r.status === 'PENDING' ? prevIv : efetIv;
-        iv.push({ s: r.d, e: r.invoice_due, v: net });
+        out.push({
+          txId: r.tx_id,
+          data: r.d,
+          valorCents: net,
+          status: r.status === 'PENDING' ? 'PENDENTE' : 'PAGO',
+          invoiceDue: r.invoice_due,
+          descricao: r.description,
+        });
       } else if (inScopeAccount) {
         // Conta do escopo: o saldo base já inclui — nada a ajustar.
         continue;
       } else {
-        (r.status === 'PENDING' ? prevIv : efetIv).push({ s: r.d, e: null, v: net });
+        out.push({
+          txId: r.tx_id,
+          data: r.d,
+          valorCents: net,
+          status: r.status === 'PENDING' ? 'PENDENTE' : 'PAGO',
+          invoiceDue: null,
+          descricao: r.description,
+        });
       }
-    }
-    const at = (iv: Array<{ s: string; e: string | null; v: number }>, d: string): number =>
-      iv.reduce((a, x) => (x.s <= d && (x.e == null || d < x.e) ? a + x.v : a), 0);
-
-    for (let day = 1; day <= lastDay; day++) {
-      const ymd = `${month}-${String(day).padStart(2, '0')}`;
-      out.previsto[ymd] = at(prevIv, ymd);
-      out.efetivado[ymd] = at(efetIv, ymd);
     }
     return out;
   }
+}
+
+/** v36 — compromisso do orçamento na lista em memória do Fluxo. */
+export interface BudgetCommitment {
+  txId: string;
+  /** 'YYYY-MM-DD' da compra/lançamento. */
+  data: string;
+  /** Assinado (receita +, despesa −). */
+  valorCents: number;
+  /** 'PAGO' (CONFIRMED) | 'PENDENTE'. */
+  status: 'PAGO' | 'PENDENTE';
+  /** Vencimento da fatura que assume o compromisso (reversão da reserva) — null fora do cartão. */
+  invoiceDue: string | null;
+  descricao: string;
 }
 
 /** v100 — parse tolerante do split congelado guardado pela NF. */

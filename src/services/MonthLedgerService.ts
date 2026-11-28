@@ -746,7 +746,7 @@ export class MonthLedgerService {
       `SELECT COALESCE(SUM(se.amount_cents), 0) AS total
          FROM savings_entries se
          LEFT JOIN savings_plans sp ON sp.id = se.plan_id
-        WHERE se.month = ? AND se.kind = 'MONTHLY'
+        WHERE se.month = ? AND se.kind = 'MONTHLY' AND se.status != 'CANCELED'
           AND (se.plan_id IS NULL OR sp.is_active = 1)`,
       [month]
     );

@@ -1,4 +1,25 @@
 /** Tela Fluxo — v14/v16/v18:
+ *  · v36 — 1 CARGA, 1 LISTA, 1 CÁLCULO (pedido do usuário):
+ *     · CARGA ÚNICA POR MÊS (Promise.all): lançamentos do mês + Orçamento do
+ *       mês + Poupança do mês + Programação do mês + 1 número (saldo de
+ *       abertura = fechamento do mês anterior, lido do livro-razão). Trocar
+ *       de mês faz outra carga única, só do mês visto — nunca o ano inteiro.
+ *       Depois da carga, NINGUÉM consulta o banco para mostrar saldo/Orçamento/
+ *       Poupança/Programação — só volta ao banco para SALVAR.
+ *     · OS 3 VIRAM ITEM DA LISTA EM MEMÓRIA (ItemFluxo): origem
+ *       LANCAMENTO/ORCAMENTO/POUPANCA/PROGRAMACAO, data, valor em centavos e
+ *       status PAGO/PENDENTE/CANCELADO. Se não está na lista, NÃO desconta.
+ *     · 1 CÁLCULO SÓ: `calcularFluxo(listaEmMemoria, saldoAberturaCents)` —
+ *       função PURA (sem db, sem await) em src/lib/calcularFluxo.ts; devolve
+ *       os dias com Saldo do dia Previsto (abertura + tudo) e Efetivado
+ *       (abertura + só pago). Saiu de cena: getDailyBalancesDual, budAdj,
+ *       savAdj, mergeDailyAdjust e o override do closing no dia-alvo.
+ *     · ALTERAR SEM RECARREGAR: mexe na lista em memória → calcularFluxo de
+ *       novo → renderiza na hora → salva no banco em background; falhou,
+ *       a lista volta para o valor antigo + erro.
+ *     · VIGÊNCIAS: poupança só gera ocorrência com data >= criação do plano
+ *       (gerarOcorrenciasPoupanca) e permite cancelar SÓ o mês; orçamento e
+ *       programação valem do mês planejado pra frente (nada retroativo).
  *  · v16 BUG 1+2: Fixo/Consolidado criados no MÊS VIGENTE aparecem no mês
  *    corrente (previsão PENDING do dia ainda não vencido) — saldo do grupo e
  *    chip Pago/Não pago presentes desde já (RecurrenceService.runForecast).
@@ -124,10 +145,17 @@ import { startLoad } from '../src/lib/perf';
 import { MonthScroller } from '../src/components/MonthScroller';
 import { useDataEffect } from '../src/components/useDataEffect';
 import { formatBRL } from '../src/lib/money';
-import { orcadoPrevistoGastoLinha, orcadoGastoLinha } from '../src/lib/fluxoFormat'; // v69: linha única com % por movimento | v94: sem Previsto
-import { mergeDailyAdjust } from '../src/lib/monthEndBalance';
+import { orcadoGastoLinha } from '../src/lib/fluxoFormat'; // v94: linha única com % por movimento
+// v36 — 1 CARGA, 1 LISTA, 1 CÁLCULO: o Saldo do dia sai da função PURA em
+// memória (sem db, sem await, sem SELECT) — ver src/lib/calcularFluxo.ts.
+import {
+  calcularFluxo,
+  gerarOcorrenciasPoupanca,
+  ocorrenciaNaVigencia,
+  type ItemFluxo,
+} from '../src/lib/calcularFluxo';
 import { sourceLabel } from '../src/lib/text';
-import { todaySP, monthOf, ymdToBr, partsOf, lastDayNumberOf } from '../src/lib/dates';
+import { todaySP, monthOf, monthAdd, ymdToBr, partsOf, lastDayNumberOf } from '../src/lib/dates';
 import {
   buildGroupMonths,
   groupMonthDate,
@@ -141,8 +169,8 @@ import {
 } from '../src/lib/flowModel';
 import { useAppStore } from '../src/store/appStore';
 import { SETTING_KEYS } from '../src/services/SettingsService';
-import type { BudgetMonthSummary } from '../src/services/BudgetService';
-import type { SavingsMonthOverview } from '../src/services/SavingsService';
+import type { BudgetCommitment, BudgetMonthSummary } from '../src/services/BudgetService';
+import type { SavingsMonthOverview, SavingsPlanRow, SavingsEntryView } from '../src/services/SavingsService';
 import type { WishlistClassView, WishlistMethodology, WishlistProjection } from '../src/services/WishlistService';
 import { projectionMonthPlan } from '../src/services/WishlistService'; // v95: plano do mês visto (card fixo + Saldo do dia)
 import { ICONS } from '../src/theme/icons';
@@ -166,6 +194,25 @@ type Entry =
   | { kind: 'invoice'; date: string; inv: InvoiceAgg }
   | { kind: 'installment'; date: string; inst: InstAgg };
 
+/** v36 — movimento (perna) do mês nas contas do escopo do Fluxo. Cada linha
+ *  vira 1 item de origem LANCAMENTO (ou POUPANCA, quando a transação pertence
+ *  a um plano de poupança) na lista em memória. */
+interface FluxoMoveRow {
+  moveId: string;
+  txId: string | null;
+  data: string;
+  amount: number;
+  direction: string; // 'CREDIT' | 'DEBIT'
+  status: string; // 'CONFIRMED' | 'VOIDED' (da perna)
+  txStatus: string | null; // status da transação (null = pagamento de fatura)
+  txType: string | null;
+  descricao: string | null;
+  instStatus: string | null; // parcela vinculada (PENDING = previsão)
+  installmentId: string | null; // parcela dona do movimento (remoção em memória)
+  entryIdPoupanca: string | null; // entrada do plano de poupança dona do lançamento
+  planIdPoupanca: string | null;
+}
+
 const WEEK = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
 function weekdayOf(ymd: string): string {
   const { y, m, d } = partsOf(ymd);
@@ -174,27 +221,28 @@ function weekdayOf(ymd: string): string {
 
 export default function FluxoScreen() {
   const services = useDataEffect();
-  const bump = useAppStore((s) => s.bump);
-  const dataVersion = useAppStore((s) => s.dataVersion); // v49 — GARANTIA: qualquer alteração chama bump() -> dataVersion++ -> cache invalidado
+  // v36: as mutações feitas DENTRO do Fluxo NÃO dão bump (nada de recarregar):
+  // mexem na lista em memória, recalculam com `calcularFluxo`, renderizam e
+  // salvam no banco em background (invalidarPosSalvar). O dataVersion segue
+  // servindo para as cargas de mês e para os caches memoizados dos serviços.
+  const dataVersion = useAppStore((s) => s.dataVersion);
   const [month, setMonth] = React.useState(monthOf(todaySP()));
   const [filter, setFilter] = React.useState<Filter>('ALL');
   const [txs, setTxs] = React.useState<FlowTx[]>([]);
   const [invoicesDue, setInvoicesDue] = React.useState<InvoiceAgg[]>([]);
   const [accountInst, setAccountInst] = React.useState<InstAgg[]>([]);
-  // v11: saldos por dia nas DUAS visões (Previsto / Efetivado) — contas "SIM"
-  const [dailyBal, setDailyBal] = React.useState<{
-    efetivado: Record<string, number>;
-    previsto: Record<string, number>;
-    openingPrevisto?: number;
-    openingEfetivado?: number;
-  }>({ efetivado: {}, previsto: {} });
-  const [lastActivityDate, setLastActivityDate] = React.useState<string | null>(null);
-  // v17: linha do livro-razão do mês (Persistida em SQLite, encadeada).
-  // Quando presente, é a fonte da verdade do saldo do dia Previsto/Efetivado
-  // E da cascata da Programação de Compra (lida via
-  // `MonthLedgerService.getMonthWishlistEntries` — não passa mais o
-  // `saldoPrevistoAjustadoFimCents` para a tela).
-  const [monthLedgerRow, setMonthLedgerRow] = React.useState<import('../src/services/MonthLedgerService').MonthLedgerRow | null>(null);
+  // v36 — 1 CARGA, 1 LISTA, 1 CÁLCULO: o Saldo do dia é calculado pela função
+  // PURA `calcularFluxo` sobre a lista em memória (itensFluxo) + 1 número, o
+  // saldo de abertura (fechamento do mês anterior, lido do livro-razão).
+  // NÃO existe mais consulta de banco para mostrar saldo/Orçamento/Poupança/
+  // Programação — só a carga única do mês (Promise.all) e gravações.
+  const [aberturaCents, setAberturaCents] = React.useState(0);
+  /** Movimentos do mês nas contas do escopo (base dos itens LANCAMENTO). */
+  const [movesRows, setMovesRows] = React.useState<FluxoMoveRow[]>([]);
+  /** Compromissos do Orçamento no mês (viram itens de origem ORCAMENTO). */
+  const [commitments, setCommitments] = React.useState<BudgetCommitment[]>([]);
+  /** Planos de poupança (data de criação p/ vigência + ativos). */
+  const [savingsPlans, setSavingsPlans] = React.useState<SavingsPlanRow[]>([]);
   const [showDaily, setShowDaily] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   // v7.1: grupos consolidados
@@ -232,10 +280,6 @@ export default function FluxoScreen() {
   const [wishClassOpen, setWishClassOpen] = React.useState<Record<string, boolean>>({});
   const [budgetSum, setBudgetSum] = React.useState<BudgetMonthSummary | null>(null);
   const [savingsSum, setSavingsSum] = React.useState<SavingsMonthOverview | null>(null);
-  // v68: ajustes DIÁRIOS do saldo do dia vindos de Orçamento/Poupança (null = módulo desligado)
-  type DayAdjust = { previsto: Record<string, number>; efetivado: Record<string, number> };
-  const [budAdj, setBudAdj] = React.useState<DayAdjust | null>(null);
-  const [savAdj, setSavAdj] = React.useState<DayAdjust | null>(null);
   const [budgetOpen, setBudgetOpen] = React.useState(false);
   const [resumoOpen, setResumoOpen] = React.useState(false);
   const [savingsOpen, setSavingsOpen] = React.useState(false);
@@ -259,10 +303,12 @@ export default function FluxoScreen() {
     }, [])
   );
   // v21 (bug 4): CONFIRMAÇÃO antes de excluir/alterar — regra pedida pelo usuário
+  // v36: 'poupanca' = cancelar SÓ a ocorrência do mês visto (sem mexer no plano).
   type ConfirmState =
     | { kind: 'tx'; tx: FlowTx }
     | { kind: 'group'; tx: FlowTx }
     | { kind: 'parcela'; planId: string; sequence: number; description: string }
+    | { kind: 'poupanca'; tx: FlowTx; planId: string; description: string }
     | null;
   const [confirm, setConfirm] = React.useState<ConfirmState>(null);
 
@@ -297,168 +343,126 @@ export default function FluxoScreen() {
       }
       if (!isCurrent()) return;
       perf.lap('manutenção');
-      // v86 (DESEMPENHO): as preferências são lidas PRIMEIRO (leituras baratas) e
-      // o saldo por dia só é calculado quando vai ser exibido — ou quando a
-      // Programação de Compra depende dele. Antes, a rotina pesada (5 agregações
-      // sobre o histórico inteiro) rodava em toda abertura do Fluxo, mesmo com a
-      // opção "Exibir saldo por dia" desligada.
-      type DailyDual = {
-        efetivado: Record<string, number>;
-        previsto: Record<string, number>;
-        openingPrevisto?: number;
-      };
-      let showDailyFlag = false;
-      let budgetsFlag = false;
-      let savingsFlag = false;
-      let wishlistFlag = false;
-      try {
-        const [show, lastDate, bFlag, sFlag, wFlag] = await Promise.all([
+
+      // v36 — CARGA ÚNICA POR MÊS (Promise.all): escopo + livro-razão (o 1
+      // número do saldo de abertura) + lançamentos do mês + faturas + parcelas
+      // + movimentos do escopo + planos de poupança. Trocar para dezembro faz
+      // OUTRA carga única, só de dezembro — nunca o ano inteiro. Depois desta
+      // leitura, NINGUÉM consulta o banco para mostrar saldo, Orçamento,
+      // Poupança ou Programação: a tela só renderiza o que está em memória
+      // (e volta ao banco apenas para SALVAR uma alteração).
+      const scopeRows = await svc.db.getAllAsync<{ id: string }>(
+        'SELECT id FROM accounts WHERE include_in_general_balance = 1 AND archived_at IS NULL'
+      );
+      if (!isCurrent()) return;
+      const scopeIds = scopeRows.map((r) => r.id);
+      const scopeMarks = scopeIds.length > 0 ? scopeIds.map(() => '?').join(',') : "''";
+
+      const [
+        prefs,
+        monthRow,
+        rows,
+        invRows,
+        instRows,
+        moves,
+        plans,
+      ] = await Promise.all([
+        Promise.all([
           svc.settings.getBool(SETTING_KEYS.fluxoSaldoPorDia, false),
-          svc.balance.getLastActivityDate(month),
           svc.settings.getBool(SETTING_KEYS.budgetsAtivado, false),
           svc.settings.getBool(SETTING_KEYS.poupancaAtivado, false),
           svc.settings.getBool(SETTING_KEYS.wishlistNaHome, false),
-        ]);
-        if (!isCurrent()) return;
-        showDailyFlag = show;
-        budgetsFlag = bFlag;
-        savingsFlag = sFlag;
-        wishlistFlag = wFlag;
-        setShowDaily(show);
-        setBudgetsOn(bFlag);
-        setSavingsOn(sFlag);
-        setWishlistOn(wFlag);
-        setLastActivityDate(lastDate);
-      } catch (err) {
-        console.warn('[Fluxo] preferências falharam:', err);
-      }
-      perf.lap('preferências');
-
-      // v26: o SALDO DO DIA é calculado e pintado PRIMEIRO, isolado do resto da
-      // carga - uma falha na lista/grupos/faturas não deixa mais o saldo parado
-      // com o valor antigo (as etapas seguintes escreviam o saldo por último).
-      let dailyDual: DailyDual | null = null;
-      try {
-        if (showDailyFlag || wishlistFlag) {
-          dailyDual = (await svc.balance.getDailyBalancesDual(month, dataVersion)) ?? null; // v49: mesma versão=cache, versão nova=recalcula
-          if (!isCurrent()) return;
-          setDailyBal(dailyDual);
-        } else {
-          // Sem exibição e sem dependência: não recalcula nada.
-          setDailyBal({ efetivado: {}, previsto: {} });
-        }
-      } catch (err) {
-        console.warn('[Fluxo] saldo do dia falhou:', err);
-      }
-      perf.lap('saldo do dia');
-
-      // v16 — LIVRO-RAZÃO: a linha do mês (Persistida em SQLite, encadeada
-      // com o mês anterior) entra no state para uso no `dailyShown` e no
-      // saldo passado à Programação de Compra.
-      let monthRow: import('../src/services/MonthLedgerService').MonthLedgerRow | null = null;
-      try {
-        if (showDailyFlag || wishlistFlag || budgetsFlag || savingsFlag) {
-          monthRow = await svc.monthLedger.getMonthLedgerSummary(month);
-          if (!isCurrent()) return;
-          setMonthLedgerRow(monthRow);
-        } else {
-          setMonthLedgerRow(null);
-        }
-      } catch (err) {
-        console.warn('[Fluxo] livro-razão falhou:', err);
-      }
-      perf.lap('livro-razão');
-
-      // v42 - cards de ORÇAMENTO e POUPANÇA (só quando a flag está ligada em Ajustes)
-      try {
-        const [bSum, sSum] = await Promise.all([
-          budgetsFlag ? svc.budgets.getMonthSummary(month, dataVersion) : Promise.resolve(null),
-          savingsFlag ? svc.savings.getMonthOverview(month, dataVersion) : Promise.resolve(null),
-        ]);
-        if (!isCurrent()) return;
-        setBudgetSum(bSum);
-        setSavingsSum(sSum);
-        perf.lap('cards:orçamento/poupança');
-
-        // v70 (BUG 1.1) - Programação de Compra: quando ativa, é um BLOCO PRÓPRIO do
-        // Fluxo (ordem: Orçamentos → Programação de Compra → Poupança). A metodologia
-        // (hierarquia Orçamento → Poupança Mensal → Prioridade/Necessário/Desejo
-        // → Poupança Fechamento) vai no bloco dela, não no Orçamento.
-        let wishItems: WishlistClassView[] = [];
-        if (wishlistFlag) {
-          try {
-            wishItems = await svc.wishlist.listOpen(dataVersion);
-            if (!isCurrent()) return;
-            setWishClasses(wishItems);
-          } catch {
-            if (isCurrent()) {
-              setWishMethod(null);
-              setWishClasses([]);
-            }
-          }
-        } else {
-          setWishMethod(null);
-          setWishClasses([]);
-        }
-
-        // v68 - ajustes do SALDO DO DIA: os módulos ativos entram no número
-        // (Previsto = base + previsto Orçamento + previsto Poupança; Efetivado
-        // idem). No último lançamento do mês, as reservas seguem a hierarquia abaixo.
-        let ba: DayAdjust | null = null;
-        let sa: DayAdjust | null = null;
-        if (budgetsFlag || savingsFlag) {
-          const scope = await svc.db.getAllAsync<{ id: string }>(
-            'SELECT id FROM accounts WHERE include_in_general_balance = 1 AND archived_at IS NULL'
-          );
-          const scopeIds = scope.map((r) => r.id);
-          [ba, sa] = await Promise.all([
-            budgetsFlag ? svc.budgets.getMonthFluxAdjust(month, scopeIds, dataVersion) : Promise.resolve(null),
-            savingsFlag ? svc.savings.getMonthFluxAdjust(month, scopeIds, dataVersion) : Promise.resolve(null),
-          ]);
-          if (!isCurrent()) return;
-          setBudAdj(ba);
-          setSavAdj(sa);
-          perf.lap('cards:ajustes');
-        } else {
-          setBudAdj(null);
-          setSavAdj(null);
-        }
-
-        if (wishlistFlag) {
-          try {
-            // v17: a Programação de Compra LE DIRETAMENTE do
-            // `MonthLedgerService` (cascade persistida em
-            // `month_ledger_wishlist`). Não há mais cálculo em memória nem
-            // override de saldo — o livro é a fonte única.
-            void monthRow;
-            const wm = await svc.wishlist.getMethodology(month, {
-              dataVersion,
-            });
-            if (!isCurrent()) return;
-            setWishMethod(wm);
-            // v17 — projeção mês a mês lê entries de `month_ledger_wishlist`
-            // para cada mês (do corrente até o visto).
-            const wp = await svc.wishlist.getProjection(month, {
-              dataVersion,
-            });
-            if (!isCurrent()) return;
-            setWishProjection(wp);
-            perf.lap('cards:programação');
-          } catch {
-            if (isCurrent()) setWishMethod(null);
-          }
-        }
-      } catch (err) {
-        console.warn('[Fluxo] orçamentos/poupança falharam:', err);
-      }
-      perf.lap('cards');
-
-      const [rows, invRows, instRows] = await Promise.all([
+        ]) as Promise<[boolean, boolean, boolean, boolean]>,
+        // SALDO DE ABERTURA — 1 número: o fechamento do mês anterior, lido do
+        // livro-razão (a linha do mês visto já traz openingEfetCents; não
+        // recarrega a lista do mês anterior para mostrar o mês atual).
+        svc.monthLedger.getMonthLedgerSummary(month).catch(() => null),
         svc.transactions.listFlow(month),
         svc.invoices.listInvoicesDueInMonth(month),
         svc.installments.listAccountInstallmentsDueInMonth(month),
+        // Movimentos do MÊS nas contas do escopo — viram itens LANCAMENTO da
+        // lista em memória (pernas CONFIRMED = PAGO; pernas VOIDED de
+        // transação PENDENTE e parcela em aberto = PENDENTE). Nada de soma de
+        // saldo no banco — a soma é feita pelo calcularFluxo em memória.
+        svc.db.getAllAsync<{
+          moveId: string; txId: string | null; data: string; amount: number;
+          direction: string; status: string; txStatus: string | null; txType: string | null;
+          descricao: string | null; instStatus: string | null; installmentId: string | null;
+          entryIdPoupanca: string | null; planIdPoupanca: string | null;
+        }>(
+          `SELECT fm.id AS moveId,
+                  fm.transaction_id AS txId,
+                  fm.effective_date AS data,
+                  fm.amount_cents AS amount,
+                  fm.direction AS direction,
+                  fm.status AS status,
+                  t.status AS txStatus,
+                  t.type AS txType,
+                  COALESCE(t.description, 'Pagamento de fatura') AS descricao,
+                  i.status AS instStatus,
+                  i.id AS installmentId,
+                  se.id AS entryIdPoupanca,
+                  se.plan_id AS planIdPoupanca
+             FROM financial_moves fm
+             JOIN accounts acc ON acc.id = fm.account_id
+             LEFT JOIN transactions t ON t.id = fm.transaction_id
+             LEFT JOIN installments i ON i.id = fm.installment_id
+             LEFT JOIN savings_entries se ON se.transaction_id = fm.transaction_id AND se.status != 'CANCELED'
+            WHERE fm.account_id IN (${scopeMarks})
+              AND fm.effective_date >= COALESCE(acc.initial_balance_date, '0000-01-01')
+              AND fm.effective_date >= ? || '-01'
+              AND fm.effective_date <= ?`,
+          [...scopeIds, month, `${month}-${String(lastDayNumberOf(month)).padStart(2, '0')}`] as never
+        ),
+        svc.savings.listPlans(),
       ]);
       if (!isCurrent()) return;
+      const [show, bFlag, sFlag, wFlag] = prefs;
+      setShowDaily(show);
+      setBudgetsOn(bFlag);
+      setSavingsOn(sFlag);
+      setWishlistOn(wFlag);
+      perf.lap('carga única');
+
+      // Abertura do mês: linha do livro-razão quando existe; sem linha (mês
+      // anterior ao horizonte do livro), o saldo geral real do fim do mês
+      // anterior — 1 número, leitura única (nunca saldo por dia no banco).
+      let abertura = monthRow?.openingEfetCents ?? 0;
+      if (!monthRow) {
+        try {
+          const prevMonth = monthAdd(month, -1);
+          abertura = await svc.balance.getGeneralBalance(
+            `${prevMonth}-${String(lastDayNumberOf(prevMonth)).padStart(2, '0')}`
+          );
+        } catch {
+          abertura = 0;
+        }
+      }
+      if (!isCurrent()) return;
+      setAberturaCents(abertura);
+      setSavingsPlans(plans);
+      setMovesRows(moves as FluxoMoveRow[]);
+
+      // Orçamento / Poupança / Programação DO MÊS VISTO — leitura única em
+      // paralelo; os cards e a lista em memória usam estes dados até que uma
+      // alteração os mexa DENTRO do estado (sem nova consulta ao banco).
+      const [bSum, sSum, wishItems, wm, wp, comms] = await Promise.all([
+        bFlag ? svc.budgets.getMonthSummary(month, dataVersion) : Promise.resolve(null),
+        sFlag ? svc.savings.getMonthOverview(month, dataVersion) : Promise.resolve(null),
+        wFlag ? svc.wishlist.listOpen(dataVersion).catch(() => [] as WishlistClassView[]) : Promise.resolve([] as WishlistClassView[]),
+        wFlag ? svc.wishlist.getMethodology(month, { dataVersion }).catch(() => null) : Promise.resolve(null),
+        wFlag ? svc.wishlist.getProjection(month, { dataVersion }).catch(() => null) : Promise.resolve(null),
+        bFlag ? svc.budgets.listCommitments(month, scopeIds).catch(() => [] as BudgetCommitment[]) : Promise.resolve([] as BudgetCommitment[]),
+      ]);
+      if (!isCurrent()) return;
+      setBudgetSum(bSum);
+      setSavingsSum(sSum);
+      setWishClasses(wishItems);
+      setWishMethod(wm);
+      setWishProjection(wp);
+      setCommitments(comms);
+      perf.lap('cards');
+
       const allRows = rows as unknown as FlowTx[];
       // v13 (bug 1.A): agregação mensal dos consolidados — cabeçalhos em outros
       // meses são buscados direto do banco (o grupo PERPETUA nos meses seguintes).
@@ -516,29 +520,134 @@ export default function FluxoScreen() {
 
   const isGroup = (t: FlowTx) => t.child_count > 0;
 
-  // ---------- Saldo do dia com hierarquia mensal (memoizado) ----------
-  // No último lançamento: Orçamento → Programação de Compras → Poupança Mensal →
-  // Fechamento do Mês. Os demais dias continuam mostrando os ajustes diários.
-  // v70 (BUGS 1.2/1.3): com Poupança + "Fechamento do mês" ativos, o mês visto
-  // a partir da criação do plano é REGIDO pelo fechamento — o saldo carregado
-  // dos meses anteriores foi RETIDO para a poupança, então o "Saldo do dia
-  // Previsto" NÃO começa com ele (abertura zerada) e o ÚLTIMO dia com
-  // lançamento do mês subsequente começa sem carregar saldo positivo.
-  const closingRegendo = React.useMemo(() => {
-    if (!savingsOn) return false;
-    const since = savingsSum?.closingSinceMonth ?? null;
-    return since != null && month >= since;
-  }, [savingsOn, savingsSum, month]);
-
   /** v95: plano do mês visto (plano = parte do plano que cabe/foi abatida
-   *  neste mês). Declarado AQUI porque o `dailyShown` (hierarquia do Saldo
-   *  do dia) já o usa — o card e o Saldo do dia passam a depender do mesmo
-   *  número. Vale a regra "previsão só para o mês planejado": a Projection
-   *  só preenche meses a partir do mês corrente; para os demais devolve
-   *  zeros (a falta não se reflete automaticamente). */
+   *  neste mês). O card da Programação e o item de origem PROGRAMACAO da
+   *  lista em memória dependem do MESMO número. Vale a regra "previsão só
+   *  para o mês planejado": a Projection só preenche meses a partir do mês
+   *  corrente; para os demais devolve zeros (mês passado não entra, não
+   *  desconta — vigência do pedido). */
   const wishMonthPlan = React.useMemo(
     () => projectionMonthPlan(wishProjection, month),
     [wishProjection, month]
+  );
+
+  // ---------- 1 LISTA EM MEMÓRIA (v36) ----------
+  // Lançamentos (pernas de movimento nas contas do escopo) + Orçamento
+  // (compromissos) + Poupança (transferências dos planos, com vigência) +
+  // Programação (reserva do mês planejado). Cada item tem data, valor em
+  // centavos, status e origem. NÃO está na lista → NÃO desconta.
+  const itensFluxo = React.useMemo<ItemFluxo[]>(() => {
+    const itens: ItemFluxo[] = [];
+
+    // --- POUPANÇA: marca as transferências dos planos (origem POUPANCA) e
+    // aplica a VIGÊNCIA: data da ocorrência >= data de criação do plano —
+    // ocorrência retroativa (ou cancelada) NÃO entra na lista.
+    const planoPorId = new Map(savingsPlans.map((p) => [p.id, p]));
+    const poupancaTxIds = new Set<string>();
+    for (const e of savingsSum?.entries ?? []) {
+      if (!e.transactionId || !e.planId) continue;
+      const plano = planoPorId.get(e.planId);
+      if (!plano || plano.is_active !== 1) continue;
+      if (e.kind === 'MONTHLY') {
+        const criacao = (plano.created_at ?? '').slice(0, 10);
+        if (!e.date || !ocorrenciaNaVigencia(e.date, criacao)) continue;
+      }
+      poupancaTxIds.add(e.transactionId);
+    }
+
+    // --- LANCAMENTO / POUPANCA: 1 item por perna de movimento do mês.
+    for (const m of movesRows) {
+      const valor = m.direction === 'CREDIT' ? m.amount : -m.amount;
+      let status: 'PAGO' | 'PENDENTE';
+      if (m.status === 'CONFIRMED') {
+        // Parcela EM ABERTO é previsão (o movimento dela não é realizado).
+        status = m.instStatus === 'PENDING' ? 'PENDENTE' : 'PAGO';
+      } else if (m.status === 'VOIDED' && m.txStatus === 'PENDING') {
+        status = 'PENDENTE';
+      } else {
+        // Perna de transação excluída / movimento solto: fora da lista.
+        continue;
+      }
+      const ehPoupanca = m.txId != null && poupancaTxIds.has(m.txId);
+      itens.push({
+        id: `mv:${m.moveId}`,
+        origem: ehPoupanca ? 'POUPANCA' : 'LANCAMENTO',
+        data: m.data,
+        valorCents: valor,
+        status,
+        descricao: m.descricao ?? 'Lançamento',
+        refId: m.txId ?? undefined,
+      });
+    }
+
+    // --- Faturas de cartão em aberto: PENDENTE no vencimento (o saldo só
+    // sente a fatura no dia do vencimento; o pagamento CONFIRMADO já entra
+    // como lançamento pago na data em que foi pago).
+    for (const inv of invoicesDue) {
+      if (inv.liveStatus === 'PAID' || inv.dueCents <= 0) continue;
+      itens.push({
+        id: `inv:${inv.invoiceId}`,
+        origem: 'LANCAMENTO',
+        data: inv.dueDate,
+        valorCents: -inv.dueCents,
+        status: 'PENDENTE',
+        descricao: `Fatura ${inv.cardName}`,
+        refId: inv.invoiceId,
+      });
+    }
+
+    // --- ORCAMENTO: compromissos do mês (cartão reserva da compra até a
+    // véspera da fatura; conta fora do escopo reserva da data em diante).
+    // VIGÊNCIA: só meses a partir da criação do orçamento (listCommitments).
+    for (const c of commitments) {
+      // Compromisso cuja fatura venceu até a data da compra não reserva mais
+      // (intervalo vazio — mesma regra do ajuste que substituiu).
+      if (c.invoiceDue && c.invoiceDue <= c.data) continue;
+      itens.push({
+        id: `bud:${c.txId}`,
+        origem: 'ORCAMENTO',
+        data: c.data,
+        valorCents: c.valorCents,
+        status: c.status,
+        descricao: c.descricao || 'Orçamento',
+        refId: c.txId,
+      });
+      // Reversão da reserva: quando a fatura vence, ela assume o compromisso
+      // (item de fatura) — a reserva do orçamento termina ali (sem dobro).
+      if (c.invoiceDue && c.invoiceDue > c.data && c.invoiceDue <= `${month}-${String(lastDayNumberOf(month)).padStart(2, '0')}`) {
+        itens.push({
+          id: `budrev:${c.txId}`,
+          origem: 'ORCAMENTO',
+          data: c.invoiceDue,
+          valorCents: -c.valorCents,
+          status: c.status,
+          descricao: 'Fatura assume o compromisso do orçamento',
+          refId: c.txId,
+        });
+      }
+    }
+
+    // --- PROGRAMACAO: reserva do mês planejado (o que ENTRA no mês visto).
+    // Mês fora do plano (passado ou não planejado) devolve zero → sem item.
+    if (wishlistOn && wishMonthPlan.faltaInicioCents !== 0) {
+      itens.push({
+        id: `prog:${month}`,
+        origem: 'PROGRAMACAO',
+        data: `${month}-01`,
+        valorCents: -wishMonthPlan.faltaInicioCents,
+        status: 'PENDENTE',
+        descricao: 'Programação de Compra · reserva do mês',
+        refId: month,
+      });
+    }
+
+    return itens;
+  }, [movesRows, invoicesDue, commitments, savingsSum, savingsPlans, wishlistOn, wishMonthPlan, month]);
+
+  // ---------- 1 CÁLCULO SÓ (v36): função PURA, em memória, sem db ----------
+  const fluxoCalculado = React.useMemo(
+    () => calcularFluxo(itensFluxo, aberturaCents),
+    [itensFluxo, aberturaCents]
   );
 
   // ---------- Agrupamento por dia (v9 + v12) ----------
@@ -567,44 +676,10 @@ export default function FluxoScreen() {
     return list;
   }, [txs, groupMonths, invoicesDue, accountInst]);
 
-  // ---------- Saldo do dia com hierarquia mensal (memoizado) ----------
-  // v16 — livro-razão: a abertura do mês vem do closing do mês anterior
-  // (persistido em `month_ledger`), e o saldo do dia-alvo vem do closing
-  // do próprio mês (depois de orçamento → programação → poupança → fechamento).
-  // Os dias do mês são construídos em cima da nova abertura + budAdj diário.
-  const dailyShown = React.useMemo(() => {
-    const basePrev: Record<string, number> = { ...dailyBal.previsto };
-    const baseEfet: Record<string, number> = { ...dailyBal.efetivado };
-    // 1) abertura nova (do ledger): diferença entre a abertura do ledger
-    //    (que JÁ carrega o saldo líquido do mês anterior) e a abertura
-    //    bruta do dual. O sinal é aplicado a TODOS os dias do mês.
-    const openPrevDelta = (monthLedgerRow?.openingPrevCents ?? 0)
-      - (dailyBal.openingPrevisto ?? 0);
-    const openEfetDelta = (monthLedgerRow?.openingEfetCents ?? 0)
-      - (dailyBal.openingEfetivado ?? 0);
-    let prev: Record<string, number> = {};
-    let efet: Record<string, number> = {};
-    for (const ymd of Object.keys(basePrev)) {
-      prev[ymd] = (basePrev[ymd] ?? 0) + openPrevDelta;
-    }
-    for (const ymd of Object.keys(baseEfet)) {
-      efet[ymd] = (baseEfet[ymd] ?? 0) + openEfetDelta;
-    }
-    // 2) ajustes diários do Orçamento (cartão reserva da compra até a
-    //    véspera da fatura; fora do escopo reserva da data em diante).
-    prev = mergeDailyAdjust(prev, budAdj?.previsto);
-    efet = mergeDailyAdjust(efet, budAdj?.efetivado);
-    // 3) dia-alvo: a hierarquia completa já foi aplicada no livro —
-    //    o closing_prev/efet é o saldo exibido nesse dia.
-    if (monthLedgerRow && lastActivityDate
-        && monthLedgerRow.targetDate === lastActivityDate) {
-      prev[lastActivityDate] = monthLedgerRow.closingPrevCents;
-      efet[lastActivityDate] = monthLedgerRow.closingEfetCents;
-    }
-    return { previsto: prev, efetivado: efet };
-  }, [
-    dailyBal, budAdj, monthLedgerRow, lastActivityDate, month,
-  ]);
+  // ---------- Saldo do dia (v36) ----------
+  // O CÁLCULO ANTIGO SAIU: getDailyBalancesDual + budAdj (mergeDailyAdjust) +
+  // savAdj + override do closing do livro no dia-alvo. Agora o saldo exibido
+  // é EXCLUSIVAMENTE o resultado de calcularFluxo (itensFluxo + abertura).
 
   const passesFilter = (e: Entry): boolean => {
     if (filter === 'ALL') return true;
@@ -636,7 +711,28 @@ export default function FluxoScreen() {
     }
     return Array.from(byDay.entries()).sort((a, b) => (a[0] < b[0] ? 1 : -1));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries, filter, showDaily, closingRegendo, month]);
+  }, [entries, filter, showDaily, month]);
+
+  // ---------- Saldo do dia por dia (v36) ----------
+  const saldosByDay = React.useMemo(() => {
+    const m = new Map<string, { previstoCents: number; efetivadoCents: number }>();
+    for (const d of fluxoCalculado.dias) m.set(d.data, d);
+    // Ponto 6: NUNCA em branco — um dia com linha na tela mas sem item próprio
+    // (ex.: dia do cabeçalho de um grupo) mostra o saldo CARREGADO até ali.
+    const asc = [...fluxoCalculado.dias].reverse(); // ordem crescente
+    const saldoCarregado = (dia: string) => {
+      let prev: { previstoCents: number; efetivadoCents: number } | null = null;
+      for (const d of asc) {
+        if (d.data < dia) prev = d;
+        else break;
+      }
+      return prev ?? { previstoCents: aberturaCents, efetivadoCents: aberturaCents };
+    };
+    for (const [day] of days) {
+      if (!m.has(day)) m.set(day, saldoCarregado(day));
+    }
+    return m;
+  }, [fluxoCalculado, days, aberturaCents]);
 
   // ---------- v86: linhas da lista virtualizada ----------
   // Cada linha é OU o cabeçalho de um dia OU um lançamento. O FlashList monta
@@ -657,17 +753,19 @@ export default function FluxoScreen() {
   const flowRows = React.useMemo<FlowRow[]>(() => {
     const rows: FlowRow[] = [];
     for (const [day, list] of days) {
+      // v36: o saldo do dia vem do calcularFluxo (memória) — saldosByDay.
+      const saldo = saldosByDay.get(day);
       rows.push({
         kind: 'day',
         key: `day:${day}`,
         day,
-        prev: dailyShown.previsto[day],
-        efet: dailyShown.efetivado[day],
+        prev: saldo?.previstoCents,
+        efet: saldo?.efetivadoCents,
       });
       list.forEach((entry, i) => rows.push({ kind: 'entry', key: `${day}:${i}:${entryId(entry)}`, entry }));
     }
     return rows;
-  }, [days, dailyShown]);
+  }, [days, saldosByDay]);
 
   const renderRow = ({ item }: { item: FlowRow }) => {
     if (item.kind === 'day') {
@@ -695,21 +793,179 @@ export default function FluxoScreen() {
   };
 
 
+  // ================= v36 — ORDEM OBRIGATÓRIA DAS ALTERAÇÕES =================
+  // mexe na LISTA EM MEMÓRIA → calcularFluxo recalcula (via estado) →
+  // renderiza NA HORA → salva no banco em background. Sem recarregar a tela,
+  // sem "Carregando...", sem consultar o banco para recalcular. Se o salvar
+  // falhar, a lista VOLTA para o valor antigo e mostra o erro.
+  // ==========================================================================
+
+  /** Patch de STATUS de um tx em TODAS as cópias do estado (raiz, cabeçalho/
+   *  ocorrências de grupo, filhos à vista). */
+  const patchTxStatusEmMemoria = (txId: string, status: string) => {
+    setTxs((cur) => cur.map((t) => (t.id === txId ? { ...t, status } : t)));
+    setGroupMonths((cur) => {
+      const next: Record<string, GroupMonth> = {};
+      for (const [gid, g] of Object.entries(cur)) {
+        next[gid] = {
+          ...g,
+          header: g.header.id === txId ? { ...g.header, status } : g.header,
+          occurrences: g.occurrences.map((t) => (t.id === txId ? { ...t, status } : t)),
+        };
+      }
+      return next;
+    });
+    setChildrenMap((cur) => {
+      const next: Record<string, FlowTx[]> = {};
+      for (const [gid, list] of Object.entries(cur)) {
+        next[gid] = list.map((t) => (t.id === txId ? { ...t, status } : t));
+      }
+      return next;
+    });
+    // A lista em memória do saldo usa o status do MOVIMENTO — espelha o tx.
+    setMovesRows((cur) =>
+      cur.map((m) => {
+        if (m.txId !== txId) return m;
+        if (status === 'CONFIRMED') return { ...m, status: 'CONFIRMED', txStatus: 'CONFIRMED' };
+        return { ...m, status: 'VOIDED', txStatus: 'PENDING' };
+      })
+    );
+  };
+
+  /** Patch de status de PARCELA (em conta) nas cópias do estado + movimentos. */
+  const patchInstStatusEmMemoria = (installmentId: string, status: string) => {
+    setAccountInst((cur) => cur.map((i) => (i.installmentId === installmentId ? { ...i, status } : i)));
+    setGroupMonths((cur) => {
+      const next: Record<string, GroupMonth> = {};
+      for (const [gid, g] of Object.entries(cur)) {
+        next[gid] = { ...g, installments: g.installments.map((i) => (i.installmentId === installmentId ? { ...i, status } : i)) };
+      }
+      return next;
+    });
+    setMovesRows((cur) => cur.map((m) => (m.installmentId === installmentId ? { ...m, instStatus: status } : m)));
+  };
+
+  /** Remove transações (e movimentos) e/ou parcelas da lista em memória. */
+  const removerEmMemoria = (txIds: Set<string>, instIds: Set<string>) => {
+    if (txIds.size === 0 && instIds.size === 0) return;
+    setTxs((cur) => cur.filter((t) => !txIds.has(t.id)));
+    setGroupMonths((cur) => {
+      const next: Record<string, GroupMonth> = {};
+      for (const [gid, g] of Object.entries(cur)) {
+        if (txIds.has(gid)) continue; // cabeçalho do grupo excluído
+        next[gid] = { ...g, occurrences: g.occurrences.filter((t) => !txIds.has(t.id)) };
+      }
+      return next;
+    });
+    setChildrenMap((cur) => {
+      const next: Record<string, FlowTx[]> = {};
+      for (const [gid, list] of Object.entries(cur)) {
+        if (txIds.has(gid)) continue;
+        next[gid] = list.filter((t) => !txIds.has(t.id));
+      }
+      return next;
+    });
+    setAccountInst((cur) => cur.filter((i) => !instIds.has(i.installmentId)));
+    setMovesRows((cur) =>
+      cur.filter((m) => !(m.txId && txIds.has(m.txId)) && !(m.installmentId && instIds.has(m.installmentId)))
+    );
+  };
+
+  /** Snapshot/rollback do estado que as mutações mexem. */
+  const snapshotFluxo = () => ({ txs, groupMonths, childrenMap, movesRows, accountInst });
+  const restaurarFluxo = (
+    snap: ReturnType<typeof snapshotFluxo>,
+    extra?: { savingsSum: SavingsMonthOverview | null }
+  ) => {
+    setTxs(snap.txs);
+    setGroupMonths(snap.groupMonths);
+    setChildrenMap(snap.childrenMap);
+    setMovesRows(snap.movesRows);
+    setAccountInst(snap.accountInst);
+    if (extra) setSavingsSum(extra.savingsSum);
+  };
+
+  /** v36 — recalcula o resumo do card da Poupança EM MEMÓRIA a partir das
+   *  entradas restantes (o card acompanha a lista sem nova consulta ao banco). */
+  const recomputarSavingsSum = (entries: SavingsEntryView[]): SavingsMonthOverview | null => {
+    if (!savingsSum) return null;
+    const ativos = new Set(savingsPlans.filter((p) => p.is_active === 1).map((p) => p.id));
+    const planned = entries
+      .filter((e) => e.planId == null || ativos.has(e.planId))
+      .reduce((a, b) => a + b.amountCents, 0);
+    const effected = entries.filter((e) => e.effected).reduce((a, b) => a + b.amountCents, 0);
+    const plans = savingsSum.plans.map((p) => {
+      const own = entries.filter((e) => e.planId === p.planId);
+      const guardado = own.filter((e) => e.effected).reduce((a, b) => a + b.amountCents, 0);
+      const programado = own.reduce((a, b) => a + b.amountCents, 0);
+      return { ...p, guardadoCents: guardado, faltaCents: Math.max(0, programado - guardado) };
+    });
+    return {
+      ...savingsSum,
+      entries,
+      plannedCents: planned,
+      programadoCents: planned + (savingsSum.closingSuggestion?.amountCents ?? 0),
+      effectedCents: effected,
+      plans,
+    };
+  };
+
+  /** v36 — mapa txId → ocorrência de poupança (plano, pago?) da lista em memória. */
+  const poupancaPorTx = React.useMemo(() => {
+    const m = new Map<string, { planId: string; effected: boolean }>();
+    const planoPorId = new Map(savingsPlans.map((p) => [p.id, p]));
+    for (const e of savingsSum?.entries ?? []) {
+      if (!e.transactionId || !e.planId) continue;
+      const plano = planoPorId.get(e.planId);
+      if (!plano || plano.is_active !== 1) continue;
+      if (e.kind === 'MONTHLY') {
+        const criacao = (plano.created_at ?? '').slice(0, 10);
+        if (!e.date || !ocorrenciaNaVigencia(e.date, criacao)) continue;
+      }
+      m.set(e.transactionId, { planId: e.planId, effected: e.effected });
+    }
+    return m;
+  }, [savingsSum, savingsPlans]);
+
+  /** v36 — gravação em background: marca o livro-razão sujo e invalida os
+   *  caches dos serviços (sem bump — a tela NÃO recarrega). */
+  const invalidarPosSalvar = (mes: string = month) => {
+    void (async () => {
+      try {
+        await services.monthLedger.markDirty(mes);
+      } catch { /* best-effort */ }
+    })();
+    try {
+      services.budgets.invalidateAll();
+      services.savings.invalidateMonth(mes);
+      services.wishlist.invalidateListOpen();
+      services.balance.invalidateDaily(mes);
+    } catch { /* best-effort */ }
+  };
+
   // ---------- Exclusão FÍSICA (v10) — v21 (bug 4): exige CONFIRMAÇÃO ----------
   const doExcluirTx = async (tx: FlowTx) => {
+    const snap = snapshotFluxo();
+    const ehGrupo = tx.kind === 'CONSOLIDATED' && tx.source_system !== 'INSTALLMENT';
+    // 1) LISTA EM MEMÓRIA: sai agora — o saldo volta na hora.
+    if (ehGrupo) {
+      const grp = groupMonths[tx.id];
+      const ids = new Set<string>([tx.id, ...(childrenMap[tx.id] ?? []).map((c) => c.id), ...(grp?.occurrences ?? []).map((o) => o.id)]);
+      const instIds = new Set<string>((grp?.installments ?? []).map((i) => i.installmentId));
+      removerEmMemoria(ids, instIds);
+    } else {
+      removerEmMemoria(new Set([tx.id]), new Set());
+    }
     try {
+      // 2) BANCO em background.
       // v12 (UX): CONSOLIDADO → exclusão do GRUPO INTEIRO (linhas à vista +
       // contas fixas criadas dentro + parcelamentos criados dentro).
-      if (tx.kind === 'CONSOLIDATED' && tx.source_system !== 'INSTALLMENT') {
-        await services.transactions.deleteGroupDeep(tx.id);
-      } else {
-        // v10: exclusão física — o registro sai de vez do banco de dados.
-        // Ocorrência de conta fixa: apaga APENAS esta (o mês entra nas
-        // exclusões da regra e não é recriado).
-        await services.transactions.deleteTransaction(tx.id);
-      }
-      bump();
+      if (ehGrupo) await services.transactions.deleteGroupDeep(tx.id);
+      else await services.transactions.deleteTransaction(tx.id);
+      invalidarPosSalvar();
     } catch (err) {
+      // 3) Falhou: a lista volta e o erro aparece.
+      restaurarFluxo(snap);
       showToast(err instanceof Error ? err.message : String(err), 'err');
     }
   };
@@ -718,10 +974,47 @@ export default function FluxoScreen() {
    *  diante (pagas ficam intactas e o custo total é recalculado).
    *  v21 (bug 4): só roda após a confirmação, que também oferece "apenas esta". */
   const doExcluirParcela = async (info: { planId: string; sequence: number }, onlyOne: boolean) => {
+    const snap = snapshotFluxo();
+    // 1) LISTA EM MEMÓRIA: as parcelas do plano a partir da escolha saem agora.
+    const instIds = new Set<string>(
+      [...accountInst, ...Object.values(groupMonths).flatMap((g) => g.installments)]
+        .filter((i) => i.planId === info.planId && (onlyOne ? i.sequenceNumber === info.sequence : i.sequenceNumber >= info.sequence))
+        .map((i) => i.installmentId)
+    );
+    removerEmMemoria(new Set(), instIds);
     try {
+      // 2) BANCO em background.
       await services.installments.cancelFromSequence(info.planId, info.sequence, { onlyOne });
-      bump();
+      invalidarPosSalvar();
     } catch (err) {
+      // 3) Falhou: volta.
+      restaurarFluxo(snap);
+      showToast(err instanceof Error ? err.message : String(err), 'err');
+    }
+  };
+
+  /**
+   * v36 — CANCELAR SÓ A OCORRÊNCIA DE UM MÊS da poupança (linha da lista com
+   * chip de transferência do plano): a ocorrência do mês visto sai da lista
+   * NA HORA (saldo volta) e o banco é atualizado em background; o plano
+   * inteiro continua — as demais ocorrências ficam.
+   */
+  const doCancelarOcorrenciaPoupanca = async (tx: FlowTx, planId: string) => {
+    const snap = snapshotFluxo();
+    const snapSum = savingsSum;
+    // 1) LISTA EM MEMÓRIA: o lançamento do mês sai agora.
+    removerEmMemoria(new Set([tx.id]), new Set());
+    if (savingsSum) {
+      const entries = savingsSum.entries.filter((e) => e.transactionId !== tx.id);
+      setSavingsSum(recomputarSavingsSum(entries));
+    }
+    try {
+      // 2) BANCO em background (marca CANCELED no mês + apaga a pendente).
+      await services.savings.cancelarOcorrenciaMes(planId, month);
+      invalidarPosSalvar();
+    } catch (err) {
+      // 3) Falhou: volta.
+      restaurarFluxo(snap, { savingsSum: snapSum });
       showToast(err instanceof Error ? err.message : String(err), 'err');
     }
   };
@@ -739,26 +1032,36 @@ export default function FluxoScreen() {
 
   /** v13 (2.B): status do GRUPO — a ação vale para TODO o agrupamento contido
    *  no card (linhas à vista + ocorrências de fixas em conta + parcelas em
-   *  conta; itens de CARTÃO não entram — são pagos pela fatura). */
+   *  conta; itens de CARTÃO não entram — são pagos pela fatura).
+   *  v36: mexe na lista em memória primeiro, salva depois. */
   const toggleGroupPayment = async (grp: GroupMonth) => {
     const children = childrenMap[grp.header.id] ?? [];
     const info = groupStatusInfo(grp, children);
     if (!info) return;
     const next = !info.allDone;
-    const { txs, insts } = groupStatusItems(grp, children);
+    const { txs: grpTxs, insts } = groupStatusItems(grp, children);
+    const snapTxs = txs;
+    const snapGM = groupMonths;
+    const snapChildren = childrenMap;
+    const snapMoves = movesRows;
+    const snapInst = accountInst;
+    // 1) LISTA EM MEMÓRIA: todos os itens do agrupamento mudam de uma vez.
+    for (const t of grpTxs) patchTxStatusEmMemoria(t.id, next ? 'CONFIRMED' : 'PENDING');
+    for (const i of insts) patchInstStatusEmMemoria(i.installmentId, next ? 'PAID' : 'PENDING');
     try {
-      // v87 (BUG MÉDIA): o grupo era marcado item a item SEM transação — uma
-      // falha no meio deixava o grupo PARCIALMENTE pago. Agora é tudo ou nada.
+      // 2) BANCO em background — v87 (BUG MÉDIA): tudo ou nada.
       await services.db.transactionAsync(async () => {
-        for (const t of txs) {
+        for (const t of grpTxs) {
           await services.transactions.setPaymentStatus(t.id, next);
         }
         for (const i of insts) {
           await services.installments.setPaymentStatus(i.installmentId, next);
         }
       });
-      bump();
+      invalidarPosSalvar();
     } catch (err) {
+      // 3) Falhou: volta.
+      setTxs(snapTxs); setGroupMonths(snapGM); setChildrenMap(snapChildren); setMovesRows(snapMoves); setAccountInst(snapInst);
       showToast(err instanceof Error ? err.message : String(err), 'err');
     }
   };
@@ -791,13 +1094,18 @@ export default function FluxoScreen() {
     );
   };
 
-  /** v9: alternar Pago/Não pago (despesa) e Recebido/Não recebido (receita). */
+  /** v9: alternar Pago/Não pago (despesa) e Recebido/Não recebido (receita).
+   *  v36: mexe na lista em memória → recalc → renderiza → salva em background.
+   *  Mudou PAGO/PENDENTE: só o Efetivado muda na hora; o Previsto fica igual. */
   const togglePayment = async (tx: FlowTx) => {
     const nowPaid = tx.status !== 'PENDING';
+    const anterior = tx.status;
+    patchTxStatusEmMemoria(tx.id, nowPaid ? 'PENDING' : 'CONFIRMED');
     try {
       await services.transactions.setPaymentStatus(tx.id, !nowPaid);
-      bump();
+      invalidarPosSalvar();
     } catch (err) {
+      patchTxStatusEmMemoria(tx.id, anterior);
       showToast(err instanceof Error ? err.message : String(err), 'err');
     }
   };
@@ -841,17 +1149,10 @@ export default function FluxoScreen() {
 
   /** v89: chip "Transferido / Não transferido" — SÓ nas transferências
    *  previstas pelo plano de poupança (MONTHLY/CLOSING ativo), no mesmo
-   *  lugar do chip Pago/Não pago. Alterna PENDING↔CONFIRMED pelos moves. */
-  const planTxIds = React.useMemo(() => {
-    const ativos = new Set((savingsSum?.plans ?? []).map((p) => p.planId));
-    const out = new Set<string>();
-    for (const e of savingsSum?.entries ?? []) {
-      if (e.planId && ativos.has(e.planId) && e.transactionId) out.add(e.transactionId);
-    }
-    return out;
-  }, [savingsSum]);
+   *  lugar do chip Pago/Não pago. Alterna PENDING↔CONFIRMED pelos moves.
+   *  v36: usa a MESMA lista em memória (poupancaPorTx, já com vigência). */
   const renderSavingsChip = (tx: FlowTx) => {
-    if (!planTxIds.has(tx.id) || tx.status === 'VOIDED') return null;
+    if (!poupancaPorTx.has(tx.id) || tx.status === 'VOIDED') return null;
     const done = tx.status === 'CONFIRMED';
     const label = done ? '✓ Transferido' : 'Não transferido';
     const cls = done
@@ -869,23 +1170,32 @@ export default function FluxoScreen() {
       </Pressable>
     );
   };
-  /** v89: alterna Transferido/Não transferido da transferência do plano. */
+  /** v89: alterna Transferido/Não transferido da transferência do plano.
+   *  v36: mexe na lista em memória → recalc → renderiza → salva em background.
+   *  Mudou PAGO/PENDENTE: só o Efetivado muda na hora; o Previsto fica igual. */
   const toggleTransfer = async (tx: FlowTx) => {
     const nowTransferred = tx.status !== 'CONFIRMED';
+    const anterior = tx.status;
+    patchTxStatusEmMemoria(tx.id, nowTransferred ? 'CONFIRMED' : 'PENDING');
     try {
       await services.transactions.setTransferStatus(tx.id, nowTransferred);
-      bump();
+      invalidarPosSalvar();
     } catch (err) {
+      patchTxStatusEmMemoria(tx.id, anterior);
       showToast(err instanceof Error ? err.message : String(err), 'err');
     }
   };
 
-  /** v10: toggle Pago/Não pago das PARCELAS em conta (mesmo visual dos comuns). */
+  /** v10: toggle Pago/Não pago das PARCELAS em conta (mesmo visual dos comuns).
+   *  v36: mexe na lista em memória → recalc → renderiza → salva em background. */
   const toggleInstallment = async (inst: InstAgg) => {
+    const anterior = inst.status;
+    patchInstStatusEmMemoria(inst.installmentId, inst.status !== 'PAID' ? 'PAID' : 'PENDING');
     try {
       await services.installments.setPaymentStatus(inst.installmentId, inst.status !== 'PAID');
-      bump();
+      invalidarPosSalvar();
     } catch (err) {
+      patchInstStatusEmMemoria(inst.installmentId, anterior);
       showToast(err instanceof Error ? err.message : String(err), 'err');
     }
   };
@@ -1005,12 +1315,17 @@ export default function FluxoScreen() {
       amountClass: `${amountColor(tx)} ${tx.status === 'VOIDED' ? 'line-through opacity-50' : ''}`,
       onAlterar: opts.child || !canEdit(tx) ? null : () => openAlterar(tx),
       // v21 (bug 4): exclusão pede confirmação (modal)
+      // v36: transferência do PLANO DE POUPANÇA → cancelar SÓ A OCORRÊNCIA do
+      // mês visto (o plano continua); ocorrência PAGA não se cancela (histórico).
       onExcluir: opts.child
         ? null
-        : () =>
-            tx.kind === 'CONSOLIDATED' && tx.source_system !== 'INSTALLMENT'
-              ? setConfirm({ kind: 'group', tx })
-              : setConfirm({ kind: 'tx', tx }),
+        : poupancaPorTx.has(tx.id)
+          ? poupancaPorTx.get(tx.id)!.effected
+            ? null
+            : () => setConfirm({ kind: 'poupanca', tx, planId: poupancaPorTx.get(tx.id)!.planId, description: tx.description })
+          : tx.kind === 'CONSOLIDATED' && tx.source_system !== 'INSTALLMENT'
+            ? () => setConfirm({ kind: 'group', tx })
+            : () => setConfirm({ kind: 'tx', tx }),
     });
   };
 
@@ -1407,20 +1722,71 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
 
   // v94: estado/busy do botão "Efetivar" do Fechamento do Mês (cria+efetiva
   // a transferência de fechamento quando o mês ainda não foi confirmado).
+  // v36: mexe na lista em memória primeiro (saldo do dia muda na hora),
+  // salva (o próprio efetivarFechamento grava) e só invalida caches depois.
   const [efetivandoFechamento, setEfetivandoFechamento] = React.useState(false);
   const onEfetivarFechamento = async () => {
     if (!savingsSum) return;
     if (efetivandoFechamento) return;
     setEfetivandoFechamento(true);
+    const snapSum = savingsSum;
+    const snapMoves = movesRows;
     try {
       const r = await services.savings.efetivarFechamento(month);
       if (r.efetivadas > 0) {
+        // 1) LISTA EM MEMÓRIA: a transferência do fechamento entra como PAGO
+        //    no último dia do mês (o saldo do dia muda na hora, sem recarregar).
+        const fecha = `${month}-${String(lastDayNumberOf(month)).padStart(2, '0')}`;
+        const entryAntiga = savingsSum.entries.find((e) => e.kind === 'CLOSING' && e.transactionId);
+        if (entryAntiga?.transactionId) {
+          patchTxStatusEmMemoria(entryAntiga.transactionId, 'CONFIRMED');
+          const entries = savingsSum.entries.map((e) => (e.kind === 'CLOSING' && e.transactionId === entryAntiga.transactionId ? { ...e, effected: true } : e));
+          setSavingsSum(recomputarSavingsSum(entries));
+        } else {
+          setMovesRows((cur) => [
+            ...cur,
+            {
+              moveId: `poup-fech-${month}`,
+              txId: `poup-fech-tx-${month}`,
+              data: fecha,
+              amount: r.amountCents,
+              direction: 'DEBIT',
+              status: 'CONFIRMED',
+              txStatus: 'CONFIRMED',
+              txType: 'TRANSFER',
+              descricao: 'Poupança · fechamento do mês',
+              instStatus: null,
+              installmentId: null,
+              entryIdPoupanca: `poup-fech-entry-${month}`,
+              planIdPoupanca: null,
+            },
+          ]);
+          setSavingsSum(
+            recomputarSavingsSum([
+              ...savingsSum.entries,
+              {
+                id: `poup-fech-entry-${month}`,
+                planId: null,
+                month,
+                kind: 'CLOSING',
+                amountCents: r.amountCents,
+                effected: true,
+                transactionId: `poup-fech-tx-${month}`,
+                date: fecha,
+                description: 'Poupança · fechamento do mês',
+              },
+            ])
+          );
+        }
+        invalidarPosSalvar();
         showToast(`Fechamento de ${formatBRL(r.amountCents)} transferido`);
       } else {
         showToast('Sem sobra para guardar neste mês — nada a efetivar');
       }
-      bump();
     } catch (err) {
+      // Falhou: a lista volta para o valor antigo + erro.
+      setSavingsSum(snapSum);
+      setMovesRows(snapMoves);
       showToast(err instanceof Error ? err.message : String(err), 'err');
     } finally {
       setEfetivandoFechamento(false);
@@ -1641,6 +2007,29 @@ const showSavingsCard = savingsOn && (savingsFirstMonth == null || month >= savi
               ]
             : []
         }
+        onClose={() => setConfirm(null)}
+      />
+      {/* v36: cancelar SÓ a ocorrência do mês visto da poupança — o plano
+          inteiro continua (as demais ocorrências ficam). */}
+      <ConfirmDialog
+        visible={confirm?.kind === 'poupanca'}
+        title="Cancelar só esta ocorrência?"
+        message={
+          confirm?.kind === 'poupanca'
+            ? `"${confirm.description}" (${ymdToBr(confirm.tx.occurred_on)}) sai de ${ymdToBr(confirm.tx.occurred_on).slice(3)} — a ocorrência dos OUTROS meses continua. O plano de poupança não é apagado.`
+            : undefined
+        }
+        buttons={[
+          {
+            label: 'Cancelar só este mês',
+            color: 'red',
+            onPress: () => {
+              if (confirm?.kind === 'poupanca') doCancelarOcorrenciaPoupanca(confirm.tx, confirm.planId);
+              setConfirm(null);
+            },
+          },
+          { label: 'Manter', color: 'green', onPress: () => setConfirm(null) },
+        ]}
         onClose={() => setConfirm(null)}
       />
     </Screen>

@@ -25,6 +25,7 @@ import { BudgetService } from './BudgetService';
 import { WishlistService } from './WishlistService';
 import { SettingsService, SETTING_KEYS } from './SettingsService';
 import { remainderAfterWishlistAtMonthEnd } from '../lib/monthEndBalance';
+import { gerarOcorrenciasPoupanca } from '../lib/calcularFluxo';
 import { VersionedCache } from '../lib/versionedCache';
 
 export type SavingsMode = 'MONTHLY' | 'CLOSING';
@@ -228,6 +229,49 @@ export class SavingsService {
     });
   }
 
+  /**
+   * v36 — CANCELAR SÓ A OCORRÊNCIA DE UM MÊS (regra do usuário: "se aparecer
+   * uma ocorrência de um mês que eu não quero, consigo cancelar SÓ daquele
+   * mês, sem cancelar o plano inteiro").
+   *  · a entrada do mês fica com status 'CANCELED' — é a marca que impede o
+   *    generateForecast de recriar a ocorrência (e a exclui dos somatórios);
+   *  · a transferência PENDENTE sai de vez (movimentos + transação);
+   *  · transferência já CONFIRMADA é histórico — não se cancela.
+   */
+  async cancelarOcorrenciaMes(planId: string, month: string): Promise<void> {
+    const entry = await this.db.getFirstAsync<{ id: string; transaction_id: string | null }>(
+      `SELECT id, transaction_id FROM savings_entries
+        WHERE plan_id = ? AND month = ? AND kind = 'MONTHLY'`,
+      [planId, month]
+    );
+    if (!entry) throw new Error('Este plano não tem ocorrência neste mês');
+    if (entry.transaction_id) {
+      const tx = await this.db.getFirstAsync<{ status: string }>(
+        'SELECT status FROM transactions WHERE id = ?',
+        [entry.transaction_id]
+      );
+      if (tx && tx.status === 'CONFIRMED')
+        throw new Error('Esta ocorrência já foi transferida — ocorrência paga não se cancela');
+    }
+    await this.db.transactionAsync(async () => {
+      if (entry.transaction_id) {
+        await this.db.runAsync('DELETE FROM financial_moves WHERE transaction_id = ?', [entry.transaction_id]);
+        await this.db.runAsync('DELETE FROM transactions WHERE id = ?', [entry.transaction_id]);
+      }
+      // Mantém a LINHA como marca de cancelamento (impede recriação e soma).
+      await this.db.runAsync("UPDATE savings_entries SET status = 'CANCELED', transaction_id = NULL WHERE id = ?", [entry.id]);
+    });
+    this.invalidateMonth(month);
+  }
+
+  /** v36: invalida os caches do mês (chamado após escritas que não dão bump). */
+  invalidateMonth(month: string): void {
+    this.balance.invalidateDaily(month);
+    this.overviewCache.invalidate(`overview|${month}`);
+    this.closingSuggestionCache.invalidate(`closingSuggestion|${month}`);
+    this.adjustCache.invalidate(`adjust|${month}`);
+  }
+
   // ------------------------------------------------- previsão mensal ----
 
   /**
@@ -241,8 +285,8 @@ export class SavingsService {
   async generateForecast(today?: string): Promise<number> {
     const todayYmd = today ?? todaySP();
     const curMonth = monthOf(todayYmd);
-    const plans = await this.db.getAllAsync<{ id: string; amount_cents: number | null; day_of_month: number | null }>(
-      `SELECT id, amount_cents, day_of_month FROM savings_plans
+    const plans = await this.db.getAllAsync<{ id: string; amount_cents: number | null; day_of_month: number | null; created_at: string }>(
+      `SELECT id, amount_cents, day_of_month, created_at FROM savings_plans
         WHERE mode = 'MONTHLY' AND is_active = 1
           AND amount_cents IS NOT NULL AND day_of_month IS NOT NULL`
     );
@@ -254,9 +298,21 @@ export class SavingsService {
       // passou). Antes (v89) o início era 1 quando o dia já passou — o mês
       // corrente sumia e só aparecia nos meses seguintes.
       const startOffset = 0;
+      // v36 — VIGÊNCIA (regra do usuário): o plano vale PRA FRENTE, nunca pra
+      // trás — data da ocorrência >= data de criação do plano. Plano criado em
+      // 28/11 para o dia 05: novembro NÃO gera nada; a primeira ocorrência é
+      // 05/12. Mesma função pura usada na lista em memória do Fluxo.
+      const criacao = (plan.created_at ?? '').slice(0, 10);
+      const ocorrencias = gerarOcorrenciasPoupanca(
+        { dayOfMonth: plan.day_of_month, amountCents: plan.amount_cents, mode: 'MONTHLY' },
+        criacao || todayYmd
+      );
+      const porMes = new Map(ocorrencias.map((o) => [o.month, o]));
       for (let i = startOffset; i <= FORECAST_MONTHS_AHEAD; i++) {
         const month = monthAdd(curMonth, i);
         const date = dayInMonth(month, day);
+        // v36 — vigência: ocorrência anterior à criação do plano não nasce.
+        if (!porMes.has(month)) continue;
         const exists = await this.db.getFirstAsync<{ id: string }>(
           `SELECT id FROM savings_entries WHERE plan_id = ? AND month = ? AND kind = 'MONTHLY'`,
           [plan.id, month]
@@ -485,7 +541,7 @@ export class SavingsService {
             `SELECT COALESCE(SUM(se.amount_cents), 0) AS total
                FROM savings_entries se
                LEFT JOIN savings_plans sp ON sp.id = se.plan_id
-              WHERE se.month = ? AND se.kind = 'MONTHLY'
+              WHERE se.month = ? AND se.kind = 'MONTHLY' AND se.status != 'CANCELED'
                 AND (se.plan_id IS NULL OR sp.is_active = 1)`,
             [month]
           )
@@ -637,7 +693,7 @@ export class SavingsService {
               t.occurred_on AS tx_date, t.description AS tx_description
          FROM savings_entries se
          LEFT JOIN transactions t ON t.id = se.transaction_id
-        WHERE se.month = ?
+        WHERE se.month = ? AND se.status != 'CANCELED'
         ORDER BY t.occurred_on`,
       [month]
     );
@@ -802,7 +858,7 @@ export class SavingsService {
                   AND fm.account_id IN (${scopeAccountIds.length ? scopeAccountIds.map(() => '?').join(',') : "''"})) AS impact_efet
          FROM savings_entries se
          JOIN transactions t ON t.id = se.transaction_id
-        WHERE se.month = ?`,
+        WHERE se.month = ? AND se.status != 'CANCELED'`,
       [
         ...scopeAccountIds, ...scopeAccountIds, month,
       ] as never
