@@ -575,14 +575,15 @@ export default function FluxoScreen() {
 
   // v35: a tela só renderiza o resultado — NUNCA calcula. Cada "Saldo do dia"
   // é o `saldoPrevistoCents`/`saldoEfetivadoCents` que `calcularFluxo` devolveu.
-  // v36: linha-dia SÓ sai quando há itens visíveis ou `showDaily` está ligado —
-  // sem 30 linhas de barulho em mês vazio com o toggle desligado.
+  // v37: linha-dia SÓ sai onde houver lançamento visível. Saldo do dia
+  // continua vindo do `calcularFluxo` (regra única); sem lançamento, não
+  // renderiza — nem data, nem valor, nem saldo.
   const flowRows = React.useMemo<FlowRow[]>(() => {
     const rows: FlowRow[] = [];
     for (const saldoDia of [...resultadoFluxo.dias].reverse()) {
       const day = saldoDia.data;
       const list = saldoDia.itens.map((item) => item.payload).filter(passesFilter);
-      if (list.length === 0 && !showDaily) continue;
+      if (list.length === 0) continue;
       rows.push({
         kind: 'day',
         key: `day:${day}`,
@@ -593,7 +594,7 @@ export default function FluxoScreen() {
       list.forEach((entry, i) => rows.push({ kind: 'entry', key: `${day}:${i}:${entryId(entry)}`, entry }));
     }
     return rows;
-  }, [resultadoFluxo, filter, totalsByGroupV48, showDaily]);
+  }, [resultadoFluxo, filter, totalsByGroupV48]);
 
   const renderRow = ({ item }: { item: FlowRow }) => {
     if (item.kind === 'day') {
